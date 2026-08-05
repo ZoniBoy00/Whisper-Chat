@@ -12,7 +12,6 @@ import {
   resetRelay,
   setAvatar,
   setPrivacy,
-  setRelayUrl as persistRelayUrl,
   setTheme as persistTheme,
   updateSettings,
 } from "../lib/relay";
@@ -34,8 +33,6 @@ interface MainViewProps {
 }
 
 export function MainView({ peerId, onReset }: MainViewProps) {
-  const { myProfile, refreshOwnProfile } = useOwnProfile(peerId);
-
   const [theme, setTheme] = useState<Theme>("dark");
   const [relayUrl, setRelayUrl] = useState("");
   // Privacy / notification preferences, hydrated from the settings store on
@@ -54,6 +51,7 @@ export function MainView({ peerId, onReset }: MainViewProps) {
   const [profilePeerId, setProfilePeerId] = useState<string | null>(null);
 
   const chat = useChatState({ notificationsEnabled, notificationPreview });
+  const { myProfile, refreshOwnProfile } = useOwnProfile(peerId, chat.connected);
 
   // Real-time presence pushes come through the `presence` event (registered in
   // useChatState); the poll re-seeds the active peer and covers reconnects.
@@ -96,6 +94,27 @@ export function MainView({ peerId, onReset }: MainViewProps) {
     };
   }, []);
 
+  // Once the relay connects, the Rust side has persisted the *effective*
+  // endpoint (settings → env var → default). Re-reading settings then makes
+  // the relay URL state reflect the URL the client actually talks to, so
+  // `/media/{hash}` avatar paths resolve to the right origin.
+  useEffect(() => {
+    if (!chat.connected) return;
+    let cancelled = false;
+    void (async () => {
+      try {
+        const settings = await getSettings();
+        if (cancelled) return;
+        if (settings.relay_url) setRelayUrl(settings.relay_url);
+      } catch {
+        // Best-effort: the initial mount already loaded the settings.
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [chat.connected]);
+
   const handleThemeChange = useCallback((next: Theme) => {
     setTheme(next);
     void persistTheme(next).catch(() => {
@@ -103,18 +122,6 @@ export function MainView({ peerId, onReset }: MainViewProps) {
       // the next launch, so a failure here is non-fatal.
     });
   }, []);
-
-  const handleRelayUrlSave = useCallback(
-    async (url: string) => {
-      const trimmed = url.trim();
-      await persistRelayUrl(trimmed);
-      setRelayUrl(trimmed);
-      // Reconnect so the new endpoint takes effect, then resync state.
-      await chat.connect();
-      await chat.refresh();
-    },
-    [chat.connect, chat.refresh]
-  );
 
   const handleSend = useCallback(
     (text: string) => {
@@ -375,7 +382,6 @@ export function MainView({ peerId, onReset }: MainViewProps) {
         theme={theme}
         onThemeChange={handleThemeChange}
         relayUrl={relayUrl}
-        onSaveRelayUrl={handleRelayUrlSave}
         onSaveDisplayName={chat.saveDisplayName}
         onRegisterUsername={handleRegisterUsername}
         onSetAvatar={handleSetAvatar}

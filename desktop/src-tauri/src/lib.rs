@@ -451,6 +451,10 @@ fn show_main_window(app: &tauri::AppHandle) {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        // Native desktop notifications (the HTML5 Notification API is not
+        // reliable inside the Tauri webview, so the plugin talks to the OS
+        // directly).
+        .plugin(tauri_plugin_notification::init())
         // Re-injected on every page load so a navigation (or a window that was
         // still booting when the setup hook ran) can never bring the browser
         // menu back.

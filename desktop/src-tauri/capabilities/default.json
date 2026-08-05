@@ -3,5 +3,5 @@
   "identifier": "default",
   "description": "Default capability for the main and splash windows",
   "windows": ["main", "splash"],
-  "permissions": ["core:default"]
+  "permissions": ["core:default", "notification:default"]
 }

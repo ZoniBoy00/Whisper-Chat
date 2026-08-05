@@ -850,6 +850,12 @@ mod tests {
                 })
                 .expect("store contact");
             store.set_setting("theme", "dark").expect("store setting");
+            store
+                .set_setting("my_username", "alice_42")
+                .expect("store username");
+            store
+                .set_setting("my_avatar_url", "/media/abc123")
+                .expect("store avatar");
         }
         // A brand-new store instance (as after an app restart) must read the
         // same rows back with the same key.
@@ -862,6 +868,20 @@ mod tests {
             assert_eq!(
                 store.get_setting("theme").expect("read setting").as_deref(),
                 Some("dark")
+            );
+            assert_eq!(
+                store
+                    .get_setting("my_username")
+                    .expect("read username")
+                    .as_deref(),
+                Some("alice_42")
+            );
+            assert_eq!(
+                store
+                    .get_setting("my_avatar_url")
+                    .expect("read avatar")
+                    .as_deref(),
+                Some("/media/abc123")
             );
         }
         std::fs::remove_file(&path).ok();

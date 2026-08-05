@@ -19,8 +19,8 @@ interface SettingsDialogProps {
   myAvatarUrl: string | null;
   theme: Theme;
   onThemeChange: (theme: Theme) => void;
+  /** Relay endpoint; used to resolve `/media/{hash}` avatar paths. */
   relayUrl: string;
-  onSaveRelayUrl: (url: string) => Promise<void>;
   /** Persist a new display name; empty clears it. */
   onSaveDisplayName: (name: string) => Promise<void>;
   /** Register a public username for our identity. */
@@ -56,7 +56,6 @@ export function SettingsDialog({
   theme,
   onThemeChange,
   relayUrl,
-  onSaveRelayUrl,
   onSaveDisplayName,
   onRegisterUsername,
   onSetAvatar,
@@ -144,7 +143,6 @@ export function SettingsDialog({
                 theme={theme}
                 onThemeChange={onThemeChange}
                 relayUrl={relayUrl}
-                onSaveRelayUrl={onSaveRelayUrl}
                 onSaveDisplayName={onSaveDisplayName}
                 onRegisterUsername={onRegisterUsername}
                 onSetAvatar={onSetAvatar}

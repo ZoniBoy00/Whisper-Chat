@@ -26,7 +26,11 @@ export function buildConversations(
         username: isGroup ? undefined : contact.username,
         avatarUrl: isGroup ? undefined : contact.avatar_url,
         isGroup,
-        memberCount: group?.members.length,
+        // An empty roster means the member count is not known yet (the group
+        // was just hydrated or joined and `get_group_info` has not returned);
+        // leave it undefined so the UI never renders a misleading "0".
+        memberCount:
+          group && group.members.length > 0 ? group.members.length : undefined,
         messages: messages[contact.peer_id] ?? [],
       };
     })
@@ -42,7 +46,12 @@ export function lastActivityAt(conversation: Conversation): number {
 export function conversationPreview(conversation: Conversation): string {
   const last = conversation.messages[conversation.messages.length - 1];
   if (last) return `${last.outgoing ? "You: " : ""}${last.text}`;
-  if (conversation.isGroup === true) return `${conversation.memberCount ?? 0} members`;
+  if (conversation.isGroup === true) {
+    // An undefined/zero member count means the roster hasn't been fetched yet;
+    // never render a misleading "0 members".
+    if (!conversation.memberCount) return "—";
+    return `${conversation.memberCount} member${conversation.memberCount === 1 ? "" : "s"}`;
+  }
   if (conversation.displayName) return shortPeerId(conversation.peerId);
   return "";
 }

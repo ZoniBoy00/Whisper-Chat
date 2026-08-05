@@ -148,7 +148,10 @@ export function ChatView({
             {isGroup ? (
               <p className="mt-0.5 inline-flex items-center gap-1.5 text-sm font-medium text-wp-dim">
                 <Users className="h-3.5 w-3.5 text-wp-faint" aria-hidden="true" />
-                {conversation.memberCount ?? 0} members · end-to-end encrypted
+                {conversation.memberCount
+                  ? `${conversation.memberCount} member${conversation.memberCount === 1 ? "" : "s"} · `
+                  : ""}
+                end-to-end encrypted
               </p>
             ) : isTyping ? (
               <p
@@ -212,7 +215,7 @@ export function ChatView({
         ref={scrollRef}
         role="log"
         aria-label={`Messages with ${displayName}`}
-        className="flex-1 overflow-y-auto px-6 py-6"
+        className="select-chat flex-1 overflow-y-auto px-6 py-6"
       >
         <div className="mx-auto flex max-w-3xl flex-col gap-2">
           {conversation.messages.map((message) => (

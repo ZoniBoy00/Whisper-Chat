@@ -25,8 +25,13 @@ export function isGroupId(id: string): boolean {
  */
 export function mediaUrl(relayUrl: string, avatarPath: string): string | null {
   if (/^https?:\/\//i.test(avatarPath)) return avatarPath;
+  // Before the client has connected (and persisted the effective endpoint) the
+  // relayUrl state is still empty; fall back to the built-in default relay so
+  // avatars can load during that window instead of silently falling back to
+  // the letter avatar.
+  const base = relayUrl.trim() !== "" ? relayUrl : "ws://127.0.0.1:8080/ws";
   try {
-    const parsed = new URL(relayUrl.replace(/^ws/i, "http"));
+    const parsed = new URL(base.replace(/^ws/i, "http"));
     const path = avatarPath.startsWith("/") ? avatarPath : `/${avatarPath}`;
     return `${parsed.origin}${path}`;
   } catch {
