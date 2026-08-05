@@ -169,17 +169,24 @@ talks to whom, IP) is visible just as in Signal/WhatsApp — this is an
 | Phase | Content | Agents | Status |
 |---|---|---|---|
 | **0** | Repo + workspace, CI, AGENTS.md | 1 | ✅ **done** |
-| **1** | **Crypto core `e2ee-core`** (vodozemac: identity, prekeys, X3DH, ratchet, wire v1, signed hello) | 2 | ✅ **done — 23/23 tests** |
-| **2** | **Relay server** (WebSocket, SQLite offline queue, `fetch_since`, rate limiting, signed hello + spoofing protection) | 1 | ✅ **done** |
-| **3** | **Desktop shell:** Tauri v2 + React/TS + shadcn/ui — login view (key pair locally), contact view, chat view | 1 | 🟡 **shell done** (identity commands, onboarding, layout) — ⚠️ Windows linking requires MSVC Build Tools; CI (Linux) works |
-| **4** | **E2EE integration:** 1:1 messages end to end (prekey exchange → session → encryption → relay → decryption) | 1–2 | ⏳ |
-| **5** | **UI/UX:** modern, minimalist, easy — Signal/Telegram-grade (dark theme, Lucide, invite links, contacts, status indicators) | 1–2 | ⏳ |
-| **6** | **Groups + disappearing messages:** Megolm, disappearing messages | 2 | 🔒 After MVP |
+| **1** | **Crypto core `e2ee-core`** (vodozemac: identity, prekeys, X3DH, ratchet, wire v1, signed hello) | 2 | ✅ **done** |
+| **2** | **Relay server** (WebSocket, SQLite offline queue, `fetch_since`, rate limiting, signed hello + spoofing protection, prekeys, display names, presence watch) | 1 | ✅ **done** |
+| **3** | **Desktop shell:** Tauri v2 + React/TS — onboarding, contact view, chat view, settings, themes, splashscreen | 1 | ✅ **done** |
+| **4** | **E2EE integration:** 1:1 messages end to end (prekey exchange → session → encryption → relay → decryption), session persistence | 1–2 | ✅ **done** |
+| **5** | **UI/UX:** Signal/Telegram-grade — read receipts (blue ticks), typing indicator, display names, Online/Last seen presence, WhatsApp-style chat list, settings | 1–2 | ✅ **done** |
+| **5.5** | **Username & Profile System:** signed username binding (Ed25519), avatars via /media, search by username/UID | 2 | ✅ **done** — spec: `docs/PROFILE-SYSTEM.md` |
+| **6** | **Groups + disappearing messages:** Megolm, disappearing messages | 2 | 🔒 Next |
 | **7** | **Media + calls:** encrypted file transfer, WebRTC (DTLS-SRTP) + coturn | 2 | 🔒 After MVP |
 | **8** | **Mobile:** Flutter + flutter_rust_bridge; push (APNs/FCM — only "you have a message") | separate | 🔒 After MVP |
 | **9** | **Audit + PQ:** cargo audit, fuzz, external review, threat model, X25519Kyber768 | — | 🔒 After MVP |
 
 **MVP = phases 0–5.** Realistic timeline with pipeline work: **2–4 weeks**.
+
+**Security note (dependencies):** `glib` is locked at 0.18.5 by `gtk 0.18`
+(pinned by tauri 2.11). The Dependabot advisory (VariantStrIter UB in
+glib <0.20, Linux-only) is **blocked upstream** — 0.20 cannot be selected
+without breaking the Linux build. Revisit when tauri moves to gtk 0.19+.
+Tracked/ignored in `.github/dependabot.yml`.
 
 ---
 

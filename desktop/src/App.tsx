@@ -1,8 +1,10 @@
 import { useCallback, useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import { Loader2 } from "lucide-react";
 import { Onboarding } from "./components/Onboarding";
 import { MainView } from "./components/MainView";
+import { Splash } from "./components/Splash";
 
 export interface IdentityInfo {
   peer_id: string;
@@ -17,7 +19,43 @@ function FullScreenLoader() {
   );
 }
 
-export default function App() {
+/**
+ * Both windows (splash and main) load the same index.html — there is no router
+ * to give them separate URLs. The window label, read synchronously from the
+ * Tauri internals, decides which view to render: the splash screen on the
+ * "splash" window, the actual app everywhere else.
+ */
+function WindowRouter() {
+  const [windowLabel, setWindowLabel] = useState<string | null>(null);
+
+  useEffect(() => {
+    let disposed = false;
+    try {
+      const label = getCurrentWindow().label;
+      if (!disposed) setWindowLabel(label);
+    } catch {
+      // Not running inside a Tauri webview (e.g. plain `vite dev` in a
+      // browser): fall back to the main app view.
+      if (!disposed) setWindowLabel("main");
+    }
+    return () => {
+      disposed = true;
+    };
+  }, []);
+
+  if (windowLabel === null) {
+    // Dark, empty first paint so the splash handoff never flashes white.
+    return <div className="h-screen w-screen bg-wp-bg" />;
+  }
+
+  if (windowLabel === "splash") {
+    return <Splash />;
+  }
+
+  return <MainApp />;
+}
+
+function MainApp() {
   const [loading, setLoading] = useState(true);
   const [identity, setIdentity] = useState<IdentityInfo | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -73,4 +111,8 @@ export default function App() {
   }
 
   return <MainView peerId={identity.peer_id} onReset={() => void handleReset()} />;
+}
+
+export default function App() {
+  return <WindowRouter />;
 }

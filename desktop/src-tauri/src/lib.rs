@@ -1,12 +1,15 @@
 use std::fs;
 use std::path::PathBuf;
+use std::sync::Arc;
+use std::time::Duration;
 
 use serde::Serialize;
-use tauri::{Manager, State};
+use tauri::{Listener, Manager, State};
+use tokio::sync::Notify;
 
 mod relay;
 
-use relay::{ChatState, Profiles, RelayClient, Settings};
+use relay::{ChatState, PresenceInfo, Profiles, RelayClient, Settings};
 
 /// Resolve the on-disk location of the persisted identity.
 ///
@@ -189,11 +192,76 @@ async fn send_typing(
         .map_err(|e| e.to_string())
 }
 
+/// Fetch a peer's current presence (online status + last-seen timestamp).
+#[tauri::command]
+async fn get_presence(
+    state: State<'_, RelayClient>,
+    peer_id: String,
+) -> Result<PresenceInfo, String> {
+    state
+        .get_presence(&peer_id)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// Subscribe to presence pushes for a peer (re-sent on every connect).
+#[tauri::command]
+async fn watch_presence(state: State<'_, RelayClient>, peer_id: String) -> Result<(), String> {
+    state.watch_presence(&peer_id).map_err(|e| e.to_string())
+}
+
+/// Splash screen handoff. The main window is created hidden so the splash
+/// window is the first thing the user sees. The frontend emits a `splash-done`
+/// event once its view is ready; if that never arrives (e.g. the webview
+/// failed to boot) a short timeout still opens the main window, so the app
+/// never dead-ends on an empty splash.
+fn setup_splash_screen(app: &mut tauri::App) -> tauri::Result<()> {
+    if let Some(main) = app.get_webview_window("main") {
+        main.hide()?;
+    }
+
+    let splash_done = Arc::new(Notify::new());
+
+    let notify = splash_done.clone();
+    app.listen("splash-done", move |_event| {
+        notify.notify_one();
+    });
+
+    let app_handle = app.handle().clone();
+    let splash_done = splash_done.clone();
+    tauri::async_runtime::spawn(async move {
+        // Wait for the frontend signal, but never longer than the fallback.
+        tokio::time::timeout(Duration::from_millis(2500), splash_done.notified())
+            .await
+            .ok();
+
+        show_main_window(&app_handle);
+    });
+
+    Ok(())
+}
+
+/// Close the splash window (if it is still around) and bring the main window
+/// to the foreground. Idempotent, so both the event path and the timeout path
+/// can call it without side effects.
+fn show_main_window(app: &tauri::AppHandle) {
+    if let Some(splash) = app.get_webview_window("splash") {
+        let _ = splash.close();
+    }
+    if let Some(main) = app.get_webview_window("main") {
+        let _ = main.show();
+        let _ = main.set_focus();
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
         .setup(|app| {
             app.manage(RelayClient::new(app.handle().clone()));
+
+            setup_splash_screen(app)?;
+
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -211,7 +279,9 @@ pub fn run() {
             set_relay_url,
             set_theme,
             set_display_name,
-            send_typing
+            send_typing,
+            get_presence,
+            watch_presence
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

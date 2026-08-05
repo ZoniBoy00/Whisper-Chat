@@ -1,7 +1,7 @@
 import { useEffect, useRef } from "react";
 import { Lock, MessagesSquare } from "lucide-react";
-import type { Conversation } from "../types";
-import { shortPeerId } from "../lib/format";
+import type { Conversation, PresenceInfo } from "../types";
+import { formatLastSeen, shortPeerId } from "../lib/format";
 import { Avatar } from "./Avatar";
 import { MessageBubble } from "./MessageBubble";
 import { Composer } from "./Composer";
@@ -10,11 +10,19 @@ interface ChatViewProps {
   conversation: Conversation | null;
   /** Whether the active peer is currently typing (from the `typing` event). */
   isTyping: boolean;
+  /** Presence of the active peer; null when not yet known. */
+  presence: PresenceInfo | null;
   onSend: (text: string) => void;
   onTypingChange: (isTyping: boolean) => void;
 }
 
-export function ChatView({ conversation, isTyping, onSend, onTypingChange }: ChatViewProps) {
+export function ChatView({
+  conversation,
+  isTyping,
+  presence,
+  onSend,
+  onTypingChange,
+}: ChatViewProps) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const messageCount = conversation?.messages.length ?? 0;
 
@@ -78,6 +86,28 @@ export function ChatView({ conversation, isTyping, onSend, onTypingChange }: Cha
               </span>
               typing…
             </p>
+          ) : presence ? (
+            presence.online ? (
+              <p
+                aria-live="polite"
+                className="mt-0.5 inline-flex items-center gap-1.5 text-xs font-semibold text-wp-online"
+              >
+                <span
+                  className="h-2 w-2 rounded-full bg-wp-online"
+                  aria-hidden="true"
+                />
+                Online
+              </p>
+            ) : (
+              <p
+                aria-live="polite"
+                className="mt-0.5 inline-flex items-center gap-1.5 text-xs font-medium text-wp-dim"
+              >
+                {presence.last_seen != null
+                  ? `Last seen ${formatLastSeen(presence.last_seen)}`
+                  : "Last seen unavailable"}
+              </p>
+            )
           ) : (
             <p className="mt-0.5 inline-flex items-center gap-1.5 rounded-full border border-wp-line/10 bg-wp-panel-2 px-2.5 py-0.5 text-[10px] font-semibold tracking-wide text-wp-dim">
               <Lock className="h-3 w-3 text-wp-accent" aria-hidden="true" />

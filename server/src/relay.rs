@@ -17,14 +17,19 @@
 //!   (token buckets).
 
 use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use axum::extract::ws::{Message as WsMessage, WebSocket};
+use base64::{engine::general_purpose::STANDARD, Engine};
 use e2ee_core::prekey::PreKeyBundle;
+use e2ee_core::profile::{validate_username, verify_username_signature};
 use e2ee_core::{Identity, SignedHello};
 use futures_util::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use tokio::sync::{mpsc, RwLock};
+use vodozemac::{Curve25519PublicKey, Ed25519PublicKey, Ed25519Signature};
 
 use crate::store::{unix_now, Store};
 
@@ -38,10 +43,23 @@ const HELLO_TIMEOUT_SECS: u64 = 10;
 /// Maximum length of a public display name, in Unicode characters.
 const MAX_DISPLAY_NAME_CHARS: usize = 64;
 
+/// Maximum size of an uploaded avatar blob, in bytes (2 MiB). The check runs
+/// on the decoded blob so a client cannot smuggle more data than advertised.
+const MAX_AVATAR_BYTES: usize = 2 * 1024 * 1024;
+
 /// Default per-IP token bucket: burst of 60 envelopes, refilled at 1/sec
 /// (~60 envelopes per minute).
 const DEFAULT_RATE_BURST: f64 = 60.0;
 const DEFAULT_RATE_REFILL_PER_SEC: f64 = 1.0;
+
+/// Default per-IP profile token bucket: 5 mutations, refilled at 5/hour.
+/// Registration, search and profile lookups all draw from it.
+const DEFAULT_PROFILE_RATE_BURST: f64 = 5.0;
+const DEFAULT_PROFILE_RATE_REFILL_PER_SEC: f64 = 5.0 / 3600.0;
+
+/// Subdirectory (next to the SQLite database) where avatar blobs are stored
+/// as `<sha256>.bin`.
+const MEDIA_SUBDIR: &str = "media";
 
 // ---------------------------------------------------------------------------
 // Wire format
@@ -107,6 +125,34 @@ enum ClientMessage {
     /// subsequent pre-key lookups.
     #[serde(rename = "update_profile")]
     UpdateProfile { display_name: String },
+    /// Subscribe to presence pushes for `peer_id`: whenever that peer comes
+    /// online or goes offline the relay sends this socket a
+    /// `ServerMessage::Presence`. One channel per watching peer — re-watching
+    /// replaces the previous registration for the same watcher.
+    #[serde(rename = "watch_presence")]
+    WatchPresence { peer_id: String },
+    /// Request the current presence of `peer_id`: the relay replies with a
+    /// single `ServerMessage::Presence` carrying whether the peer is online
+    /// right now plus (when offline) its last-seen timestamp.
+    #[serde(rename = "get_presence")]
+    GetPresence { peer_id: String },
+    /// Register (or refresh) a signed username binding for the authenticated
+    /// peer. `signature` is the base64 Ed25519 signature over the canonical
+    /// bytes `username || 0x00 || curve25519_key_raw`; `avatar` is an optional
+    /// base64 image blob of at most 2 MiB.
+    #[serde(rename = "register_profile")]
+    RegisterProfile {
+        username: String,
+        signature: String,
+        display_name: Option<String>,
+        avatar: Option<String>,
+    },
+    /// Prefix-search the public directory by username or peer ID.
+    #[serde(rename = "search_users")]
+    SearchUsers { query: String, limit: Option<usize> },
+    /// Fetch another peer's public profile by its peer ID.
+    #[serde(rename = "get_profile")]
+    GetProfile { peer_id: String },
 }
 
 /// Messages the SERVER sends to the client.
@@ -134,8 +180,46 @@ enum ServerMessage {
     /// Confirmation that the caller's display name was updated.
     #[serde(rename = "profile_updated")]
     ProfileUpdated,
+    /// Presence report: the current state of `peer_id`. Sent as a push to
+    /// every `watch_presence` subscriber when the peer connects/disconnects
+    /// and as the reply to a `get_presence` request. `last_seen` is the peer's
+    /// unix-seconds disconnect timestamp; it is `None` while the peer is
+    /// online or when it has never been seen.
+    #[serde(rename = "presence")]
+    Presence {
+        peer_id: String,
+        online: bool,
+        last_seen: Option<i64>,
+    },
+    /// Confirmation that the caller's username binding was registered.
+    #[serde(rename = "profile_registered")]
+    ProfileRegistered { username: String },
+    /// Reply to `search_users`: matching profiles from the public directory.
+    #[serde(rename = "users_search")]
+    UsersSearch { results: Vec<SearchResult> },
+    /// A peer's public profile (`get_profile` reply).
+    Profile {
+        username: Option<String>,
+        peer_id: String,
+        display_name: Option<String>,
+        avatar_url: Option<String>,
+        curve25519_key: Option<String>,
+    },
     /// Protocol error.
     Error { code: String },
+}
+
+/// One hit from the public username directory search.
+#[derive(Debug, Serialize)]
+pub struct SearchResult {
+    /// The registered username.
+    pub username: String,
+    /// The peer's fingerprint.
+    pub peer_id: String,
+    /// The peer's public display name, if set.
+    pub display_name: Option<String>,
+    /// URL of the peer's avatar blob, if uploaded.
+    pub avatar_url: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -183,6 +267,34 @@ impl RateLimiter {
         Self::new(burst, refill)
     }
 
+    /// Build the profile limiter (see [`DEFAULT_PROFILE_RATE_BURST`]).
+    ///
+    /// Burst/refill are overridable via `WHISPER_PROFILE_RATE_BURST` and
+    /// `WHISPER_PROFILE_RATE_REFILL`; when those are unset the generic
+    /// `WHISPER_RATE_BURST` / `WHISPER_RATE_REFILL` overrides apply, so a
+    /// single smoke-test configuration can bound every bucket.
+    fn from_profile_env() -> Self {
+        let burst = std::env::var("WHISPER_PROFILE_RATE_BURST")
+            .ok()
+            .and_then(|v| v.parse::<f64>().ok())
+            .or_else(|| {
+                std::env::var("WHISPER_RATE_BURST")
+                    .ok()
+                    .and_then(|v| v.parse::<f64>().ok())
+            })
+            .unwrap_or(DEFAULT_PROFILE_RATE_BURST);
+        let refill = std::env::var("WHISPER_PROFILE_RATE_REFILL")
+            .ok()
+            .and_then(|v| v.parse::<f64>().ok())
+            .or_else(|| {
+                std::env::var("WHISPER_RATE_REFILL")
+                    .ok()
+                    .and_then(|v| v.parse::<f64>().ok())
+            })
+            .unwrap_or(DEFAULT_PROFILE_RATE_REFILL_PER_SEC);
+        Self::new(burst, refill)
+    }
+
     /// Try to consume one token for `key`. Returns `false` when the bucket is
     /// exhausted (rate limit hit).
     fn try_take(&self, key: &str) -> bool {
@@ -212,6 +324,18 @@ type PeerId = String;
 /// Outbound channel: WS messages queued for a connected peer.
 type Outbound = mpsc::UnboundedSender<WsMessage>;
 
+/// One presence subscription. The peer ID lets the relay de-duplicate
+/// re-watches (one channel per watching peer) and clean up its own
+/// registrations when the watcher disconnects — an `UnboundedSender` alone
+/// carries no identity, so it cannot serve either purpose.
+#[derive(Clone)]
+struct PresenceWatcher {
+    /// Peer ID of the subscribing socket.
+    peer_id: PeerId,
+    /// The watcher's outbound WS channel (its `online` entry).
+    tx: Outbound,
+}
+
 /// Outcome of authenticating a signed hello.
 enum HelloOutcome {
     /// The hello verified and the peer is authenticated.
@@ -229,10 +353,16 @@ pub struct Relay {
 struct RelayInner {
     /// Online peers: peer_id -> outbound channel.
     online: RwLock<HashMap<PeerId, Outbound>>,
+    /// Presence subscriptions: watched peer_id -> its watchers' channels.
+    presence_watchers: RwLock<HashMap<PeerId, Vec<PresenceWatcher>>>,
     /// SQLite-backed offline queue of opaque ciphertext blobs.
     store: Store,
     /// Per-IP envelope throughput guard.
     limiter: RateLimiter,
+    /// Per-IP guard for profile mutations and directory lookups.
+    profile_limiter: RateLimiter,
+    /// Directory holding uploaded avatar blobs (`<sha256>.bin`).
+    media_dir: PathBuf,
 }
 
 impl Relay {
@@ -241,31 +371,73 @@ impl Relay {
     pub fn new() -> Self {
         let path = std::env::var("WHISPER_DB_PATH").unwrap_or_else(|_| "data/relay.db".into());
         let store = Store::open(&path).expect("failed to open SQLite store");
-        Self::with_store(store)
+        let media_dir = Self::resolve_media_dir(&path);
+        Self::with_parts(
+            store,
+            media_dir,
+            RateLimiter::from_env(),
+            RateLimiter::from_profile_env(),
+        )
     }
 
     /// Build a relay over a pre-opened store (tests use in-memory stores).
+    #[cfg(test)]
     fn with_store(store: Store) -> Self {
-        Self {
-            inner: Arc::new(RelayInner {
-                online: RwLock::new(HashMap::new()),
-                store,
-                limiter: RateLimiter::from_env(),
-            }),
-        }
+        Self::with_parts(
+            store,
+            Self::default_media_dir(),
+            RateLimiter::from_env(),
+            RateLimiter::from_profile_env(),
+        )
     }
 
     /// Build a relay over a pre-opened store with a deterministic rate
     /// limiter (unit tests need exact bucket sizes).
     #[cfg(test)]
     fn with_limiter(store: Store, burst: f64, refill: f64) -> Self {
+        Self::with_parts(
+            store,
+            Self::default_media_dir(),
+            RateLimiter::new(burst, refill),
+            RateLimiter::new(burst, refill),
+        )
+    }
+
+    /// Build a relay over a pre-opened store with a scratch media directory
+    /// and a generous profile bucket (unit tests only).
+    fn with_parts(
+        store: Store,
+        media_dir: PathBuf,
+        limiter: RateLimiter,
+        profile_limiter: RateLimiter,
+    ) -> Self {
         Self {
             inner: Arc::new(RelayInner {
                 online: RwLock::new(HashMap::new()),
+                presence_watchers: RwLock::new(HashMap::new()),
                 store,
-                limiter: RateLimiter::new(burst, refill),
+                limiter,
+                profile_limiter,
+                media_dir,
             }),
         }
+    }
+
+    /// The media directory used when no database path is known: `data/media`
+    /// (i.e. `server/data/media` when the relay runs from the server dir).
+    #[cfg(test)]
+    fn default_media_dir() -> PathBuf {
+        PathBuf::from("data").join(MEDIA_SUBDIR)
+    }
+
+    /// The media directory lives next to the SQLite database, so switching
+    /// the database path (via `WHISPER_DB_PATH`) also relocates uploads.
+    fn resolve_media_dir(db_path: &str) -> PathBuf {
+        let parent = Path::new(db_path)
+            .parent()
+            .filter(|p| !p.as_os_str().is_empty())
+            .unwrap_or_else(|| Path::new("."));
+        parent.join(MEDIA_SUBDIR)
     }
 
     /// Accept a connected socket: wait for hello, register, pump messages.
@@ -283,13 +455,19 @@ impl Relay {
         // 2) Register the peer as online. A second socket claiming the same
         //    peer ID replaces the previous one (last-socket-wins); identity
         //    binding itself was already enforced by the signed hello, so this
-        //    only ever happens for a verified owner reconnecting.
+        //    only ever happens for a verified owner reconnecting. The channel
+        //    is cloned because presence watchers registered by this socket
+        //    below reuse it.
         let (out_tx, mut out_rx) = mpsc::unbounded_channel::<WsMessage>();
         self.inner
             .online
             .write()
             .await
-            .insert(peer_id.clone(), out_tx);
+            .insert(peer_id.clone(), out_tx.clone());
+
+        // 2b) Announce the peer is online to everyone watching them. Any peer
+        //     that reconnects mid-watch sees a fresh `online: true` push.
+        self.broadcast_presence(&peer_id, true).await;
 
         // 3) Push any ciphertext blobs persisted while the peer was offline.
         //    Rows are left in the DB until a fetch_since drains them, so the
@@ -336,6 +514,38 @@ impl Relay {
                         Ok(ClientMessage::UpdateProfile { display_name }) => {
                             self.update_profile(&peer_id, &ip, &display_name).await;
                         }
+                        // Presence: register this socket as a watcher of
+                        // `watched`, or answer a one-shot status query. Both
+                        // share the `presence:<ip>` rate bucket.
+                        Ok(ClientMessage::WatchPresence { peer_id: watched }) => {
+                            self.watch_presence(&peer_id, &ip, &watched, out_tx.clone())
+                                .await;
+                        }
+                        Ok(ClientMessage::GetPresence { peer_id: watched }) => {
+                            self.get_presence(&peer_id, &ip, &watched).await;
+                        }
+                        Ok(ClientMessage::RegisterProfile {
+                            username,
+                            signature,
+                            display_name,
+                            avatar,
+                        }) => {
+                            self.register_profile(
+                                &peer_id,
+                                &ip,
+                                &username,
+                                &signature,
+                                display_name.as_deref(),
+                                avatar.as_deref(),
+                            )
+                            .await;
+                        }
+                        Ok(ClientMessage::SearchUsers { query, limit }) => {
+                            self.search_users(&peer_id, &ip, &query, limit).await;
+                        }
+                        Ok(ClientMessage::GetProfile { peer_id: target }) => {
+                            self.get_profile(&peer_id, &ip, &target).await;
+                        }
                         // Re-registration or protocol violations: ignore for now.
                         Ok(_) => {}
                         Err(_) => {
@@ -366,8 +576,18 @@ impl Relay {
             }
         }
 
-        // 6) Cleanup: unregister and drop the outbound pump.
+        // 6) Cleanup: unregister, persist last-seen and notify watchers.
         self.inner.online.write().await.remove(&peer_id);
+        let _ = self.inner.store.set_last_seen(&peer_id, unix_now());
+        self.broadcast_presence(&peer_id, false).await;
+        // Drop this socket's own watch registrations: its channel is dead, so
+        // keeping it would only build up stale entries until the next push.
+        self.inner
+            .presence_watchers
+            .write()
+            .await
+            .iter_mut()
+            .for_each(|(_, watchers)| watchers.retain(|w| w.peer_id != peer_id));
         pump_out.abort();
         tracing::info!(peer = %peer_id, "peer disconnected");
     }
@@ -738,6 +958,454 @@ impl Relay {
             }
             Err(err) => {
                 tracing::error!(peer = %peer_id, "failed to persist display name: {err}");
+            }
+        }
+    }
+
+    /// Register a signed username binding for the authenticated peer.
+    ///
+    /// SECURITY: the username is bound to the peer's stored X25519 identity
+    /// key by an Ed25519 signature over the canonical bytes
+    /// (`username || 0x00 || curve_key_raw`). The signature is re-verified
+    /// against the peer's stored public keys before anything is persisted, so
+    /// a compromised relay cannot reassign usernames or squat reserved ones.
+    ///
+    /// The optional `avatar` (base64 image, ≤ 2 MiB) is stored on disk as
+    /// `media/<sha256>.bin`; identical content hashes to the same blob, so
+    /// re-uploads are idempotent.
+    ///
+    /// Rate limiting: registration is throttled per source IP under the
+    /// `profile:<ip>` bucket (default 5/hour; burst/refill overridable via
+    /// `WHISPER_PROFILE_RATE_BURST` / `WHISPER_PROFILE_RATE_REFILL`).
+    async fn register_profile(
+        &self,
+        peer_id: &str,
+        ip: &str,
+        username: &str,
+        signature_b64: &str,
+        display_name: Option<&str>,
+        avatar_b64: Option<&str>,
+    ) {
+        // 1) Rate limit profile mutations per source IP.
+        if !self
+            .inner
+            .profile_limiter
+            .try_take(&format!("profile:{ip}"))
+        {
+            tracing::warn!(ip = %ip, "profile rate limit exceeded");
+            let _ = self
+                .send(
+                    peer_id,
+                    ServerMessage::Error {
+                        code: "rate_limited".into(),
+                    },
+                )
+                .await;
+            return;
+        }
+
+        // 2) Username shape validation (charset, length, reserved names).
+        if !validate_username(username) {
+            tracing::warn!(peer = %peer_id, "rejecting invalid username");
+            let _ = self
+                .send(
+                    peer_id,
+                    ServerMessage::Error {
+                        code: "invalid_username".into(),
+                    },
+                )
+                .await;
+            return;
+        }
+
+        if let Some(name) = display_name {
+            if !Self::is_valid_display_name(name) {
+                tracing::warn!(peer = %peer_id, "rejecting invalid display name");
+                let _ = self
+                    .send(
+                        peer_id,
+                        ServerMessage::Error {
+                            code: "invalid_display_name".into(),
+                        },
+                    )
+                    .await;
+                return;
+            }
+        }
+
+        // 3) Decode and size-check the avatar early so nothing is persisted
+        //    for a request that will be rejected later. The blob itself is
+        //    only written to disk after the signature has been verified.
+        let decoded_avatar = match avatar_b64 {
+            Some(raw) => match Self::decode_avatar(raw) {
+                Ok(bytes) => Some(bytes),
+                Err(()) => {
+                    let _ = self
+                        .send(
+                            peer_id,
+                            ServerMessage::Error {
+                                code: "invalid_avatar".into(),
+                            },
+                        )
+                        .await;
+                    return;
+                }
+            },
+            None => None,
+        };
+
+        // 4) Signature verification: only the peer that owns the stored curve
+        //    key can produce a valid binding. The relay is authenticated by
+        //    the signed hello (handle_socket), so the peer's keys are present.
+        let (curve_b64, ed_b64) = match self.inner.store.get_user_keys(peer_id) {
+            Some(keys) => keys,
+            None => {
+                let _ = self
+                    .send(
+                        peer_id,
+                        ServerMessage::Error {
+                            code: "no_profile".into(),
+                        },
+                    )
+                    .await;
+                return;
+            }
+        };
+        let parsed = match Self::parse_binding(&curve_b64, &ed_b64, signature_b64) {
+            Some(keys) => keys,
+            None => {
+                let _ = self
+                    .send(
+                        peer_id,
+                        ServerMessage::Error {
+                            code: "bad_signature".into(),
+                        },
+                    )
+                    .await;
+                return;
+            }
+        };
+        if !verify_username_signature(username, &parsed.0, &parsed.1, &parsed.2) {
+            tracing::warn!(peer = %peer_id, username = %username, "username signature verification failed");
+            let _ = self
+                .send(
+                    peer_id,
+                    ServerMessage::Error {
+                        code: "bad_signature".into(),
+                    },
+                )
+                .await;
+            return;
+        }
+
+        // 5) Uniqueness + persistence of the username binding.
+        let now = unix_now();
+        match self
+            .inner
+            .store
+            .register_username(peer_id, username, signature_b64, now)
+        {
+            Err(crate::store::StoreError::UsernameTaken) => {
+                tracing::warn!(peer = %peer_id, username = %username, "username already taken");
+                let _ = self
+                    .send(
+                        peer_id,
+                        ServerMessage::Error {
+                            code: "username_taken".into(),
+                        },
+                    )
+                    .await;
+                return;
+            }
+            Err(err) => {
+                tracing::error!(peer = %peer_id, "failed to persist username: {err}");
+                return;
+            }
+            Ok(()) => {}
+        }
+
+        // 6) Persist the profile extras (display name + avatar).
+        if let Some(name) = display_name {
+            if let Err(err) = self.inner.store.set_display_name(peer_id, name) {
+                tracing::error!(peer = %peer_id, "failed to persist display name: {err}");
+            }
+        }
+        if let Some(bytes) = decoded_avatar {
+            match Self::store_avatar(&self.inner.media_dir, &bytes) {
+                Ok(hash) => {
+                    if let Err(err) = self.inner.store.set_avatar_hash(peer_id, &hash) {
+                        tracing::error!(peer = %peer_id, "failed to persist avatar hash: {err}");
+                    }
+                }
+                Err(()) => {
+                    tracing::error!(peer = %peer_id, "failed to write avatar blob");
+                }
+            }
+        }
+
+        let _ = self
+            .send(
+                peer_id,
+                ServerMessage::ProfileRegistered {
+                    username: username.to_string(),
+                },
+            )
+            .await;
+    }
+
+    /// Prefix-search the public directory by username or peer ID.
+    ///
+    /// Results are capped at 25 entries (default 10). Like profile
+    /// registration, search consumes the `profile:<ip>` rate bucket.
+    async fn search_users(&self, peer_id: &str, ip: &str, query: &str, limit: Option<usize>) {
+        if !self
+            .inner
+            .profile_limiter
+            .try_take(&format!("profile:{ip}"))
+        {
+            tracing::warn!(ip = %ip, "profile rate limit exceeded");
+            let _ = self
+                .send(
+                    peer_id,
+                    ServerMessage::Error {
+                        code: "rate_limited".into(),
+                    },
+                )
+                .await;
+            return;
+        }
+
+        let query = query.trim();
+        let limit = limit.unwrap_or(10).clamp(1, 25);
+        let results = if query.is_empty() {
+            Vec::new()
+        } else {
+            self.inner
+                .store
+                .search_users(query, limit)
+                .into_iter()
+                .map(|p| SearchResult {
+                    username: p.username.unwrap_or_default(),
+                    peer_id: p.peer_id,
+                    display_name: p.display_name,
+                    avatar_url: Self::avatar_url(p.avatar_hash.as_deref()),
+                })
+                .collect()
+        };
+        let _ = self
+            .send(peer_id, ServerMessage::UsersSearch { results })
+            .await;
+    }
+
+    /// Fetch another peer's public profile by peer ID, or answer `no_profile`
+    /// when the peer has never been seen by the relay. Directory lookups are
+    /// rate limited per source IP like every other profile operation.
+    async fn get_profile(&self, peer_id: &str, ip: &str, target: &str) {
+        if !self
+            .inner
+            .profile_limiter
+            .try_take(&format!("profile:{ip}"))
+        {
+            tracing::warn!(ip = %ip, "profile rate limit exceeded");
+            let _ = self
+                .send(
+                    peer_id,
+                    ServerMessage::Error {
+                        code: "rate_limited".into(),
+                    },
+                )
+                .await;
+            return;
+        }
+
+        match self.inner.store.get_profile(target) {
+            Some(profile) => {
+                let _ = self
+                    .send(
+                        peer_id,
+                        ServerMessage::Profile {
+                            username: profile.username,
+                            peer_id: profile.peer_id,
+                            display_name: profile.display_name,
+                            avatar_url: Self::avatar_url(profile.avatar_hash.as_deref()),
+                            curve25519_key: profile.curve25519_key,
+                        },
+                    )
+                    .await;
+            }
+            None => {
+                let _ = self
+                    .send(
+                        peer_id,
+                        ServerMessage::Error {
+                            code: "no_profile".into(),
+                        },
+                    )
+                    .await;
+            }
+        }
+    }
+
+    /// Map a stored avatar hash to the public URL the relay serves it under.
+    fn avatar_url(avatar_hash: Option<&str>) -> Option<String> {
+        avatar_hash.map(|h| format!("/media/{h}"))
+    }
+
+    /// Decode a base64 avatar blob and enforce the size bound. Returns `Err`
+    /// when the input is not valid base64, empty or larger than
+    /// [`MAX_AVATAR_BYTES`].
+    fn decode_avatar(raw: &str) -> Result<Vec<u8>, ()> {
+        let bytes = STANDARD.decode(raw).map_err(|_| ())?;
+        if bytes.is_empty() || bytes.len() > MAX_AVATAR_BYTES {
+            return Err(());
+        }
+        Ok(bytes)
+    }
+
+    /// Write an avatar blob to `media/<sha256>.bin` and return the hex SHA-256
+    /// used as its storage key. Content-addressed: identical blobs share one
+    /// file, so re-uploads are idempotent.
+    fn store_avatar(media_dir: &Path, bytes: &[u8]) -> Result<String, ()> {
+        let digest = Sha256::digest(bytes);
+        let hash = Self::hex_encode(&digest);
+        let path = media_dir.join(format!("{hash}.bin"));
+        if let Some(parent) = path.parent() {
+            if let Err(err) = std::fs::create_dir_all(parent) {
+                tracing::error!(path = %parent.display(), "failed to create media dir: {err}");
+                return Err(());
+            }
+        }
+        if let Err(err) = std::fs::write(&path, bytes) {
+            tracing::error!(path = %path.display(), "failed to write avatar blob: {err}");
+            return Err(());
+        }
+        Ok(hash)
+    }
+
+    /// Lowercase hex encoding of a byte slice (SHA-256 digests, peer IDs).
+    fn hex_encode(bytes: &[u8]) -> String {
+        const HEX: &[u8; 16] = b"0123456789abcdef";
+        let mut out = String::with_capacity(bytes.len() * 2);
+        for byte in bytes {
+            out.push(HEX[(byte >> 4) as usize] as char);
+            out.push(HEX[(byte & 0x0f) as usize] as char);
+        }
+        out
+    }
+
+    /// Parse the stored curve/ed25519 keys and the submitted signature into
+    /// verifiable vodozemac types. `None` when any piece is malformed.
+    fn parse_binding(
+        curve_b64: &str,
+        ed_b64: &str,
+        sig_b64: &str,
+    ) -> Option<(Curve25519PublicKey, Ed25519PublicKey, Ed25519Signature)> {
+        let curve = Curve25519PublicKey::from_base64(curve_b64).ok()?;
+        let ed = Ed25519PublicKey::from_base64(ed_b64).ok()?;
+        let sig = Ed25519Signature::from_base64(sig_b64).ok()?;
+        Some((curve, ed, sig))
+    }
+
+    /// Resolve the on-disk path of a media blob. The `/media/{hash}` endpoint
+    /// in main.rs uses this; the caller is responsible for validating `hash`.
+    pub fn media_path(&self, hash: &str) -> PathBuf {
+        self.inner.media_dir.join(format!("{hash}.bin"))
+    }
+
+    /// Register `watcher`'s socket as a presence subscriber of `watched`.
+    ///
+    /// Re-watching the same peer replaces the watcher's previous registration,
+    /// so a peer can never hold two live channels in one watched list (and
+    /// reconnecting cannot duplicate pushes). Watching a peer you are already
+    /// watching is a no-op apart from the replacement.
+    ///
+    /// Presence traffic (both this and `get_presence`) is rate limited per
+    /// source IP under the `presence:<ip>` bucket.
+    async fn watch_presence(&self, watcher: &str, ip: &str, watched: &str, tx: Outbound) {
+        if !self.inner.limiter.try_take(&format!("presence:{ip}")) {
+            tracing::warn!(ip = %ip, "presence rate limit exceeded");
+            let _ = self
+                .send(
+                    watcher,
+                    ServerMessage::Error {
+                        code: "rate_limited".into(),
+                    },
+                )
+                .await;
+            return;
+        }
+
+        let mut watchers = self.inner.presence_watchers.write().await;
+        let list = watchers.entry(watched.to_string()).or_default();
+        list.retain(|w| w.peer_id != watcher);
+        list.push(PresenceWatcher {
+            peer_id: watcher.to_string(),
+            tx,
+        });
+    }
+
+    /// Answer a one-shot presence query for `target`: whether the peer is
+    /// online right now, plus its stored last-seen timestamp when offline.
+    /// Unknown peers report `online: false` with `last_seen: null`.
+    async fn get_presence(&self, requester: &str, ip: &str, target: &str) {
+        if !self.inner.limiter.try_take(&format!("presence:{ip}")) {
+            tracing::warn!(ip = %ip, "presence rate limit exceeded");
+            let _ = self
+                .send(
+                    requester,
+                    ServerMessage::Error {
+                        code: "rate_limited".into(),
+                    },
+                )
+                .await;
+            return;
+        }
+
+        let online = self.inner.online.read().await.contains_key(target);
+        let last_seen = if online {
+            None
+        } else {
+            self.inner.store.get_last_seen(target)
+        };
+        let _ = self
+            .send(
+                requester,
+                ServerMessage::Presence {
+                    peer_id: target.to_string(),
+                    online,
+                    last_seen,
+                },
+            )
+            .await;
+    }
+
+    /// Push a presence change for `peer_id` to every registered watcher.
+    ///
+    /// Watchers whose channel is gone (closed socket, or the peer itself
+    /// disconnected) are dropped in the same pass, so dead subscriptions
+    /// cannot accumulate. The `presence_watchers` lock is held while sending;
+    /// sends into unbounded channels never block, so this is safe.
+    async fn broadcast_presence(&self, peer_id: &str, online: bool) {
+        let last_seen = if online {
+            None
+        } else {
+            self.inner.store.get_last_seen(peer_id)
+        };
+        let text = serde_json::to_string(&ServerMessage::Presence {
+            peer_id: peer_id.to_string(),
+            online,
+            last_seen,
+        })
+        .ok();
+
+        let mut watchers = self.inner.presence_watchers.write().await;
+        if let Some(list) = watchers.get_mut(peer_id) {
+            match text {
+                Some(text) => list.retain(|w| w.tx.send(WsMessage::Text(text.clone())).is_ok()),
+                None => list.clear(),
+            }
+            if list.is_empty() {
+                watchers.remove(peer_id);
             }
         }
     }
@@ -1159,6 +1827,629 @@ mod tests {
         let reply = read_reply(&mut out_rx);
         assert_eq!(reply["type"].as_str(), Some("prekeys"));
         assert_eq!(reply["display_name"].as_str(), Some("Test Alice"));
+    }
+
+    // -- Presence (watch / get / last seen) ----------------------------------
+
+    #[tokio::test]
+    async fn watcher_receives_online_and_offline_presence_pushes() {
+        let store = Store::open_in_memory().unwrap();
+        let relay = Relay::with_store(store);
+        let watched = "bob".to_string();
+        let (watch_tx, mut watch_rx) = mpsc::unbounded_channel::<WsMessage>();
+
+        relay
+            .watch_presence("alice", "127.0.0.1", &watched, watch_tx)
+            .await;
+
+        // Bob comes online: the watcher must get an `online: true` push.
+        let (bob_tx, _bob_rx) = mpsc::unbounded_channel::<WsMessage>();
+        relay
+            .inner
+            .online
+            .write()
+            .await
+            .insert(watched.clone(), bob_tx);
+        relay.broadcast_presence(&watched, true).await;
+        let reply = read_reply(&mut watch_rx);
+        assert_eq!(reply["type"].as_str(), Some("presence"));
+        assert_eq!(reply["peer_id"].as_str(), Some("bob"));
+        assert_eq!(reply["online"].as_bool(), Some(true));
+        assert!(
+            reply["last_seen"].is_null(),
+            "online pushes carry no last_seen"
+        );
+
+        // Bob goes offline: last_seen must be included in the push.
+        relay.inner.online.write().await.remove(&watched);
+        relay
+            .inner
+            .store
+            .set_last_seen(&watched, 1_700_000_000)
+            .unwrap();
+        relay.broadcast_presence(&watched, false).await;
+        let reply = read_reply(&mut watch_rx);
+        assert_eq!(reply["type"].as_str(), Some("presence"));
+        assert_eq!(reply["online"].as_bool(), Some(false));
+        assert_eq!(reply["last_seen"].as_i64(), Some(1_700_000_000));
+    }
+
+    #[tokio::test]
+    async fn watch_presence_replaces_previous_channel_for_same_peer() {
+        let store = Store::open_in_memory().unwrap();
+        let relay = Relay::with_store(store);
+        let watched = "bob".to_string();
+        let (tx1, mut rx1) = mpsc::unbounded_channel::<WsMessage>();
+        let (tx2, mut rx2) = mpsc::unbounded_channel::<WsMessage>();
+
+        // Alice watches bob, then re-watches bob on a fresh socket: the old
+        // registration must be replaced, not appended.
+        relay
+            .watch_presence("alice", "127.0.0.1", &watched, tx1)
+            .await;
+        relay
+            .watch_presence("alice", "127.0.0.1", &watched, tx2)
+            .await;
+
+        relay.broadcast_presence(&watched, true).await;
+        let reply = read_reply(&mut rx2);
+        assert_eq!(reply["type"].as_str(), Some("presence"));
+        assert_eq!(reply["online"].as_bool(), Some(true));
+        assert!(
+            rx1.try_recv().is_err(),
+            "the replaced channel must not receive pushes"
+        );
+    }
+
+    #[tokio::test]
+    async fn get_presence_reports_online_status_and_last_seen() {
+        let store = Store::open_in_memory().unwrap();
+        let relay = Relay::with_store(store);
+        let (out_tx, mut out_rx) = mpsc::unbounded_channel::<WsMessage>();
+        relay
+            .inner
+            .online
+            .write()
+            .await
+            .insert("requester".into(), out_tx);
+
+        // Unknown peer: offline, no last_seen.
+        relay.get_presence("requester", "127.0.0.1", "ghost").await;
+        let reply = read_reply(&mut out_rx);
+        assert_eq!(reply["type"].as_str(), Some("presence"));
+        assert_eq!(reply["peer_id"].as_str(), Some("ghost"));
+        assert_eq!(reply["online"].as_bool(), Some(false));
+        assert!(reply["last_seen"].is_null());
+
+        // Offline peer with a stored last_seen.
+        relay
+            .inner
+            .store
+            .set_last_seen("bob", 1_700_000_000)
+            .unwrap();
+        relay.get_presence("requester", "127.0.0.1", "bob").await;
+        let reply = read_reply(&mut out_rx);
+        assert_eq!(reply["online"].as_bool(), Some(false));
+        assert_eq!(reply["last_seen"].as_i64(), Some(1_700_000_000));
+
+        // Online peer reports online:true regardless of the stored value.
+        let (bob_tx, _bob_rx) = mpsc::unbounded_channel::<WsMessage>();
+        relay
+            .inner
+            .online
+            .write()
+            .await
+            .insert("bob".into(), bob_tx);
+        relay.get_presence("requester", "127.0.0.1", "bob").await;
+        let reply = read_reply(&mut out_rx);
+        assert_eq!(reply["online"].as_bool(), Some(true));
+        assert!(reply["last_seen"].is_null());
+    }
+
+    #[tokio::test]
+    async fn presence_is_rate_limited_per_ip() {
+        let store = Store::open_in_memory().unwrap();
+        let relay = Relay::with_limiter(store, 1.0, 0.0);
+        let (out_tx, mut out_rx) = mpsc::unbounded_channel::<WsMessage>();
+        relay
+            .inner
+            .online
+            .write()
+            .await
+            .insert("requester".into(), out_tx);
+
+        relay.get_presence("requester", "10.0.0.1", "bob").await;
+        let first = read_reply(&mut out_rx);
+        assert_eq!(first["type"].as_str(), Some("presence"));
+
+        relay.get_presence("requester", "10.0.0.1", "bob").await;
+        let second = read_reply(&mut out_rx);
+        assert_eq!(second["type"].as_str(), Some("error"));
+        assert_eq!(second["code"].as_str(), Some("rate_limited"));
+
+        // A different IP has its own bucket and is not blocked.
+        relay.get_presence("requester", "10.0.0.2", "bob").await;
+        let third = read_reply(&mut out_rx);
+        assert_eq!(third["type"].as_str(), Some("presence"));
+    }
+
+    #[tokio::test]
+    async fn disconnect_records_last_seen_and_pushes_offline() {
+        let store = Store::open_in_memory().unwrap();
+        let relay = Relay::with_store(store);
+        let watched = "bob".to_string();
+        let (watch_tx, mut watch_rx) = mpsc::unbounded_channel::<WsMessage>();
+        relay
+            .watch_presence("alice", "127.0.0.1", &watched, watch_tx)
+            .await;
+
+        // Simulate bob's online -> disconnect sequence as handle_socket does:
+        // unregister, persist last_seen, broadcast offline.
+        let (bob_tx, _bob_rx) = mpsc::unbounded_channel::<WsMessage>();
+        relay
+            .inner
+            .online
+            .write()
+            .await
+            .insert(watched.clone(), bob_tx);
+        relay.inner.online.write().await.remove(&watched);
+        let _ = relay.inner.store.set_last_seen(&watched, unix_now());
+        relay.broadcast_presence(&watched, false).await;
+
+        let reply = read_reply(&mut watch_rx);
+        assert_eq!(reply["online"].as_bool(), Some(false));
+        let last_seen = reply["last_seen"].as_i64().expect("last_seen must be set");
+        assert!(
+            last_seen <= unix_now() && last_seen > unix_now() - 60,
+            "last_seen must be near now"
+        );
+    }
+
+    // -- Usernames & profiles ------------------------------------------------
+
+    /// Register an identity's keys in the store and wire an outbound channel
+    /// so the peer can receive relay replies.
+    async fn online_peer(relay: &Relay, identity: &Identity) -> mpsc::UnboundedReceiver<WsMessage> {
+        relay
+            .inner
+            .store
+            .register_user_with_keys(
+                &identity.peer_id(),
+                &identity.curve25519_key().to_base64(),
+                &identity.ed25519_key().to_base64(),
+                unix_now(),
+            )
+            .unwrap();
+        let (out_tx, out_rx) = mpsc::unbounded_channel::<WsMessage>();
+        relay
+            .inner
+            .online
+            .write()
+            .await
+            .insert(identity.peer_id(), out_tx);
+        out_rx
+    }
+
+    fn sign_username(identity: &Identity, username: &str) -> String {
+        e2ee_core::sign_username(identity, username).to_base64()
+    }
+
+    #[tokio::test]
+    async fn register_profile_then_get_profile_roundtrip() {
+        let store = Store::open_in_memory().unwrap();
+        let relay = Relay::with_limiter(store, 100.0, 0.0);
+        let alice = Identity::new();
+        let bob = Identity::new();
+        let mut alice_rx = online_peer(&relay, &alice).await;
+        let mut bob_rx = online_peer(&relay, &bob).await;
+
+        relay
+            .register_profile(
+                &alice.peer_id(),
+                "127.0.0.1",
+                "alice",
+                &sign_username(&alice, "alice"),
+                Some("Test Alice"),
+                None,
+            )
+            .await;
+        let reply = read_reply(&mut alice_rx);
+        assert_eq!(reply["type"].as_str(), Some("profile_registered"));
+        assert_eq!(reply["username"].as_str(), Some("alice"));
+
+        relay
+            .register_profile(
+                &bob.peer_id(),
+                "127.0.0.1",
+                "bob",
+                &sign_username(&bob, "bob"),
+                None,
+                None,
+            )
+            .await;
+        assert_eq!(
+            read_reply(&mut bob_rx)["type"].as_str(),
+            Some("profile_registered")
+        );
+
+        // Alice looks Bob up by peer ID and sees his full public profile.
+        relay
+            .get_profile(&alice.peer_id(), "127.0.0.1", &bob.peer_id())
+            .await;
+        let profile = read_reply(&mut alice_rx);
+        assert_eq!(profile["type"].as_str(), Some("profile"));
+        assert_eq!(profile["username"].as_str(), Some("bob"));
+        assert_eq!(profile["peer_id"].as_str(), Some(bob.peer_id().as_str()));
+        assert_eq!(
+            profile["curve25519_key"].as_str(),
+            Some(bob.curve25519_key().to_base64().as_str())
+        );
+        assert_eq!(profile["avatar_url"], serde_json::Value::Null);
+    }
+
+    #[tokio::test]
+    async fn register_profile_rejects_username_signed_for_another_name() {
+        let store = Store::open_in_memory().unwrap();
+        let relay = Relay::with_limiter(store, 100.0, 0.0);
+        let alice = Identity::new();
+        let mut rx = online_peer(&relay, &alice).await;
+
+        // The signature binds "bob", not the claimed "alice".
+        let wrong = sign_username(&alice, "bob");
+        relay
+            .register_profile(&alice.peer_id(), "127.0.0.1", "alice", &wrong, None, None)
+            .await;
+        let reply = read_reply(&mut rx);
+        assert_eq!(reply["type"].as_str(), Some("error"));
+        assert_eq!(reply["code"].as_str(), Some("bad_signature"));
+    }
+
+    #[tokio::test]
+    async fn register_profile_rejects_signature_from_another_key() {
+        let store = Store::open_in_memory().unwrap();
+        let relay = Relay::with_limiter(store, 100.0, 0.0);
+        let alice = Identity::new();
+        let mallory = Identity::new();
+        let mut rx = online_peer(&relay, &alice).await;
+
+        // Mallory signs for her own username; Alice claims it.
+        let forged = sign_username(&mallory, "alice");
+        relay
+            .register_profile(&alice.peer_id(), "127.0.0.1", "alice", &forged, None, None)
+            .await;
+        let reply = read_reply(&mut rx);
+        assert_eq!(reply["type"].as_str(), Some("error"));
+        assert_eq!(reply["code"].as_str(), Some("bad_signature"));
+        assert_eq!(
+            relay
+                .inner
+                .store
+                .get_profile(&alice.peer_id())
+                .unwrap()
+                .username,
+            None
+        );
+    }
+
+    #[tokio::test]
+    async fn register_profile_rejects_reserved_username() {
+        let store = Store::open_in_memory().unwrap();
+        let relay = Relay::with_limiter(store, 100.0, 0.0);
+        let alice = Identity::new();
+        let mut rx = online_peer(&relay, &alice).await;
+
+        relay
+            .register_profile(
+                &alice.peer_id(),
+                "127.0.0.1",
+                "admin",
+                &sign_username(&alice, "admin"),
+                None,
+                None,
+            )
+            .await;
+        let reply = read_reply(&mut rx);
+        assert_eq!(reply["type"].as_str(), Some("error"));
+        assert_eq!(reply["code"].as_str(), Some("invalid_username"));
+    }
+
+    #[tokio::test]
+    async fn register_profile_rejects_invalid_username() {
+        let store = Store::open_in_memory().unwrap();
+        let relay = Relay::with_limiter(store, 100.0, 0.0);
+        let alice = Identity::new();
+        let mut rx = online_peer(&relay, &alice).await;
+
+        // Uppercase is not part of the `[a-z0-9_]` charset.
+        relay
+            .register_profile(
+                &alice.peer_id(),
+                "127.0.0.1",
+                "Alice",
+                &sign_username(&alice, "Alice"),
+                None,
+                None,
+            )
+            .await;
+        let reply = read_reply(&mut rx);
+        assert_eq!(reply["type"].as_str(), Some("error"));
+        assert_eq!(reply["code"].as_str(), Some("invalid_username"));
+    }
+
+    #[tokio::test]
+    async fn register_profile_rejects_duplicate_username() {
+        let store = Store::open_in_memory().unwrap();
+        let relay = Relay::with_limiter(store, 100.0, 0.0);
+        let alice = Identity::new();
+        let bob = Identity::new();
+        let mut alice_rx = online_peer(&relay, &alice).await;
+        let mut bob_rx = online_peer(&relay, &bob).await;
+
+        relay
+            .register_profile(
+                &alice.peer_id(),
+                "127.0.0.1",
+                "alice",
+                &sign_username(&alice, "alice"),
+                None,
+                None,
+            )
+            .await;
+        assert_eq!(
+            read_reply(&mut alice_rx)["type"].as_str(),
+            Some("profile_registered")
+        );
+
+        // Bob's signature is valid — the uniqueness check is what rejects him.
+        relay
+            .register_profile(
+                &bob.peer_id(),
+                "127.0.0.1",
+                "alice",
+                &sign_username(&bob, "alice"),
+                None,
+                None,
+            )
+            .await;
+        let reply = read_reply(&mut bob_rx);
+        assert_eq!(reply["type"].as_str(), Some("error"));
+        assert_eq!(reply["code"].as_str(), Some("username_taken"));
+        assert_eq!(
+            relay
+                .inner
+                .store
+                .get_profile(&bob.peer_id())
+                .unwrap()
+                .username,
+            None,
+            "the rejected registration must not be persisted"
+        );
+    }
+
+    #[tokio::test]
+    async fn register_profile_is_rate_limited() {
+        let store = Store::open_in_memory().unwrap();
+        let relay = Relay::with_limiter(store, 1.0, 0.0);
+        let alice = Identity::new();
+        let mut rx = online_peer(&relay, &alice).await;
+
+        relay
+            .register_profile(
+                &alice.peer_id(),
+                "10.0.0.1",
+                "alice",
+                &sign_username(&alice, "alice"),
+                None,
+                None,
+            )
+            .await;
+        assert_eq!(
+            read_reply(&mut rx)["type"].as_str(),
+            Some("profile_registered")
+        );
+
+        relay
+            .register_profile(
+                &alice.peer_id(),
+                "10.0.0.1",
+                "bob",
+                &sign_username(&alice, "bob"),
+                None,
+                None,
+            )
+            .await;
+        let reply = read_reply(&mut rx);
+        assert_eq!(reply["type"].as_str(), Some("error"));
+        assert_eq!(reply["code"].as_str(), Some("rate_limited"));
+    }
+
+    #[tokio::test]
+    async fn register_profile_stores_avatar_blob() {
+        let store = Store::open_in_memory().unwrap();
+        let dir =
+            std::env::temp_dir().join(format!("whisper-relay-media-test-{}", uuid::Uuid::new_v4()));
+        let relay = Relay::with_parts(
+            store,
+            dir.clone(),
+            RateLimiter::new(100.0, 0.0),
+            RateLimiter::new(100.0, 0.0),
+        );
+        let alice = Identity::new();
+        let mut rx = online_peer(&relay, &alice).await;
+
+        let png: &[u8] = &[
+            0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d,
+        ];
+        let encoded = STANDARD.encode(png);
+
+        relay
+            .register_profile(
+                &alice.peer_id(),
+                "127.0.0.1",
+                "alice",
+                &sign_username(&alice, "alice"),
+                None,
+                Some(&encoded),
+            )
+            .await;
+        assert_eq!(
+            read_reply(&mut rx)["type"].as_str(),
+            Some("profile_registered")
+        );
+
+        let digest = Sha256::digest(png);
+        let hash = Relay::hex_encode(&digest);
+        assert!(
+            dir.join(format!("{hash}.bin")).exists(),
+            "the avatar blob must be written to the media directory"
+        );
+        let profile = relay.inner.store.get_profile(&alice.peer_id()).unwrap();
+        assert_eq!(profile.avatar_hash.as_deref(), Some(hash.as_str()));
+        assert_eq!(
+            relay
+                .inner
+                .store
+                .get_avatar_hash(&alice.peer_id())
+                .as_deref(),
+            Some(hash.as_str())
+        );
+
+        // A re-upload of identical content is idempotent (same hash, one file).
+        relay
+            .register_profile(
+                &alice.peer_id(),
+                "127.0.0.1",
+                "alice",
+                &sign_username(&alice, "alice"),
+                None,
+                Some(&encoded),
+            )
+            .await;
+        assert_eq!(
+            read_reply(&mut rx)["type"].as_str(),
+            Some("profile_registered")
+        );
+        assert_eq!(
+            relay
+                .inner
+                .store
+                .get_avatar_hash(&alice.peer_id())
+                .as_deref(),
+            Some(hash.as_str())
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn register_profile_rejects_oversized_avatar() {
+        let store = Store::open_in_memory().unwrap();
+        let relay = Relay::with_limiter(store, 100.0, 0.0);
+        let alice = Identity::new();
+        let mut rx = online_peer(&relay, &alice).await;
+
+        let big = vec![0x00u8; MAX_AVATAR_BYTES + 1];
+        let encoded = STANDARD.encode(&big);
+        relay
+            .register_profile(
+                &alice.peer_id(),
+                "127.0.0.1",
+                "alice",
+                &sign_username(&alice, "alice"),
+                None,
+                Some(&encoded),
+            )
+            .await;
+        let reply = read_reply(&mut rx);
+        assert_eq!(reply["type"].as_str(), Some("error"));
+        assert_eq!(reply["code"].as_str(), Some("invalid_avatar"));
+        assert_eq!(
+            relay
+                .inner
+                .store
+                .get_profile(&alice.peer_id())
+                .unwrap()
+                .username,
+            None,
+            "an oversized avatar must abort the whole registration"
+        );
+    }
+
+    #[tokio::test]
+    async fn search_users_returns_matching_profiles() {
+        let store = Store::open_in_memory().unwrap();
+        let relay = Relay::with_limiter(store, 100.0, 0.0);
+        let alice = Identity::new();
+        let bob = Identity::new();
+        let mut alice_rx = online_peer(&relay, &alice).await;
+        let mut bob_rx = online_peer(&relay, &bob).await;
+
+        relay
+            .register_profile(
+                &alice.peer_id(),
+                "127.0.0.1",
+                "alice",
+                &sign_username(&alice, "alice"),
+                None,
+                None,
+            )
+            .await;
+        relay
+            .register_profile(
+                &bob.peer_id(),
+                "127.0.0.1",
+                "bob",
+                &sign_username(&bob, "bob"),
+                None,
+                None,
+            )
+            .await;
+        read_reply(&mut alice_rx);
+        read_reply(&mut bob_rx);
+
+        // Bob searches by username prefix.
+        relay
+            .search_users(&bob.peer_id(), "127.0.0.1", "ali", Some(10))
+            .await;
+        let reply = read_reply(&mut bob_rx);
+        assert_eq!(reply["type"].as_str(), Some("users_search"));
+        let results = reply["results"]
+            .as_array()
+            .expect("results must be an array");
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0]["username"].as_str(), Some("alice"));
+        assert_eq!(
+            results[0]["peer_id"].as_str(),
+            Some(alice.peer_id().as_str())
+        );
+
+        // Alice searches by peer-ID prefix and finds Bob.
+        let prefix = &bob.peer_id()[..8];
+        relay
+            .search_users(&alice.peer_id(), "127.0.0.1", prefix, None)
+            .await;
+        let reply = read_reply(&mut alice_rx);
+        let results = reply["results"]
+            .as_array()
+            .expect("results must be an array");
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0]["username"].as_str(), Some("bob"));
+    }
+
+    #[tokio::test]
+    async fn get_profile_returns_no_profile_for_unknown_peer() {
+        let store = Store::open_in_memory().unwrap();
+        let relay = Relay::with_limiter(store, 100.0, 0.0);
+        let alice = Identity::new();
+        let mut rx = online_peer(&relay, &alice).await;
+
+        let ghost = "000000000000000000000000";
+        relay
+            .get_profile(&alice.peer_id(), "127.0.0.1", ghost)
+            .await;
+        let reply = read_reply(&mut rx);
+        assert_eq!(reply["type"].as_str(), Some("error"));
+        assert_eq!(reply["code"].as_str(), Some("no_profile"));
     }
 
     /// Read the single text reply queued for a peer and parse it as JSON.

@@ -6,6 +6,8 @@ import type {
   ChatState,
   ContactUpdatedEvent,
   MessageStatusEvent,
+  PresenceEvent,
+  PresenceInfo,
   RelayStatusEvent,
   TypingEvent,
 } from "../types";
@@ -65,6 +67,23 @@ export function setDisplayName(name: string): Promise<void> {
 /** Send an end-to-end typing indicator to a peer (encrypted in-session). */
 export function sendTyping(peerId: string, isTyping: boolean): Promise<void> {
   return invoke("send_typing", { peerId, isTyping });
+}
+
+/** Fetch a peer's current presence (online status + last-seen timestamp). */
+export function getPresence(peerId: string): Promise<PresenceInfo> {
+  return invoke("get_presence", { peerId });
+}
+
+/** Subscribe to presence pushes for a peer. Call again after reconnecting. */
+export function watchPresence(peerId: string): Promise<void> {
+  return invoke("watch_presence", { peerId });
+}
+
+/** Subscribe to presence updates (pushes and get_presence replies). */
+export function onPresence(
+  handler: (event: PresenceEvent) => void
+): Promise<UnlistenFn> {
+  return listen<PresenceEvent>("presence", (event) => handler(event.payload));
 }
 
 /** Close the relay connection (used when resetting the identity). */

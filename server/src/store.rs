@@ -18,6 +18,7 @@
 //! WAL-free by default; this is deliberately simple for a single-process
 //! relay. The bounds (500 blobs/peer, 7-day TTL) keep the DB tiny.
 
+use std::fmt;
 use std::path::Path;
 use std::sync::Mutex;
 
@@ -32,6 +33,48 @@ pub const MAX_OFFLINE_BLOBS: usize = 500;
 
 /// Envelopes older than this are purged from the queue.
 pub const ENVELOPE_TTL_SECS: i64 = 7 * 24 * 60 * 60; // 7 days
+
+/// Errors that can occur while mutating a peer's public profile.
+#[derive(Debug)]
+pub enum StoreError {
+    /// The requested username is already bound to another peer.
+    UsernameTaken,
+    /// A low-level SQLite error occurred.
+    Sql(rusqlite::Error),
+}
+
+impl fmt::Display for StoreError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::UsernameTaken => write!(f, "username is already taken"),
+            Self::Sql(e) => write!(f, "store error: {e}"),
+        }
+    }
+}
+
+impl std::error::Error for StoreError {}
+
+impl From<rusqlite::Error> for StoreError {
+    fn from(e: rusqlite::Error) -> Self {
+        Self::Sql(e)
+    }
+}
+
+/// A peer's public profile: the signed username binding, display name, avatar
+/// and the public X25519 identity key used to derive the peer ID.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Profile {
+    /// The peer's fingerprint (24 hex chars).
+    pub peer_id: String,
+    /// The registered username, if any.
+    pub username: Option<String>,
+    /// The public display name, if set.
+    pub display_name: Option<String>,
+    /// SHA-256 of the uploaded avatar blob, if any.
+    pub avatar_hash: Option<String>,
+    /// The public X25519 identity key, base64-encoded.
+    pub curve25519_key: Option<String>,
+}
 
 /// Create a stable unix-seconds timestamp for a store operation.
 pub fn unix_now() -> i64 {
@@ -113,10 +156,34 @@ impl Store {
             .prepare("PRAGMA table_info(users)")?
             .query_map([], |row| row.get::<_, String>(1))?
             .collect::<rusqlite::Result<_>>()?;
-        for name in ["curve25519_key", "ed25519_key", "display_name"] {
+        for (name, ty) in [
+            ("curve25519_key", "TEXT"),
+            ("ed25519_key", "TEXT"),
+            ("display_name", "TEXT"),
+            ("username", "TEXT"),
+            ("username_signature", "TEXT"),
+            ("avatar_hash", "TEXT"),
+            ("registered_at", "INTEGER"),
+        ] {
             if !columns.iter().any(|c| c.as_str() == name) {
-                conn.execute(&format!("ALTER TABLE users ADD COLUMN {name} TEXT"), [])?;
+                conn.execute(&format!("ALTER TABLE users ADD COLUMN {name} {ty}"), [])?;
             }
+        }
+
+        // Username uniqueness is enforced by a partial index (SQLite cannot
+        // `ADD COLUMN ... UNIQUE`, and only rows that actually carry a username
+        // participate in the constraint).
+        conn.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_users_username
+                ON users(username) WHERE username IS NOT NULL",
+            [],
+        )?;
+
+        // Migration: databases created before the presence feature lack the
+        // `last_seen` column. Unlike the key/name columns above it is an
+        // INTEGER (a unix-seconds timestamp), so it needs its own ALTER.
+        if !columns.iter().any(|c| c.as_str() == "last_seen") {
+            conn.execute("ALTER TABLE users ADD COLUMN last_seen INTEGER", [])?;
         }
         Ok(())
     }
@@ -193,6 +260,160 @@ impl Store {
             "SELECT display_name FROM users WHERE peer_id = ?1",
             params![peer_id],
             |r| r.get::<_, Option<String>>(0),
+        )
+        .optional()
+        .unwrap_or(None)
+        .flatten()
+    }
+
+    /// Bind `username` to `peer_id` together with the Ed25519 signature
+    /// (base64) that proves the peer controls the username binding.
+    ///
+    /// Availability is checked first: a username already bound to a different
+    /// peer yields [`StoreError::UsernameTaken`]. Re-registering the same
+    /// username for the same peer is idempotent and refreshes the signature
+    /// and `registered_at` timestamp, so renames and avatar refreshes reuse
+    /// this path.
+    pub fn register_username(
+        &self,
+        peer_id: &str,
+        username: &str,
+        signature: &str,
+        now: i64,
+    ) -> Result<(), StoreError> {
+        let conn = self.conn.lock().unwrap();
+        let owner: Option<String> = conn
+            .query_row(
+                "SELECT peer_id FROM users WHERE username = ?1",
+                params![username],
+                |r| r.get(0),
+            )
+            .optional()?;
+        if let Some(existing) = owner {
+            if existing != peer_id {
+                return Err(StoreError::UsernameTaken);
+            }
+        }
+        let changed = conn.execute(
+            "UPDATE users SET username = ?1, username_signature = ?2, registered_at = ?3
+             WHERE peer_id = ?4",
+            params![username, signature, now, peer_id],
+        )?;
+        if changed == 0 {
+            conn.execute(
+                "INSERT INTO users (peer_id, username, username_signature, registered_at, first_seen)
+                 VALUES (?1, ?2, ?3, ?4, ?5)",
+                params![peer_id, username, signature, now, now],
+            )?;
+        }
+        Ok(())
+    }
+
+    /// The peer's full public profile, if the peer is registered.
+    pub fn get_profile(&self, peer_id: &str) -> Option<Profile> {
+        let conn = self.conn.lock().unwrap();
+        conn.query_row(
+            "SELECT peer_id, username, display_name, avatar_hash, curve25519_key
+             FROM users WHERE peer_id = ?1",
+            params![peer_id],
+            |r| {
+                Ok(Profile {
+                    peer_id: r.get(0)?,
+                    username: r.get(1)?,
+                    display_name: r.get(2)?,
+                    avatar_hash: r.get(3)?,
+                    curve25519_key: r.get(4)?,
+                })
+            },
+        )
+        .optional()
+        .unwrap_or(None)
+    }
+
+    /// Prefix-search the public directory: usernames (case-insensitive) and
+    /// peer IDs starting with `query`, restricted to peers that registered a
+    /// username and ordered alphabetically by username. At most `limit` rows
+    /// are returned.
+    pub fn search_users(&self, query: &str, limit: usize) -> Vec<Profile> {
+        let conn = self.conn.lock().unwrap();
+        let needle = format!("{}%", query.to_lowercase());
+        let mut stmt = conn
+            .prepare(
+                "SELECT peer_id, username, display_name, avatar_hash, curve25519_key
+                 FROM users
+                 WHERE username IS NOT NULL
+                   AND (lower(username) LIKE ?1 OR peer_id LIKE ?1)
+                 ORDER BY username
+                 LIMIT ?2",
+            )
+            .expect("valid statement");
+        stmt.query_map(params![needle, limit as i64], |r| {
+            Ok(Profile {
+                peer_id: r.get(0)?,
+                username: r.get(1)?,
+                display_name: r.get(2)?,
+                avatar_hash: r.get(3)?,
+                curve25519_key: r.get(4)?,
+            })
+        })
+        .expect("query ok")
+        .filter_map(|r| r.ok())
+        .collect()
+    }
+
+    /// Store the SHA-256 of a peer's avatar blob. The blob itself lives in the
+    /// media directory under `data/media/<hash>.bin`; the hash is the only
+    /// piece persisted in the database.
+    pub fn set_avatar_hash(&self, peer_id: &str, avatar_hash: &str) -> SqlResult<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "UPDATE users SET avatar_hash = ?1 WHERE peer_id = ?2",
+            params![avatar_hash, peer_id],
+        )?;
+        Ok(())
+    }
+
+    /// The stored SHA-256 of a peer's avatar blob, if one was uploaded.
+    ///
+    /// Currently exercised by tests; the relay reads the hash as part of
+    /// [`Store::get_profile`], so no production caller needs it yet.
+    #[cfg(test)]
+    pub fn get_avatar_hash(&self, peer_id: &str) -> Option<String> {
+        let conn = self.conn.lock().unwrap();
+        conn.query_row(
+            "SELECT avatar_hash FROM users WHERE peer_id = ?1",
+            params![peer_id],
+            |r| r.get::<_, Option<String>>(0),
+        )
+        .optional()
+        .unwrap_or(None)
+        .flatten()
+    }
+
+    /// Record the moment a peer went offline (a unix-seconds timestamp). The
+    /// relay calls this when a socket disconnects so contacts can render a
+    /// "last seen" time. Works for both an existing user and a brand-new peer
+    /// that never completed a full hello; the original `first_seen` is
+    /// preserved on update.
+    pub fn set_last_seen(&self, peer_id: &str, ts: i64) -> SqlResult<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "INSERT INTO users (peer_id, last_seen, first_seen) VALUES (?1, ?2, ?3)
+             ON CONFLICT(peer_id) DO UPDATE SET last_seen = excluded.last_seen",
+            params![peer_id, ts, unix_now()],
+        )?;
+        Ok(())
+    }
+
+    /// The peer's last disconnect timestamp, if it ever went offline. A peer
+    /// that has never connected (or whose row has never had `last_seen` set)
+    /// yields None.
+    pub fn get_last_seen(&self, peer_id: &str) -> Option<i64> {
+        let conn = self.conn.lock().unwrap();
+        conn.query_row(
+            "SELECT last_seen FROM users WHERE peer_id = ?1",
+            params![peer_id],
+            |r| r.get::<_, Option<i64>>(0),
         )
         .optional()
         .unwrap_or(None)
@@ -536,6 +757,272 @@ mod tests {
             None,
             "a user registered without a name must yield None"
         );
+    }
+
+    // -- Usernames & profiles ------------------------------------------------
+
+    #[test]
+    fn register_username_roundtrip() {
+        let store = Store::open_in_memory().unwrap();
+        let now = unix_now();
+        store
+            .register_user_with_keys("peer-x", "curve-a", "ed-a", now)
+            .unwrap();
+        store
+            .register_username("peer-x", "alice", "sig-1", now)
+            .unwrap();
+        let profile = store.get_profile("peer-x").expect("profile must exist");
+        assert_eq!(profile.username.as_deref(), Some("alice"));
+        assert_eq!(profile.peer_id, "peer-x");
+        assert_eq!(profile.curve25519_key.as_deref(), Some("curve-a"));
+    }
+
+    #[test]
+    fn register_username_rejects_taken_username() {
+        let store = Store::open_in_memory().unwrap();
+        let now = unix_now();
+        store
+            .register_user_with_keys("peer-a", "curve-a", "ed-a", now)
+            .unwrap();
+        store
+            .register_user_with_keys("peer-b", "curve-b", "ed-b", now)
+            .unwrap();
+        store
+            .register_username("peer-a", "alice", "sig-a", now)
+            .unwrap();
+        let err = store
+            .register_username("peer-b", "alice", "sig-b", now)
+            .unwrap_err();
+        assert!(matches!(err, StoreError::UsernameTaken));
+    }
+
+    #[test]
+    fn register_username_is_idempotent_for_the_same_peer() {
+        let store = Store::open_in_memory().unwrap();
+        let now = unix_now();
+        store
+            .register_user_with_keys("peer-x", "curve-a", "ed-a", now)
+            .unwrap();
+        store
+            .register_username("peer-x", "alice", "sig-1", now)
+            .unwrap();
+        store
+            .register_username("peer-x", "alice", "sig-2", now + 10)
+            .unwrap();
+        let profile = store.get_profile("peer-x").unwrap();
+        assert_eq!(profile.username.as_deref(), Some("alice"));
+        assert_eq!(
+            store
+                .get_user_keys("peer-x")
+                .expect("keys must be preserved"),
+            ("curve-a".to_string(), "ed-a".to_string())
+        );
+    }
+
+    #[test]
+    fn register_username_allows_renames() {
+        let store = Store::open_in_memory().unwrap();
+        let now = unix_now();
+        store
+            .register_user_with_keys("peer-x", "curve-a", "ed-a", now)
+            .unwrap();
+        store
+            .register_username("peer-x", "old_name", "sig-1", now)
+            .unwrap();
+        store
+            .register_username("peer-x", "new_name", "sig-2", now)
+            .unwrap();
+        let profile = store.get_profile("peer-x").unwrap();
+        assert_eq!(profile.username.as_deref(), Some("new_name"));
+    }
+
+    #[test]
+    fn get_profile_returns_none_for_unknown_peer() {
+        let store = Store::open_in_memory().unwrap();
+        assert_eq!(store.get_profile("peer-ghost"), None);
+    }
+
+    #[test]
+    fn search_users_matches_username_prefix_case_insensitively() {
+        let store = Store::open_in_memory().unwrap();
+        let now = unix_now();
+        store
+            .register_username("peer-a", "alice", "s", now)
+            .unwrap();
+        store.register_username("peer-b", "bob", "s", now).unwrap();
+        store.register_username("peer-c", "ally", "s", now).unwrap();
+
+        let hits = store.search_users("AL", 10);
+        let names: Vec<&str> = hits.iter().filter_map(|p| p.username.as_deref()).collect();
+        assert_eq!(names, vec!["alice", "ally"]);
+    }
+
+    #[test]
+    fn search_users_matches_peer_id_prefix() {
+        let store = Store::open_in_memory().unwrap();
+        let now = unix_now();
+        store
+            .register_username("abcdef1234", "alice", "s", now)
+            .unwrap();
+        store
+            .register_username("deadbeef00", "bob", "s", now)
+            .unwrap();
+
+        let hits = store.search_users("dead", 10);
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].peer_id, "deadbeef00");
+        assert_eq!(hits[0].username.as_deref(), Some("bob"));
+    }
+
+    #[test]
+    fn search_users_honours_limit_and_skips_unregistered_peers() {
+        let store = Store::open_in_memory().unwrap();
+        let now = unix_now();
+        store
+            .register_username("peer-a", "alice", "s", now)
+            .unwrap();
+        store.register_username("peer-b", "amy", "s", now).unwrap();
+        store.register_username("peer-c", "ann", "s", now).unwrap();
+        store
+            .register_user_with_keys("peer-d", "curve-d", "ed-d", now)
+            .unwrap();
+
+        let hits = store.search_users("a", 2);
+        assert_eq!(hits.len(), 2);
+        assert!(
+            hits.iter().all(|p| p.username.is_some()),
+            "peers without a username must never be searchable"
+        );
+    }
+
+    #[test]
+    fn set_avatar_hash_roundtrip() {
+        let store = Store::open_in_memory().unwrap();
+        let now = unix_now();
+        store
+            .register_username("peer-x", "alice", "s", now)
+            .unwrap();
+        assert_eq!(store.get_avatar_hash("peer-x"), None);
+        store
+            .set_avatar_hash("peer-x", "aa".repeat(32).as_str())
+            .unwrap();
+        assert_eq!(store.get_avatar_hash("peer-x"), Some("aa".repeat(32)));
+    }
+
+    #[test]
+    fn get_avatar_hash_returns_none_for_unknown_peer() {
+        let store = Store::open_in_memory().unwrap();
+        assert_eq!(store.get_avatar_hash("peer-ghost"), None);
+    }
+
+    #[test]
+    fn migration_adds_profile_columns_to_legacy_users_table() {
+        let path = std::env::temp_dir().join(format!(
+            "whisper-relay-profile-migration-{}.db",
+            uuid::Uuid::new_v4()
+        ));
+        // Simulate a database created before the username/profile feature.
+        {
+            let conn = Connection::open(&path).expect("open legacy db");
+            conn.execute_batch(
+                "CREATE TABLE users (
+                     peer_id    TEXT PRIMARY KEY,
+                     first_seen INTEGER NOT NULL
+                 );
+                 INSERT INTO users (peer_id, first_seen) VALUES ('peer-old', 1);",
+            )
+            .expect("create legacy schema");
+        }
+        let store = Store::open(&path).expect("migrated db must open");
+        // The username machinery must work on the migrated schema.
+        store
+            .register_username("peer-old", "legacy_user", "sig", 999)
+            .unwrap();
+        let profile = store.get_profile("peer-old").expect("profile must exist");
+        assert_eq!(profile.username.as_deref(), Some("legacy_user"));
+        assert_eq!(store.first_seen_for("peer-old"), Some(1));
+        store
+            .set_avatar_hash("peer-old", "aa".repeat(32).as_str())
+            .unwrap();
+        assert_eq!(store.get_avatar_hash("peer-old"), Some("aa".repeat(32)));
+        // The unique index must reject a second peer squatting the username.
+        store
+            .register_username("peer-new", "unique_name", "sig", 1)
+            .unwrap();
+        assert!(matches!(
+            store.register_username("peer-old", "unique_name", "sig", 1),
+            Err(StoreError::UsernameTaken)
+        ));
+        std::fs::remove_file(&path).ok();
+    }
+
+    // -- Last seen (presence) -----------------------------------------------
+
+    #[test]
+    fn set_last_seen_roundtrips() {
+        let store = Store::open_in_memory().unwrap();
+        store.set_last_seen("peer-x", 1_700_000_000).unwrap();
+        assert_eq!(store.get_last_seen("peer-x"), Some(1_700_000_000));
+    }
+
+    #[test]
+    fn set_last_seen_updates_previous_value() {
+        let store = Store::open_in_memory().unwrap();
+        store.set_last_seen("peer-x", 1_700_000_000).unwrap();
+        store.set_last_seen("peer-x", 1_700_000_120).unwrap();
+        assert_eq!(store.get_last_seen("peer-x"), Some(1_700_000_120));
+    }
+
+    #[test]
+    fn get_last_seen_returns_none_for_unknown_peer() {
+        let store = Store::open_in_memory().unwrap();
+        assert_eq!(store.get_last_seen("peer-ghost"), None);
+    }
+
+    #[test]
+    fn set_last_seen_creates_a_row_without_disturbing_first_seen() {
+        let store = Store::open_in_memory().unwrap();
+        let now = unix_now();
+        store
+            .register_user_with_keys("peer-x", "curve-a", "ed-a", now)
+            .unwrap();
+        store.set_last_seen("peer-x", now + 60).unwrap();
+        assert_eq!(store.get_last_seen("peer-x"), Some(now + 60));
+        // The update path must never rewrite first_seen.
+        assert_eq!(store.first_seen_for("peer-x"), Some(now));
+        // A peer that never registered gets a row with the current first_seen.
+        store.set_last_seen("peer-new", 123).unwrap();
+        assert_eq!(store.get_last_seen("peer-new"), Some(123));
+        assert!(store.first_seen_for("peer-new").is_some());
+    }
+
+    #[test]
+    fn migration_adds_last_seen_column_to_legacy_users_table() {
+        let path = std::env::temp_dir().join(format!(
+            "whisper-relay-last-seen-migration-{}.db",
+            uuid::Uuid::new_v4()
+        ));
+        // Simulate a database created before the presence feature.
+        {
+            let conn = Connection::open(&path).expect("open legacy db");
+            conn.execute_batch(
+                "CREATE TABLE users (
+                     peer_id    TEXT PRIMARY KEY,
+                     first_seen INTEGER NOT NULL
+                 );
+                 INSERT INTO users (peer_id, first_seen) VALUES ('peer-old', 1);",
+            )
+            .expect("create legacy schema");
+        }
+        let store = Store::open(&path).expect("migrated db must open");
+        // The new column must be usable and the legacy row must survive.
+        store.set_last_seen("peer-old", 999).unwrap();
+        assert_eq!(store.get_last_seen("peer-old"), Some(999));
+        assert_eq!(store.first_seen_for("peer-old"), Some(1));
+        // A brand-new peer also works on the migrated schema.
+        store.set_last_seen("peer-new", 2).unwrap();
+        assert_eq!(store.get_last_seen("peer-new"), Some(2));
+        std::fs::remove_file(&path).ok();
     }
 
     #[test]

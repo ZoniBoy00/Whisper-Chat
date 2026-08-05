@@ -1,12 +1,20 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import type { ContactInfo, Conversation, Message, MessageStatus } from "../types";
+import type {
+  ContactInfo,
+  Conversation,
+  Message,
+  MessageStatus,
+  PresenceInfo,
+} from "../types";
 import {
   connectRelay,
   getChatState,
+  getPresence,
   getSettings,
   onChatMessage,
   onContactUpdated,
   onMessageStatus,
+  onPresence,
   onRelayStatus,
   onTyping,
   publishPrekeys,
@@ -17,6 +25,7 @@ import {
   setRelayUrl as persistRelayUrl,
   setTheme as persistTheme,
   startChat,
+  watchPresence,
 } from "../lib/relay";
 import { shortPeerId } from "../lib/format";
 import type { UnlistenFn } from "@tauri-apps/api/event";
@@ -26,6 +35,10 @@ import { AddContactDialog } from "./AddContactDialog";
 import { SettingsDialog } from "./SettingsDialog";
 
 type Theme = "dark" | "light";
+
+/** How often to re-fetch the active peer's presence (pushes are real-time;
+ *  the poll only guarantees freshness across reconnects). */
+const PRESENCE_POLL_MS = 30_000;
 
 interface MainViewProps {
   peerId: string;
@@ -47,6 +60,8 @@ export function MainView({ peerId, onReset }: MainViewProps) {
   // Per-peer typing state fed by the `typing` event (with a 5s auto-timeout
   // on the backend, so it can never get stuck on "on").
   const [typing, setTyping] = useState<Record<string, boolean>>({});
+  // Per-peer presence (online status + last-seen), fed by pushes and the poll.
+  const [presence, setPresence] = useState<Record<string, PresenceInfo>>({});
 
   const connect = useCallback(async () => {
     setConnecting(true);
@@ -68,6 +83,7 @@ export function MainView({ peerId, onReset }: MainViewProps) {
       setMessages(state.messages);
       setConnected(state.connected);
       setMyDisplayName(state.my_display_name);
+      setPresence(state.presence);
     } catch {
       // Transient failure; event listeners resync the next state change.
     }
@@ -192,13 +208,25 @@ export function MainView({ peerId, onReset }: MainViewProps) {
           );
         })
       );
+      const presenceUnlisten = await register(() =>
+        onPresence(({ peer_id, online, last_seen }) => {
+          if (disposed) return;
+          setPresence((prev) =>
+            prev[peer_id]?.online === online &&
+            prev[peer_id]?.last_seen === last_seen
+              ? prev
+              : { ...prev, [peer_id]: { online, last_seen } }
+          );
+        })
+      );
       if (
         disposed ||
         !chatUnlisten ||
         !statusUnlisten ||
         !messageStatusUnlisten ||
         !typingUnlisten ||
-        !contactUpdatedUnlisten
+        !contactUpdatedUnlisten ||
+        !presenceUnlisten
       ) {
         return;
       }
@@ -218,6 +246,35 @@ export function MainView({ peerId, onReset }: MainViewProps) {
       for (const unlisten of unlisteners) unlisten();
     };
   }, [connect, refresh]);
+
+  // Keep the active peer's presence current: a `watch_presence` subscription
+  // delivers real-time online/offline pushes, while a 30-second `get_presence`
+  // poll seeds the initial state and covers events missed across reconnects.
+  // Re-running on `connected` re-subscribes after every reconnect.
+  useEffect(() => {
+    if (!activePeerId) return;
+    let cancelled = false;
+    const poll = async () => {
+      try {
+        const info = await getPresence(activePeerId);
+        if (!cancelled) {
+          setPresence((prev) => ({ ...prev, [activePeerId]: info }));
+        }
+      } catch {
+        // Best-effort: a transient failure (e.g. while disconnected) is
+        // recovered by the next poll or by a presence push.
+      }
+    };
+    if (connected) {
+      void watchPresence(activePeerId).catch(() => {});
+      void poll();
+    }
+    const timer = setInterval(poll, PRESENCE_POLL_MS);
+    return () => {
+      cancelled = true;
+      clearInterval(timer);
+    };
+  }, [activePeerId, connected]);
 
   const handleThemeChange = useCallback((next: Theme) => {
     setTheme(next);
@@ -341,6 +398,7 @@ export function MainView({ peerId, onReset }: MainViewProps) {
         peerId={peerId}
         myDisplayName={myDisplayName}
         conversations={conversations}
+        presence={presence}
         activeId={activePeerId}
         connected={connected}
         connecting={connecting}
@@ -354,6 +412,7 @@ export function MainView({ peerId, onReset }: MainViewProps) {
       <ChatView
         conversation={active}
         isTyping={active ? typing[active.peerId] ?? false : false}
+        presence={active ? presence[active.peerId] ?? null : null}
         onSend={(t) => void handleSend(t)}
         onTypingChange={handleTypingChange}
       />

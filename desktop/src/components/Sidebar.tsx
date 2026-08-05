@@ -10,7 +10,7 @@ import {
   Trash2,
   UserPlus,
 } from "lucide-react";
-import type { Conversation } from "../types";
+import type { Conversation, PresenceInfo } from "../types";
 import { cx, formatTime, shortPeerId } from "../lib/format";
 import { Avatar } from "./Avatar";
 import { CopyButton } from "./CopyButton";
@@ -20,6 +20,8 @@ interface SidebarProps {
   /** Our own public display name; null when unset. */
   myDisplayName: string | null;
   conversations: Conversation[];
+  /** Latest known presence per peer, fed by pushes and the 30s poll. */
+  presence: Record<string, PresenceInfo>;
   activeId: string | null;
   connected: boolean;
   connecting: boolean;
@@ -35,6 +37,7 @@ export function Sidebar({
   peerId,
   myDisplayName,
   conversations,
+  presence,
   activeId,
   connected,
   connecting,
@@ -208,6 +211,7 @@ export function Sidebar({
             const active = conversation.id === activeId;
             const displayName =
               conversation.displayName ?? shortPeerId(conversation.peerId, 16);
+            const online = presence[conversation.peerId]?.online === true;
             return (
               <button
                 key={conversation.id}
@@ -219,7 +223,15 @@ export function Sidebar({
                   active ? "bg-wp-panel-3" : "hover:bg-wp-panel-2"
                 )}
               >
-                <Avatar name={displayName} size={42} />
+                <div className="relative shrink-0">
+                  <Avatar name={displayName} size={42} />
+                  {online ? (
+                    <span
+                      aria-hidden="true"
+                      className="absolute bottom-0 right-0 h-3 w-3 rounded-full border-2 border-wp-panel bg-wp-online"
+                    />
+                  ) : null}
+                </div>
                 <div className="min-w-0 flex-1">
                   <div className="flex items-baseline justify-between gap-2">
                     <p className="truncate text-sm font-medium text-wp-text">

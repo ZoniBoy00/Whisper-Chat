@@ -33,6 +33,9 @@ const DEFAULT_RELAY_URL: &str = "ws://127.0.0.1:8080/ws";
 /// How long to wait for a pre-key bundle after requesting one.
 const PREKEY_FETCH_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 
+/// How long to wait for a presence report after requesting one.
+const PRESENCE_FETCH_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
 /// Number of fresh one-time pre-keys generated per publish batch.
 const PREKEY_BATCH_SIZE: usize = 5;
 
@@ -98,6 +101,12 @@ pub enum RelayError {
     /// The pre-key request was answered with an error or dropped.
     #[error("pre-key request failed")]
     PrekeyFetchFailed,
+    /// The relay did not answer a presence query in time.
+    #[error("timed out waiting for presence")]
+    PresenceTimeout,
+    /// The presence request was answered with an error or dropped.
+    #[error("presence request failed")]
+    PresenceFetchFailed,
     /// The relay replied with an error code.
     #[error("relay error: {0}")]
     Relay(String),
@@ -155,6 +164,14 @@ enum ClientMessage {
     /// Set the caller's public display name (Signal-style profile name).
     #[serde(rename = "update_profile")]
     UpdateProfile { display_name: String },
+    /// Subscribe to presence pushes for `peer_id`: the relay sends a
+    /// `presence` message whenever that peer connects or disconnects.
+    #[serde(rename = "watch_presence")]
+    WatchPresence { peer_id: String },
+    /// Request the current presence of `peer_id`; the relay replies with a
+    /// single `presence` message.
+    #[serde(rename = "get_presence")]
+    GetPresence { peer_id: String },
 }
 
 /// Messages the SERVER sends to the client (matches `server/src/relay.rs`).
@@ -182,6 +199,16 @@ enum ServerMessage {
     /// The caller's display name was updated.
     #[serde(rename = "profile_updated")]
     ProfileUpdated,
+    /// Presence report for `peer_id` (a `watch_presence` push or the reply to
+    /// a `get_presence` request): whether the peer is online right now plus its
+    /// last-seen unix-seconds timestamp when offline (`None` while online or
+    /// when the peer has never been seen).
+    #[serde(rename = "presence")]
+    Presence {
+        peer_id: String,
+        online: bool,
+        last_seen: Option<i64>,
+    },
     /// A protocol error code.
     Error { code: String },
 }
@@ -254,6 +281,24 @@ pub struct ContactUpdatedEvent {
     pub display_name: Option<String>,
 }
 
+/// A peer's presence snapshot: whether they are online right now, plus their
+/// last-seen unix-seconds timestamp when offline (`None` while online or when
+/// they have never been seen).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PresenceInfo {
+    pub online: bool,
+    pub last_seen: Option<i64>,
+}
+
+/// Payload of the `presence` event emitted whenever a peer's presence changes
+/// or a `get_presence` reply arrives.
+#[derive(Debug, Clone, Serialize)]
+pub struct PresenceEvent {
+    pub peer_id: String,
+    pub online: bool,
+    pub last_seen: Option<i64>,
+}
+
 /// Persisted profile data stored in `profiles.json` (next to `identity.json`):
 /// our own public display name plus the display names we have learned for our
 /// contacts. Keeping it in a separate file means a corrupt file can never
@@ -287,6 +332,8 @@ pub struct ChatState {
     pub contacts: Vec<ContactInfo>,
     /// Per-peer message history, oldest first.
     pub messages: HashMap<String, Vec<UIMessage>>,
+    /// Latest known presence per peer (online status + last-seen timestamp).
+    pub presence: HashMap<String, PresenceInfo>,
 }
 
 /// Persisted user preferences stored in `settings.json`.
@@ -349,6 +396,13 @@ struct RelayInner {
     /// id so a delivery confirmation can flip the matching message to
     /// "delivered".
     pending_acks: Mutex<HashMap<u64, String>>,
+    /// In-flight presence queries (peer_id + reply channel). Unlike pre-key
+    /// fetches, replies echo the requested peer ID, so a pending request is
+    /// resolved by matching the peer — a push for another peer can never
+    /// satisfy (and corrupt) an outstanding query.
+    pending_presence: Mutex<VecDeque<(String, oneshot::Sender<PresenceResponse>)>>,
+    /// Latest known presence per peer, fed by pushes and `get_presence` replies.
+    presence: RwLock<HashMap<String, PresenceInfo>>,
     /// Per-peer generation counter used to deduplicate typing auto-timeouts:
     /// each new `typing` receipt bumps the counter so older pending timers
     /// give up instead of flipping the indicator off early.
@@ -358,6 +412,10 @@ struct RelayInner {
 /// Result channel type for a pre-key fetch: the bundle plus the peer's public
 /// display name (`None` when they have not set one).
 type PrekeyResponse = Result<(PreKeyBundle, Option<String>), RelayError>;
+
+/// Result channel type for a presence fetch: the online flag plus the peer's
+/// last-seen timestamp when offline.
+type PresenceResponse = Result<PresenceInfo, RelayError>;
 
 impl RelayClient {
     /// Build a client bound to `app`'s identity file in the app data dir.
@@ -395,6 +453,8 @@ impl RelayClient {
                 pending_prekeys: Mutex::new(VecDeque::new()),
                 seen_envelopes: Mutex::new(HashSet::new()),
                 pending_acks: Mutex::new(HashMap::new()),
+                pending_presence: Mutex::new(VecDeque::new()),
+                presence: RwLock::new(HashMap::new()),
                 typing_timeouts: Mutex::new(HashMap::new()),
             }),
         }
@@ -533,6 +593,7 @@ impl RelayClient {
         }
         write_guard(&self.inner.messages)?.clear();
         write_guard(&self.inner.contacts)?.clear();
+        write_guard(&self.inner.presence)?.clear();
         if let Ok(mut seen) = self.inner.seen_envelopes.lock() {
             seen.clear();
         }
@@ -574,6 +635,49 @@ impl RelayClient {
             .await
             .map_err(|_| RelayError::PrekeyTimeout)?
             .map_err(|_| RelayError::PrekeyFetchFailed)?
+    }
+
+    /// Fetch a peer's current presence (online status + last-seen), waiting up
+    /// to [`PRESENCE_FETCH_TIMEOUT`]. The reply is also cached in the presence
+    /// map and emitted as a `presence` event by the inbound loop, so a command
+    /// caller and every event listener end up with the same snapshot.
+    pub async fn get_presence(&self, peer_id: &str) -> Result<PresenceInfo, RelayError> {
+        let (tx, rx) = oneshot::channel();
+        mutex_guard(&self.inner.pending_presence)?.push_back((peer_id.to_string(), tx));
+        if let Err(err) = self.send_json(&ClientMessage::GetPresence {
+            peer_id: peer_id.to_string(),
+        }) {
+            // The request never left, so drop the dangling waiter(s) for this
+            // peer to keep the queue aligned with the relay's replies.
+            mutex_guard(&self.inner.pending_presence)?.retain(|(peer, _)| peer != peer_id);
+            return Err(err);
+        }
+
+        match tokio::time::timeout(PRESENCE_FETCH_TIMEOUT, rx).await {
+            Ok(Ok(Ok(info))) => Ok(info),
+            Ok(Ok(Err(err))) => Err(err),
+            Ok(Err(_)) => Err(RelayError::PresenceFetchFailed),
+            Err(_) => {
+                // The waiter timed out: sweep closed senders so a late reply
+                // for this peer cannot keep resolving dead requests (each
+                // dropped receiver closes its sender, so this only ever
+                // removes stale entries).
+                if let Ok(mut pending) = self.inner.pending_presence.lock() {
+                    pending.retain(|(_, tx)| !tx.is_closed());
+                }
+                Err(RelayError::PresenceTimeout)
+            }
+        }
+    }
+
+    /// Subscribe to presence pushes for `peer_id`: the relay sends a
+    /// `presence` message whenever the peer comes online or goes offline.
+    /// Best-effort — without a connection the subscription is dropped and the
+    /// caller is expected to re-watch after (re)connecting.
+    pub fn watch_presence(&self, peer_id: &str) -> Result<(), RelayError> {
+        self.send_json(&ClientMessage::WatchPresence {
+            peer_id: peer_id.to_string(),
+        })
     }
 
     /// Establish an outbound X3DH session with `peer_id` and send the first,
@@ -698,6 +802,7 @@ impl RelayClient {
         let profiles = self.load_profiles()?;
         let contacts = read_guard(&self.inner.contacts)?.clone();
         let messages = read_guard(&self.inner.messages)?.clone();
+        let presence = read_guard(&self.inner.presence)?.clone();
         let connected = self.inner.connected.load(Ordering::SeqCst);
         let contacts = contacts
             .into_iter()
@@ -712,6 +817,7 @@ impl RelayClient {
             connected,
             contacts,
             messages,
+            presence,
         })
     }
 
@@ -763,6 +869,22 @@ impl RelayClient {
             ServerMessage::Acknowledged { seq } => self.handle_ack(seq),
             ServerMessage::PrekeysPublished => Ok(()),
             ServerMessage::ProfileUpdated => Ok(()),
+            ServerMessage::Presence {
+                peer_id,
+                online,
+                last_seen,
+            } => {
+                // Resolve the matching pending `get_presence` request, if any.
+                // A push for a peer nobody is polling has no pending entry and
+                // is simply stored + emitted below.
+                let mut pending = mutex_guard(&self.inner.pending_presence)?;
+                if let Some(pos) = pending.iter().position(|(peer, _)| peer == &peer_id) {
+                    let (_, tx) = pending.remove(pos).expect("position must be in bounds");
+                    let _ = tx.send(Ok(PresenceInfo { online, last_seen }));
+                }
+                drop(pending);
+                self.handle_presence(&peer_id, online, last_seen)
+            }
             ServerMessage::Error { code } => {
                 let mut pending = mutex_guard(&self.inner.pending_prekeys)?;
                 if let Some(tx) = pending.pop_front() {
@@ -799,6 +921,29 @@ impl RelayClient {
                 },
             );
         }
+        Ok(())
+    }
+
+    /// Record a peer's presence and notify the UI via a `presence` event.
+    ///
+    /// Called for both `watch_presence` pushes and `get_presence` replies, so
+    /// the cache and the event stream always reflect the same snapshot.
+    fn handle_presence(
+        &self,
+        peer_id: &str,
+        online: bool,
+        last_seen: Option<i64>,
+    ) -> Result<(), RelayError> {
+        write_guard(&self.inner.presence)?
+            .insert(peer_id.to_string(), PresenceInfo { online, last_seen });
+        let _ = self.inner.app.emit(
+            "presence",
+            PresenceEvent {
+                peer_id: peer_id.to_string(),
+                online,
+                last_seen,
+            },
+        );
         Ok(())
     }
 
@@ -1565,6 +1710,77 @@ mod tests {
         .expect("serialize");
         assert_eq!(json["type"], "update_profile");
         assert_eq!(json["display_name"], "New Name");
+    }
+
+    // -- Presence wire format ------------------------------------------------
+
+    #[test]
+    fn server_presence_message_parses() {
+        let text = r#"{"type":"presence","peer_id":"bob","online":false,"last_seen":1700000000}"#;
+        match serde_json::from_str::<ServerMessage>(text).expect("parse") {
+            ServerMessage::Presence {
+                peer_id,
+                online,
+                last_seen,
+            } => {
+                assert_eq!(peer_id, "bob");
+                assert!(!online);
+                assert_eq!(last_seen, Some(1_700_000_000));
+            }
+            other => panic!("unexpected variant: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn server_presence_message_parses_online_with_null_last_seen() {
+        let text = r#"{"type":"presence","peer_id":"bob","online":true,"last_seen":null}"#;
+        match serde_json::from_str::<ServerMessage>(text).expect("parse") {
+            ServerMessage::Presence {
+                online, last_seen, ..
+            } => {
+                assert!(online);
+                assert_eq!(last_seen, None);
+            }
+            other => panic!("unexpected variant: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn presence_client_messages_serialize() {
+        let get = serde_json::to_value(ClientMessage::GetPresence {
+            peer_id: "bob".into(),
+        })
+        .expect("serialize");
+        assert_eq!(get["type"], "get_presence");
+        assert_eq!(get["peer_id"], "bob");
+
+        let watch = serde_json::to_value(ClientMessage::WatchPresence {
+            peer_id: "bob".into(),
+        })
+        .expect("serialize");
+        assert_eq!(watch["type"], "watch_presence");
+        assert_eq!(watch["peer_id"], "bob");
+    }
+
+    #[test]
+    fn presence_info_roundtrips_through_json() {
+        let online = PresenceInfo {
+            online: true,
+            last_seen: None,
+        };
+        let restored: PresenceInfo =
+            serde_json::from_str(&serde_json::to_string(&online).expect("serialize"))
+                .expect("deserialize");
+        assert!(restored.online);
+        assert_eq!(restored.last_seen, None);
+
+        let offline = PresenceInfo {
+            online: false,
+            last_seen: Some(1_700_000_000),
+        };
+        let json = serde_json::to_value(&offline).expect("serialize");
+        assert_eq!(json["online"], false);
+        assert_eq!(json["last_seen"], 1_700_000_000);
     }
 
     #[test]

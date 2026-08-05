@@ -25,6 +25,7 @@
   --wp-bubble-in: 32 37 41; /* #202529 — incoming bubble */
   --wp-danger: 248 113 113; /* #f87171 — destructive actions */
   --wp-read: 109 164 255; /* #6da4ff — read receipt double tick (dark) */
+  --wp-online: 37 211 102; /* #25d366 — WhatsApp-style online green (dark) */
 }
 
 /* Whisper light theme — same semantic variables, light values. Every pair
@@ -49,6 +50,7 @@
   --wp-bubble-in: 255 255 255; /* #ffffff — incoming bubble */
   --wp-danger: 220 38 38; /* #dc2626 — destructive actions */
   --wp-read: 47 111 237; /* #2f6fed — read receipt double tick (light) */
+  --wp-online: 21 128 61; /* #15803d — online green that meets AA on light */
 }
 
 html,
@@ -189,6 +191,33 @@ dialog.wp-dialog::backdrop {
 }
 .typing-dot:nth-child(3) {
   animation-delay: 0.4s;
+}
+
+/* Splash screen: the logo mark breathes a soft accent glow while loading. */
+@keyframes splash-glow {
+  0%,
+  100% {
+    box-shadow: 0 0 24px 2px rgb(var(--wp-accent) / 0.18);
+  }
+  50% {
+    box-shadow: 0 0 46px 10px rgb(var(--wp-accent) / 0.34);
+  }
+}
+.animate-splash-glow {
+  animation: splash-glow 2.2s ease-in-out infinite;
+}
+
+/* Splash screen: indeterminate progress bar sweeping left to right. */
+@keyframes splash-progress {
+  0% {
+    transform: translateX(-250%);
+  }
+  100% {
+    transform: translateX(350%);
+  }
+}
+.splash-progress-bar {
+  animation: splash-progress 1.15s cubic-bezier(0.4, 0, 0.6, 1) infinite;
 }
 
 /* Respect users who prefer less motion. */

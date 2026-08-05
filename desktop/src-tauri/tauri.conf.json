@@ -12,12 +12,25 @@
   "app": {
     "windows": [
       {
+        "label": "splash",
+        "title": "Whisper",
+        "width": 480,
+        "height": 320,
+        "resizable": false,
+        "center": true,
+        "alwaysOnTop": true,
+        "skipTaskbar": true,
+        "visible": true
+      },
+      {
+        "label": "main",
         "title": "Whisper",
         "width": 1100,
         "height": 720,
         "minWidth": 820,
         "minHeight": 600,
-        "center": true
+        "center": true,
+        "visible": false
       }
     ],
     "security": {
