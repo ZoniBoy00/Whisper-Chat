@@ -9,7 +9,7 @@ interface AddContactDialogProps {
 }
 
 /** Whisper IDs are 16 lowercase hex characters. */
-const PEER_ID_PATTERN = /^[0-9a-f]{16}$/i;
+const PEER_ID_PATTERN = /^[0-9a-f]{24}$/i;
 
 export function AddContactDialog({
   open,

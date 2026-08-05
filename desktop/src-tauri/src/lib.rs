@@ -9,7 +9,13 @@ mod relay;
 use relay::{ChatState, RelayClient};
 
 /// Resolve the on-disk location of the persisted identity.
+///
+/// `WHISPER_IDENTITY_FILE` overrides the default so two Whisper instances can
+/// run side by side on one machine (e.g. to test E2EE between two windows).
 fn identity_path(app: &tauri::AppHandle) -> Result<PathBuf, String> {
+    if let Ok(path) = std::env::var("WHISPER_IDENTITY_FILE") {
+        return Ok(PathBuf::from(path));
+    }
     let dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
     Ok(dir.join("identity.json"))
 }
@@ -44,9 +50,11 @@ fn generate_identity(app: tauri::AppHandle) -> Result<IdentityInfo, String> {
     let peer_id = identity.peer_id();
     let json = identity.to_json().map_err(|e| e.to_string())?;
 
-    let dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
-    fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-    fs::write(dir.join("identity.json"), json).map_err(|e| e.to_string())?;
+    let path = identity_path(&app)?;
+    if let Some(dir) = path.parent() {
+        fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+    }
+    fs::write(path, json).map_err(|e| e.to_string())?;
 
     Ok(IdentityInfo {
         peer_id,

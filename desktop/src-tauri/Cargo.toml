@@ -2,7 +2,7 @@
 name = "whisper-desktop"
 version = "0.1.0"
 description = "Whisper — privacy-first end-to-end encrypted desktop chat"
-authors = ["Joni Sumioinen"]
+authors = ["ZoniBoy00"]
 edition = "2021"
 
 [lib]

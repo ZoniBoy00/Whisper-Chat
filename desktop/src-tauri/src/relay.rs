@@ -39,6 +39,20 @@ const PREKEY_BATCH_SIZE: usize = 5;
 /// Text of the greeting message sent when a session is established.
 const FIRST_MESSAGE_TEXT: &str = "👋 Connected via Whisper";
 
+/// Resolve the identity file path. `WHISPER_IDENTITY_FILE` overrides the
+/// default so two Whisper instances can run side by side on one machine
+/// (e.g. to test E2EE between two windows).
+fn resolve_identity_path(app: &AppHandle) -> PathBuf {
+    std::env::var("WHISPER_IDENTITY_FILE")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| {
+            app.path()
+                .app_data_dir()
+                .map(|dir| dir.join("identity.json"))
+                .unwrap_or_else(|_| PathBuf::from("identity.json"))
+        })
+}
+
 /// Errors surfaced to the UI when talking to the relay or the crypto core.
 #[derive(Debug, thiserror::Error)]
 pub enum RelayError {
@@ -191,6 +205,8 @@ pub struct RelayClient {
 struct RelayInner {
     app: AppHandle,
     identity_path: PathBuf,
+    /// File where Double Ratchet sessions are persisted across restarts.
+    sessions_path: PathBuf,
     /// The local identity, loaded from disk on first connect.
     identity: Mutex<Option<Identity>>,
     /// Double Ratchet sessions, keyed by the remote peer ID.
@@ -220,15 +236,17 @@ type PrekeyResponse = Result<PreKeyBundle, RelayError>;
 impl RelayClient {
     /// Build a client bound to `app`'s identity file in the app data dir.
     pub fn new(app: AppHandle) -> Self {
-        let identity_path = app
+        let identity_path = resolve_identity_path(&app);
+        let sessions_path = app
             .path()
             .app_data_dir()
-            .map(|dir| dir.join("identity.json"))
-            .unwrap_or_else(|_| PathBuf::from("identity.json"));
+            .map(|dir| dir.join("sessions.json"))
+            .unwrap_or_else(|_| PathBuf::from("sessions.json"));
         Self {
             inner: Arc::new(RelayInner {
                 app,
                 identity_path,
+                sessions_path,
                 identity: Mutex::new(None),
                 sessions: Mutex::new(HashMap::new()),
                 messages: RwLock::new(HashMap::new()),
@@ -252,6 +270,10 @@ impl RelayClient {
         if self.inner.connected.load(Ordering::SeqCst) {
             return Ok(());
         }
+
+        // Restore previously persisted sessions so existing conversations
+        // keep working across restarts.
+        self.load_sessions()?;
 
         let hello = {
             let mut guard = mutex_guard(&self.inner.identity)?;
@@ -347,6 +369,12 @@ impl RelayClient {
         self.mark_disconnected();
         mutex_guard(&self.inner.identity)?.take();
         mutex_guard(&self.inner.sessions)?.clear();
+        // Drop the persisted sessions so a fresh identity starts clean.
+        if let Err(err) = std::fs::remove_file(&self.inner.sessions_path) {
+            if err.kind() != std::io::ErrorKind::NotFound {
+                return Err(err.into());
+            }
+        }
         write_guard(&self.inner.messages)?.clear();
         write_guard(&self.inner.contacts)?.clear();
         if let Ok(mut seen) = self.inner.seen_envelopes.lock() {
@@ -416,6 +444,9 @@ impl RelayClient {
             }
         };
 
+        // Persist the new session so it survives a restart.
+        self.save_sessions()?;
+
         let wire = Envelope::new(
             my_peer_id.clone(),
             peer_id.to_string(),
@@ -452,6 +483,9 @@ impl RelayClient {
             let olm = session.encrypt(text)?;
             (olm, session_id)
         };
+
+        // The ratchet advanced, so persist the updated session state.
+        self.save_sessions()?;
 
         let wire = Envelope::new(
             my_peer_id.clone(),
@@ -590,6 +624,7 @@ impl RelayClient {
                     ChatSession::create_inbound(identity, their_key, &handshake.pre_key_message)?;
                 mutex_guard(&self.inner.sessions)?.insert(sender.clone(), inbound.session);
                 let text = String::from_utf8_lossy(&inbound.plaintext).to_string();
+                self.save_sessions()?;
                 Ok(Some(self.record_incoming(&sender, text)?))
             }
             EnvelopeContent::Message(message) => {
@@ -601,11 +636,54 @@ impl RelayClient {
                     session.decrypt(&message.message)?
                 };
                 let text = String::from_utf8_lossy(&plaintext).to_string();
+                self.save_sessions()?;
                 Ok(Some(self.record_incoming(&sender, text)?))
             }
             // A bundle is published, never delivered as a chat envelope.
             EnvelopeContent::PreKeyBundle(_) => Ok(None),
         }
+    }
+
+    // ---------------------------------------------------------------------
+    // Session persistence
+    // ---------------------------------------------------------------------
+
+    /// Restore persisted Double Ratchet sessions from `sessions.json`.
+    fn load_sessions(&self) -> Result<(), RelayError> {
+        let json = match std::fs::read_to_string(&self.inner.sessions_path) {
+            Ok(json) => json,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+            Err(e) => return Err(e.into()),
+        };
+        let stored: HashMap<String, String> = serde_json::from_str(&json)?;
+        let mut sessions = mutex_guard(&self.inner.sessions)?;
+        for (peer, session_json) in stored {
+            if let Ok(session) = ChatSession::from_json(&session_json) {
+                sessions.insert(peer, session);
+            }
+        }
+        Ok(())
+    }
+
+    /// Persist all current sessions to `sessions.json`.
+    fn save_sessions(&self) -> Result<(), RelayError> {
+        let mut stored = HashMap::new();
+        {
+            let sessions = mutex_guard(&self.inner.sessions)?;
+            for (peer, session) in sessions.iter() {
+                if let Ok(json) = session.to_json() {
+                    stored.insert(peer.clone(), json);
+                }
+            }
+        }
+        let json = serde_json::to_string(&stored)?;
+        if let Some(dir) = self.inner.sessions_path.parent() {
+            if !dir.as_os_str().is_empty() {
+                std::fs::create_dir_all(dir)?;
+            }
+        }
+        std::fs::write(&self.inner.sessions_path, json)?;
+        Ok(())
     }
 
     // ---------------------------------------------------------------------

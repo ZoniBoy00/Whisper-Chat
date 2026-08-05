@@ -196,8 +196,8 @@ cargo fmt --check
 
 ## Testing & TDD
 
-- **42+ unit tests** across the crypto core (23) and the relay (19)
-- **15+ smoke tests** covering live routing, offline delivery, SQLite
+- **48+ unit tests** across the crypto core (23) and the relay (25)
+- **19+ smoke tests** covering live routing, offline delivery, SQLite
   persistence, `fetch_since` sync, rate limiting and signed-hello spoofing
   protection
 - **TDD policy:** every crypto change requires tests before merge — tests

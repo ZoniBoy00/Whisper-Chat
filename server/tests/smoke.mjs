@@ -17,7 +17,7 @@ const URL = process.env.WHISPER_WS_URL || "ws://127.0.0.1:8080/ws";
 const DEBUG = process.env.DEBUG === "1";
 
 // Build a self-authenticating signed hello.
-// - x25519 public key (raw 32 bytes) -> peer_id = sha256(pub)[:16 hex]
+// - x25519 public key (raw 32 bytes) -> peer_id = sha256(pub)[:24 hex]
 // - ed25519 signature over the peer_id, base64-encoded
 function makeIdentity() {
   const { privateKey: edPriv, publicKey: edPub } = generateKeyPairSync("ed25519");
@@ -25,7 +25,7 @@ function makeIdentity() {
 
   const xDer = xPub.export({ type: "spki", format: "der" });
   const curveRaw = xDer.subarray(xDer.length - 32);
-  const peerId = createHash("sha256").update(curveRaw).digest("hex").slice(0, 16);
+  const peerId = createHash("sha256").update(curveRaw).digest("hex").slice(0, 24);
 
   const edDer = edPub.export({ type: "spki", format: "der" });
   const edRaw = edDer.subarray(edDer.length - 32);

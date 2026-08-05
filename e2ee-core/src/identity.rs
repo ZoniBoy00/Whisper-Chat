@@ -8,9 +8,10 @@
 //! - an Ed25519 key pair used to sign key material (for example the
 //!   [`crate::prekey::PreKeyBundle`]).
 //!
-//! The peer ID is a short fingerprint (SHA-256 truncated to 16 hex chars)
-//! derived from the public X25519 identity key. It is deterministic for a
-//! given public key and is used to address peers on the relay.
+//! The peer ID is a short fingerprint (SHA-256 truncated to 24 hex chars =
+//! 96 bits) derived from the public X25519 identity key. It is deterministic
+//! for a given public key and is used to address peers on the relay. 96 bits
+//! makes collisions practically impossible even at planetary scale.
 //!
 //! Identities can be serialized to JSON via vodozemac's pickle mechanism so
 //! they can be persisted, for example in a SQLCipher database.
@@ -21,8 +22,8 @@ use std::fmt;
 use vodozemac::olm::{Account, AccountPickle, IdentityKeys, OneTimeKeyGenerationResult};
 use vodozemac::{Curve25519PublicKey, Ed25519PublicKey, Ed25519Signature, KeyId};
 
-/// Number of characters in a peer ID (16 hex chars = 64 bits of entropy).
-pub const PEER_ID_LENGTH: usize = 16;
+/// Number of characters in a peer ID (24 hex chars = 96 bits of entropy).
+pub const PEER_ID_LENGTH: usize = 24;
 
 /// Errors that can occur while managing or persisting an [`Identity`].
 #[derive(Debug)]

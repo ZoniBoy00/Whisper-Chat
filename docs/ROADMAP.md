@@ -101,7 +101,7 @@ crypto logic is written **once**, tested **once**, shared everywhere.
 
 ### Identity (no personal data)
 - **Key pair:** X25519 (key exchange) + Ed25519 (signatures).
-- **Peer ID:** hash of the identity public key (SHA-256 → 16 hex) — no phone
+- **Peer ID:** hash of the identity public key (SHA-256 → 24 hex = 96-bit, collision-safe at planetary scale) — no phone
   number, no name.
 - **Safety Numbers:** contact verification via QR code / digit sequence (like
   Signal). No trust in the server.
@@ -109,8 +109,9 @@ crypto logic is written **once**, tested **once**, shared everywhere.
 ### Session setup (X3DH) and messages (Double Ratchet)
 1. Alice fetches Bob's **prekey bundle** (signed, tamper-protected — see `e2ee-core/src/prekey.rs`).
 2. X3DH handshake → root key → **Double Ratchet session**.
-3. Messages are encrypted with **AES-256-GCM**/**ChaCha20-Poly1305**, keys from
-   **HKDF-SHA256**. Full forward & backward secrecy.
+3. Messages are encrypted by **vodozemac** — the cipher is defined by the
+   Olm specification (AES-256-CBC with HMAC-SHA256), not a free choice of
+   ours; keys are derived with HKDF-SHA256. Full forward & backward secrecy.
 4. **Library:** `vodozemac` (LOCKED). **TDD requirement:** crypto change
    without tests = no merge.
 
@@ -266,7 +267,7 @@ tester → reviewer → report → approval → push.
 **✅ Done (2026-08-05):**
 - [x] Phase 0: workspace, CI, AGENTS.md, .gitignore
 - [x] Phase 1: `e2ee-core` (vodozemac) — 23/23 tests
-- [x] Phase 2: relay + SQLite + fetch_since + rate limit + signed hello (spoofing protection) — 19/19 tests, smoke 15/15
+- [x] Phase 2: relay + SQLite + fetch_since + rate limit + signed hello (spoofing protection) — 25/25 tests, smoke 19/19
 - [x] Code hardening: release profiles, systemd template, .env.example
 - [x] Rename `ghost-relay` → `whisper-relay` (crate, `WHISPER_*` env vars, deploy unit)
 

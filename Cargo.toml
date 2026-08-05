@@ -6,7 +6,7 @@ members = ["e2ee-core", "server", "desktop/src-tauri"]
 version = "0.1.0"
 edition = "2021"
 license = "MIT"
-authors = ["Joni Sumioinen"]
+authors = ["ZoniBoy00"]
 
 # Hardened release profile: optimized, LTO-linked, panic=abort and fully
 # stripped of debug symbols. Keeps the production binary small and makes
