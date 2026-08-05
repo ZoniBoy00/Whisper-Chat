@@ -6,6 +6,7 @@ import type {
   ChatState,
   ContactUpdatedEvent,
   GroupInfo,
+  LogEntry,
   MessageStatusEvent,
   PresenceEvent,
   PresenceInfo,
@@ -18,6 +19,18 @@ import type {
 /** Connect to the relay and authenticate with the stored identity. */
 export function connectRelay(): Promise<void> {
   return invoke("connect_relay");
+}
+
+/** The most recent client log lines from the in-process ring buffer. `limit`
+ *  caps the number of lines; the newest lines are returned. */
+export function getClientLogs(limit?: number): Promise<LogEntry[]> {
+  return invoke("get_client_logs", { limit });
+}
+
+/** Append a log line forwarded from the webview (e.g. an uncaught JS error)
+ *  so the Logs settings tab shows frontend failures next to the Rust logs. */
+export function appendClientLog(level: string, message: string): Promise<void> {
+  return invoke("append_client_log", { level, message });
 }
 
 /** Generate and publish a fresh batch of one-time pre-keys. */

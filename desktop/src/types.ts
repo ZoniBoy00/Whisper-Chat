@@ -128,10 +128,12 @@ export interface TypingEvent {
 }
 
 /** Payload of the `contact-updated` event emitted when a contact's display
- *  name is learned or refreshed. */
+ *  name or avatar is learned or refreshed. */
 export interface ContactUpdatedEvent {
   peer_id: string;
   display_name: string | null;
+  /** Server avatar path ("/media/{hash}"); null when unknown/unchanged. */
+  avatar_url?: string | null;
 }
 
 /** Payload of the `presence` event emitted on a presence push or reply. */
@@ -159,4 +161,16 @@ export interface AppSettings {
   notification_sound?: boolean;
   /** The UI language ("en" or "fi"). */
   language?: string;
+}
+
+/** One captured client log line, returned by the `get_client_logs` command. */
+export interface LogEntry {
+  /** Epoch milliseconds when the line was written. */
+  timestamp: number;
+  /** Uppercase level: TRACE, DEBUG, INFO, WARN or ERROR. */
+  level: string;
+  /** The Rust module path (or "webview") that produced the line. */
+  target: string;
+  /** The formatted message. */
+  message: string;
 }

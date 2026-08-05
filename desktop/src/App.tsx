@@ -6,6 +6,7 @@ import type { UnlistenFn } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { Loader2 } from "lucide-react";
 import { cx } from "./lib/format";
+import { appendClientLog } from "./lib/relay";
 import { I18nProvider, useI18n } from "./i18n/I18nContext";
 import { ToastProvider } from "./hooks/useToast";
 import { Onboarding } from "./components/Onboarding";
@@ -16,6 +17,37 @@ export interface IdentityInfo {
   peer_id: string;
   exists: boolean;
 }
+
+let errorCaptureInstalled = false;
+
+/**
+ * Forward uncaught webview errors into the Rust log ring buffer so the Logs
+ * settings tab shows frontend failures next to the Rust logs. Installed once
+ * per webview (idempotent), before the app renders. Best-effort: if the
+ * backend is unreachable the error is simply dropped.
+ */
+function installErrorCapture() {
+  if (errorCaptureInstalled) return;
+  errorCaptureInstalled = true;
+  const report = (message: string) => {
+    void appendClientLog("ERROR", message).catch(() => {});
+  };
+  window.addEventListener("error", (event) => {
+    const location = event.filename
+      ? ` (${event.filename}:${event.lineno}:${event.colno})`
+      : "";
+    report(`Uncaught error: ${event.message}${location}`);
+  });
+  window.addEventListener("unhandledrejection", (event) => {
+    const reason =
+      event.reason instanceof Error
+        ? event.reason.stack ?? event.reason.message
+        : String(event.reason);
+    report(`Unhandled promise rejection: ${reason}`);
+  });
+}
+
+installErrorCapture();
 
 function FullScreenLoader() {
   return (

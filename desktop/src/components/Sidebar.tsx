@@ -31,6 +31,8 @@ interface SidebarProps {
   peerId: string;
   /** Our own public display name; null when unset. */
   myDisplayName: string | null;
+  /** Our own avatar path ("/media/{hash}"); null when unset. */
+  myAvatarUrl: string | null;
   conversations: Conversation[];
   /** Latest known presence per peer, fed by pushes and the 30s poll. */
   presence: Record<string, PresenceInfo>;
@@ -82,6 +84,7 @@ const SEARCH_MIN_CHARS = 3;
 export function Sidebar({
   peerId,
   myDisplayName,
+  myAvatarUrl,
   conversations,
   presence,
   activeId,
@@ -216,7 +219,11 @@ export function Sidebar({
     <aside className="flex w-[350px] shrink-0 flex-col border-r border-wp-line/10 bg-wp-panel">
       {/* Profile */}
       <header className="flex items-center gap-3 px-4 pb-3 pt-4">
-        <Avatar name={myDisplayName ?? undefined} size={40} />
+        <Avatar
+          name={myDisplayName ?? undefined}
+          size={40}
+          src={myAvatarUrl ? mediaUrl(relayUrl, myAvatarUrl) : null}
+        />
         <div className="min-w-0 flex-1">
           <p className="truncate text-sm font-semibold tracking-tight text-wp-text">
             {myDisplayName ?? t("common.your_whisper_id")}

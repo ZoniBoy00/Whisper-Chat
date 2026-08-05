@@ -340,14 +340,29 @@ export function useChatState({
         })
       );
       const contactUpdatedUnlisten = await register(() =>
-        onContactUpdated(({ peer_id, display_name }) => {
+        onContactUpdated(({ peer_id, display_name, avatar_url }) => {
           if (disposed) return;
           setContacts((prev) =>
             prev.some((c) => c.peer_id === peer_id)
               ? prev.map((c) =>
-                  c.peer_id === peer_id ? { ...c, display_name } : c
+                  c.peer_id === peer_id
+                    ? {
+                        ...c,
+                        // `null` means "unchanged" (the backend COALESCEs),
+                        // so a profile without a field never wipes a known one.
+                        display_name: display_name ?? c.display_name,
+                        avatar_url: avatar_url ?? c.avatar_url,
+                      }
+                    : c
                 )
-              : [...prev, { peer_id, display_name }]
+              : [
+                  ...prev,
+                  {
+                    peer_id,
+                    display_name: display_name ?? null,
+                    avatar_url: avatar_url ?? null,
+                  },
+                ]
           );
         })
       );

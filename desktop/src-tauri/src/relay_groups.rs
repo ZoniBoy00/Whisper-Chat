@@ -150,7 +150,7 @@ impl RelayClient {
             }
             .await;
             if let Err(err) = result {
-                eprintln!("whisper desktop: failed to add {member} to group {group_id}: {err}");
+                tracing::warn!(peer = %member, group = %group_id, error = %err, "failed to add member to group");
             }
         }
 
@@ -166,7 +166,7 @@ impl RelayClient {
             }
             .await;
             if let Err(err) = result {
-                eprintln!("whisper desktop: failed to share group key to {member}: {err}");
+                tracing::warn!(peer = %member, group = %group_id, error = %err, "failed to share group key");
             }
         }
 
@@ -333,7 +333,7 @@ impl RelayClient {
         let id = group_id.to_string();
         tauri::async_runtime::spawn(async move {
             if let Err(err) = client.get_group_info(&id).await {
-                eprintln!("whisper desktop: failed to refresh roster for group {id}: {err}");
+                tracing::warn!(group = %id, error = %err, "failed to refresh group roster");
             }
         });
     }
@@ -342,14 +342,58 @@ impl RelayClient {
     /// every successful connect so groups restored from the store (whose
     /// rosters are empty until the first `get_group_info` round-trip) show a
     /// real member count shortly after startup or reconnect.
+    ///
+    /// While the roster is being refreshed the task also heals legacy groups:
+    /// a group this identity is a member of but that has no outbound session
+    /// (created before the multi-sender model, or joined before the join-time
+    /// setup landed) gets an outbound session established in the background,
+    /// so it is ready to send before the first message.
     pub(crate) fn refresh_group_rosters(&self) {
         let group_ids: Vec<String> = match read_guard(&self.inner.groups) {
             Ok(groups) => groups.keys().cloned().collect(),
             Err(_) => return,
         };
         for group_id in group_ids {
-            self.spawn_group_info_refresh(&group_id);
+            let client = self.clone();
+            let id = group_id;
+            tauri::async_runtime::spawn(async move {
+                if let Err(err) = client.refresh_group_roster_and_outbound(&id).await {
+                    eprintln!("whisper desktop: failed to refresh roster for group {id}: {err}");
+                }
+            });
         }
+    }
+
+    /// Refresh one group's roster and, when this identity is a member with no
+    /// outbound session yet (a legacy pre-multi-sender group, or a join whose
+    /// setup never finished), establish the outbound session in the background
+    /// so the group is sendable before the first message. Establishing only
+    /// happens for actual roster members (`my_role != None`) so a stale local
+    /// entry for a group we left is never resurrected and key shares are never
+    /// spammed.
+    async fn refresh_group_roster_and_outbound(&self, group_id: &str) -> Result<(), RelayError> {
+        // The roster refresh populates `my_role`, which `needs_outbound_session`
+        // depends on to decide whether this identity may establish.
+        self.get_group_info(group_id).await?;
+        if self.needs_outbound_session(group_id)? {
+            let group_name = read_guard(&self.inner.groups)?
+                .get(group_id)
+                .map(|group| group.name.clone())
+                .unwrap_or_default();
+            self.establish_outbound_and_share(group_id, &group_name)
+                .await?;
+        }
+        Ok(())
+    }
+
+    /// Whether `group_id` lacks an outbound session while this identity is a
+    /// roster member — the exact condition a background establish heals.
+    fn needs_outbound_session(&self, group_id: &str) -> Result<bool, RelayError> {
+        let groups = read_guard(&self.inner.groups)?;
+        Ok(match groups.get(group_id) {
+            Some(group) => group.outbound.is_none() && group.my_role.is_some(),
+            None => false,
+        })
     }
 
     /// Megolm-encrypt `text` with the group's outbound session and fan it out
@@ -362,9 +406,9 @@ impl RelayClient {
     ) -> Result<(), RelayError> {
         let my_peer_id = self.my_peer_id()?;
         // Encrypt with our own outbound Megolm session. Every member owns one
-        // in the multi-sender model (created on first group-key receipt), so
-        // only a member that joined but has not finished the join-time setup
-        // yet can hit `NoOutboundGroup` here.
+        // in the multi-sender model (created on first group-key receipt or
+        // healed by `ensure_outbound_session` before the first send), so the
+        // `NoOutboundGroup` error here is only a defensive safety net.
         let ciphertext = {
             let mut groups = write_guard(&self.inner.groups)?;
             let group = groups
@@ -507,7 +551,7 @@ impl RelayClient {
         let senders = match inbound.get_mut(group_id) {
             Some(senders) => senders,
             None => {
-                eprintln!("whisper desktop: no inbound group session for {group_id}");
+                tracing::warn!(group = %group_id, "no inbound group session");
                 return None;
             }
         };
@@ -516,7 +560,7 @@ impl RelayClient {
             None => match senders.get_mut("") {
                 Some(legacy) => legacy,
                 None => {
-                    eprintln!("whisper desktop: no inbound session for {group_id} from {sender}");
+                    tracing::warn!(group = %group_id, sender = %sender, "no inbound group session");
                     return None;
                 }
             },
@@ -524,7 +568,7 @@ impl RelayClient {
         match session.decrypt(ciphertext) {
             Ok(bytes) => Some(bytes),
             Err(err) => {
-                eprintln!("whisper desktop: failed to decrypt group message: {err}");
+                tracing::warn!(group = %group_id, error = %err, "failed to decrypt group message");
                 None
             }
         }
@@ -585,13 +629,38 @@ impl RelayClient {
                     .establish_outbound_and_share(&group_id, &group_name)
                     .await
                 {
-                    eprintln!(
-                        "whisper desktop: failed to set up outbound session for group {group_id}: {err}"
-                    );
+                    tracing::warn!(group = %group_id, error = %err, "failed to set up outbound group session");
                 }
             });
         }
         Ok(())
+    }
+
+    /// Make sure this identity owns an outbound Megolm session for `group_id`,
+    /// establishing one (roster fetch + key share to the other members) on
+    /// first use.
+    ///
+    /// Groups that predate the multi-sender model — and joins whose setup
+    /// never finished — have `outbound: None`, so a send would otherwise fail
+    /// with "has no outbound session yet". Calling this before the first send
+    /// heals those groups lazily, with no user action required.
+    pub(crate) async fn ensure_outbound_session(&self, group_id: &str) -> Result<(), RelayError> {
+        // Fast path: we already own an outbound session.
+        {
+            let groups = read_guard(&self.inner.groups)?;
+            if let Some(group) = groups.get(group_id) {
+                if group.outbound.is_some() {
+                    return Ok(());
+                }
+            }
+        }
+        // An unknown group cannot be made sendable; surface the classic error.
+        let group_name = read_guard(&self.inner.groups)?
+            .get(group_id)
+            .map(|group| group.name.clone())
+            .ok_or_else(|| RelayError::NoOutboundGroup(group_id.to_string()))?;
+        self.establish_outbound_and_share(group_id, &group_name)
+            .await
     }
 
     /// Join-time multi-sender setup for a group we just received a key for:
@@ -605,19 +674,37 @@ impl RelayClient {
     ) -> Result<(), RelayError> {
         let my_peer_id = self.my_peer_id()?;
         // (a) The roster tells us who else is in the group (the server only
-        //     exposes it to members, and we were just added).
+        //     exposes it to members, and we were just added). Only a member
+        //     may (or should) build the outbound session — a stale local entry
+        //     for a group we left must not resurrect a session.
         let info = self.get_group_info(group_id).await?;
-        // (b) Create our own outbound session and (d) store it with the
-        //     fresh roster, so sends work immediately after this returns.
+        if info.my_role.is_none() {
+            return Err(RelayError::NotInGroup(group_id.to_string()));
+        }
+        // (b) Create our own outbound session and (d) store it with the fresh
+        //     roster, so sends work immediately after this returns. The
+        //     `outbound.is_none()` guard keeps a racing establish (send path +
+        //     background refresh, or a reconnect racing a first send) from
+        //     stamping a second session over the first — and from sharing a
+        //     key that does not match the session actually stored.
         let outbound = OutboundGroup::new();
         let session_key = outbound.session_key();
-        {
+        let stored = {
             let mut groups = write_guard(&self.inner.groups)?;
-            if let Some(group) = groups.get_mut(group_id) {
-                group.members = info.members.clone();
-                group.my_role = info.my_role.clone();
-                group.outbound = Some(outbound);
+            match groups.get_mut(group_id) {
+                Some(group) if group.outbound.is_none() => {
+                    group.members = info.members.clone();
+                    group.my_role = info.my_role.clone();
+                    group.outbound = Some(outbound);
+                    true
+                }
+                _ => false,
             }
+        };
+        if !stored {
+            // A racing establish already stored a fresh session; our duplicate
+            // is dropped and nothing (mismatched) is shared.
+            return Ok(());
         }
         self.save_group_sessions()?;
         // (c) Share our own session key to every OTHER member over 1:1
@@ -634,10 +721,7 @@ impl RelayClient {
             }
             .await;
             if let Err(err) = result {
-                eprintln!(
-                    "whisper desktop: failed to share group key to {}: {err}",
-                    member.peer_id
-                );
+                tracing::warn!(peer = %member.peer_id, group = %group_id, error = %err, "failed to share group key");
             }
         }
         Ok(())

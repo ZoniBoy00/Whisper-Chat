@@ -353,6 +353,7 @@ export function MainView({ peerId, onReset }: MainViewProps) {
       <Sidebar
         peerId={peerId}
         myDisplayName={chat.myDisplayName}
+        myAvatarUrl={myProfile?.avatar_url ?? null}
         conversations={conversations}
         presence={chat.presence}
         activeId={chat.activePeerId}

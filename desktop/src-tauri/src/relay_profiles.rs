@@ -14,6 +14,104 @@
 use super::*;
 
 impl RelayClient {
+    /// Re-assert our persisted public profile against the relay after a
+    /// successful connect, so the relay's users table keeps
+    /// `(peer_id, username, display_name, avatar_hash)` across app restarts —
+    /// even if the relay database was reset while the app was closed.
+    ///
+    /// Two best-effort steps, ordered so a profile with a display name but no
+    /// registered username still keeps its name fresh:
+    ///
+    /// 1. When a display name is stored, announce it with `update_profile`
+    ///    (fire-and-forget — the relay applies it to the users table).
+    /// 2. When a username is stored, re-register the signed binding. The
+    ///    relay treats a re-registration by the same peer as idempotent (it
+    ///    refreshes the signature and `registered_at` timestamp), so this is
+    ///    safe to repeat. A `username_taken` reply means a *different* peer
+    ///    now owns the name — accepted silently, leaving the stored profile
+    ///    untouched.
+    ///
+    /// The avatar blob is not persisted locally (only its `/media/{hash}`
+    /// path), so it is not re-uploaded here; the relay keeps the existing
+    /// avatar hash when a registration carries none.
+    pub(crate) async fn sync_own_profile(&self) -> Result<(), RelayError> {
+        let profiles = read_guard(&self.inner.profiles)?.clone();
+
+        if let Some(name) = advertised_display_name(&profiles) {
+            let _ = self.send_json(&ClientMessage::UpdateProfile {
+                display_name: name.to_string(),
+            });
+        }
+
+        let username = match stored_username(&profiles) {
+            Some(username) => username.to_string(),
+            None => return Ok(()),
+        };
+
+        match self.reassert_username(&username).await {
+            Ok(_) => Ok(()),
+            // A different peer now owns the name — there is nothing we can do,
+            // and the locally stored profile is left as it was.
+            Err(RelayError::Relay(code)) if code == "username_taken" => Ok(()),
+            Err(err) => Err(err),
+        }
+    }
+
+    /// Re-register the signed username binding with the relay WITHOUT touching
+    /// the persisted avatar path. The avatar blob bytes are not stored locally
+    /// (only the `/media/{hash}` URL), so the normal `register_profile` path —
+    /// which clears the stored avatar when none is uploaded — must not be used
+    /// for a startup re-assertion. Persists the refreshed username, keeping
+    /// any stored avatar URL intact.
+    async fn reassert_username(&self, username: &str) -> Result<String, RelayError> {
+        let signature = self.sign_username(username)?;
+
+        let (tx, rx) = oneshot::channel();
+        mutex_guard(&self.inner.pending_register)?.push_back(tx);
+        let message = ClientMessage::RegisterProfile {
+            username: username.to_string(),
+            signature,
+            display_name: read_guard(&self.inner.profiles)?
+                .my_display_name
+                .as_deref()
+                .filter(|name| !name.is_empty())
+                .map(str::to_string),
+            avatar: None,
+        };
+        if let Err(err) = self.send_json(&message) {
+            // The request never left, so drop the dangling waiter.
+            mutex_guard(&self.inner.pending_register)?.pop_back();
+            return Err(err);
+        }
+
+        let username = tokio::time::timeout(PROFILE_FETCH_TIMEOUT, rx)
+            .await
+            .map_err(|_| RelayError::ProfileTimeout)?
+            .map_err(|_| RelayError::ProfileRequestFailed)??;
+
+        // Persist the refreshed username while preserving the avatar path.
+        self.ensure_store_open()?;
+        let store_guard = self.store_guard()?;
+        let store = store_guard.as_ref().ok_or(RelayError::StoreNotOpen)?;
+        store.set_setting("my_username", &username)?;
+        let mut profiles = read_guard(&self.inner.profiles)?.clone();
+        profiles.my_username = Some(username.clone());
+        *write_guard(&self.inner.profiles)? = profiles;
+        Ok(username)
+    }
+
+    /// Ed25519-sign `username` over the canonical bytes the relay verifies
+    /// (`username || 0x00 || curve25519_key`).
+    fn sign_username(&self, username: &str) -> Result<String, RelayError> {
+        let guard = mutex_guard(&self.inner.identity)?;
+        let identity = guard.as_ref().ok_or(RelayError::NoIdentity)?;
+        let mut canonical = Vec::with_capacity(username.len() + 1 + 32);
+        canonical.extend_from_slice(username.as_bytes());
+        canonical.push(0);
+        canonical.extend_from_slice(identity.curve25519_key().as_bytes());
+        Ok(identity.sign(&canonical).to_base64())
+    }
+
     /// Register (or re-register) the caller's signed username alias with the
     /// relay, optionally attaching an avatar. Returns the registered username.
     ///
@@ -28,15 +126,7 @@ impl RelayClient {
     ) -> Result<String, RelayError> {
         // The relay verifies an Ed25519 signature over
         // `username || 0x00 || curve25519_key`, so sign it locally.
-        let signature = {
-            let guard = mutex_guard(&self.inner.identity)?;
-            let identity = guard.as_ref().ok_or(RelayError::NoIdentity)?;
-            let mut canonical = Vec::with_capacity(username.len() + 1 + 32);
-            canonical.extend_from_slice(username.as_bytes());
-            canonical.push(0);
-            canonical.extend_from_slice(identity.curve25519_key().as_bytes());
-            identity.sign(&canonical).to_base64()
-        };
+        let signature = self.sign_username(username)?;
 
         let (tx, rx) = oneshot::channel();
         mutex_guard(&self.inner.pending_register)?.push_back(tx);
@@ -120,6 +210,12 @@ impl RelayClient {
     }
 
     /// Fetch one peer's public profile; `Ok(None)` when they have none.
+    ///
+    /// When a profile exists, what it advertises (display name, username,
+    /// avatar) is persisted into the contact store and announced through a
+    /// `contact-updated` event, so the chat list and header render the peer's
+    /// avatar without a separate lookup. Our own identity is exempt: a self
+    /// lookup (e.g. after an avatar upload) must never add a self-contact.
     pub async fn get_profile(&self, peer_id: &str) -> Result<Option<PeerProfile>, RelayError> {
         let (tx, rx) = oneshot::channel();
         mutex_guard(&self.inner.pending_profile)?.push_back(tx);
@@ -130,10 +226,21 @@ impl RelayClient {
             return Err(err);
         }
 
-        tokio::time::timeout(PROFILE_FETCH_TIMEOUT, rx)
+        let profile = tokio::time::timeout(PROFILE_FETCH_TIMEOUT, rx)
             .await
             .map_err(|_| RelayError::ProfileTimeout)?
-            .map_err(|_| RelayError::ProfileRequestFailed)?
+            .map_err(|_| RelayError::ProfileRequestFailed)??;
+        if let Some(profile) = &profile {
+            if peer_id != self.my_peer_id()? {
+                self.remember_contact_profile(
+                    peer_id,
+                    profile.display_name.as_deref(),
+                    profile.username.as_deref(),
+                    profile.avatar_url.as_deref(),
+                )?;
+            }
+        }
+        Ok(profile)
     }
 
     /// Re-register the caller's profile with a new avatar image (base64,
@@ -190,11 +297,30 @@ impl RelayClient {
 
     /// Remember a display name learned for a contact and persist it. Emits a
     /// `contact-updated` event so the UI can update the contact list without a
-    /// full state refresh.
+    /// full state refresh. Backed by [`RelayClient::remember_contact_profile`]
+    /// with no username or avatar.
     pub(crate) fn remember_contact_name(
         &self,
         peer_id: &str,
         name: &str,
+    ) -> Result<(), RelayError> {
+        self.remember_contact_profile(peer_id, Some(name), None, None)
+    }
+
+    /// Store a contact's public profile data (display name, username, avatar
+    /// path) that we learned from a lookup, persist it and notify the UI.
+    ///
+    /// Partial updates are COALESCE'd by the store, so a `None` field leaves
+    /// the already-stored value intact and only the provided fields change.
+    /// This is the single write path behind both pre-key lookups (name) and
+    /// profile lookups (name + avatar), so every surface that reads
+    /// `get_chat_state` / `contact-updated` stays in agreement.
+    pub(crate) fn remember_contact_profile(
+        &self,
+        peer_id: &str,
+        display_name: Option<&str>,
+        username: Option<&str>,
+        avatar_url: Option<&str>,
     ) -> Result<(), RelayError> {
         self.ensure_store_open()?;
         self.store_guard()?
@@ -202,14 +328,24 @@ impl RelayClient {
             .ok_or(RelayError::StoreNotOpen)?
             .upsert_contact(&ContactRow {
                 peer_id: peer_id.to_string(),
-                display_name: Some(name.to_string()),
-                username: None,
-                avatar_url: None,
+                display_name: display_name.map(str::to_string),
+                username: username.map(str::to_string),
+                avatar_url: avatar_url.map(str::to_string),
                 last_seen: None,
             })?;
-        write_guard(&self.inner.profiles)?
-            .contacts
-            .insert(peer_id.to_string(), name.to_string());
+        {
+            let mut profiles = write_guard(&self.inner.profiles)?;
+            if let Some(name) = display_name {
+                profiles
+                    .contacts
+                    .insert(peer_id.to_string(), name.to_string());
+            }
+            if let Some(avatar) = avatar_url {
+                profiles
+                    .contact_avatars
+                    .insert(peer_id.to_string(), avatar.to_string());
+            }
+        }
         // Register the peer in the ordered contact list as well, so the
         // `contact-updated` event and a `get_chat_state` snapshot agree.
         // `create_group` depends on this: without it, the refresh that follows
@@ -221,7 +357,8 @@ impl RelayClient {
             "contact-updated",
             ContactUpdatedEvent {
                 peer_id: peer_id.to_string(),
-                display_name: Some(name.to_string()),
+                display_name: display_name.map(str::to_string),
+                avatar_url: avatar_url.map(str::to_string),
             },
         );
         Ok(())
@@ -235,6 +372,24 @@ pub(crate) fn ensure_contact_entry(contacts: &mut Vec<String>, peer_id: &str) {
     if !contacts.iter().any(|known| known == peer_id) {
         contacts.push(peer_id.to_string());
     }
+}
+
+/// The persisted, non-empty display name the startup sync should advertise to
+/// the relay. Blank/missing names are skipped — the relay rejects empty ones.
+fn advertised_display_name(profiles: &Profiles) -> Option<&str> {
+    profiles
+        .my_display_name
+        .as_deref()
+        .filter(|name| !name.is_empty())
+}
+
+/// The persisted, non-empty username the startup sync should re-register with
+/// the relay.
+fn stored_username(profiles: &Profiles) -> Option<&str> {
+    profiles
+        .my_username
+        .as_deref()
+        .filter(|name| !name.is_empty())
 }
 
 #[cfg(test)]
@@ -275,5 +430,35 @@ mod tests {
         ensure_contact_entry(&mut contacts, "alice");
         ensure_contact_entry(&mut contacts, "bob");
         assert_eq!(contacts, vec!["alice".to_string(), "bob".to_string()]);
+    }
+
+    #[test]
+    fn stored_username_skips_missing_and_blank_names() {
+        assert_eq!(stored_username(&Profiles::default()), None);
+        let blank = Profiles {
+            my_username: Some(String::new()),
+            ..Default::default()
+        };
+        assert_eq!(stored_username(&blank), None);
+        let set = Profiles {
+            my_username: Some("alice_42".into()),
+            ..Default::default()
+        };
+        assert_eq!(stored_username(&set), Some("alice_42"));
+    }
+
+    #[test]
+    fn advertised_display_name_skips_missing_and_blank_names() {
+        assert_eq!(advertised_display_name(&Profiles::default()), None);
+        let blank = Profiles {
+            my_display_name: Some(String::new()),
+            ..Default::default()
+        };
+        assert_eq!(advertised_display_name(&blank), None);
+        let set = Profiles {
+            my_display_name: Some("Alice Prime".into()),
+            ..Default::default()
+        };
+        assert_eq!(advertised_display_name(&set), Some("Alice Prime"));
     }
 }
