@@ -1,9 +1,13 @@
-//! SQLite-backed persistence for the offline envelope queue.
+//! SQLite-backed persistence for the relay: the offline envelope queue and
+//! the per-peer pre-key bundle directory.
 //!
 //! SECURITY MODEL
 //! --------------
 //! - Only opaque, client-encrypted `Envelope`s are persisted. The server
 //!   never stores or inspects plaintext, keys or message content.
+//! - Pre-key bundles are public directory data: the relay stores exactly the
+//!   JSON a peer published so other peers can fetch it for the X3DH
+//!   handshake. No secret material is ever involved.
 //! - Rows live under `server/data/relay.db` (gitignored) at runtime and in a
 //!   purely in-memory database during unit tests.
 //!
@@ -91,6 +95,11 @@ impl Store {
                 curve25519_key  TEXT,
                 ed25519_key     TEXT,
                 first_seen      INTEGER NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS prekeys (
+                peer_id     TEXT PRIMARY KEY,
+                bundle_json TEXT NOT NULL,
+                updated_at  INTEGER NOT NULL
             );",
         )?;
 
@@ -154,6 +163,31 @@ impl Store {
             "SELECT curve25519_key, ed25519_key FROM users WHERE peer_id = ?1",
             params![peer_id],
             |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .optional()
+        .unwrap_or(None)
+    }
+
+    /// Store a peer's current pre-key bundle, replacing any previous bundle
+    /// (INSERT OR REPLACE). The relay persists bundles as opaque JSON — it
+    /// never inspects the key material.
+    pub fn set_prekeys(&self, peer_id: &str, bundle_json: &str, now: i64) -> SqlResult<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "INSERT OR REPLACE INTO prekeys (peer_id, bundle_json, updated_at)
+             VALUES (?1, ?2, ?3)",
+            params![peer_id, bundle_json, now],
+        )?;
+        Ok(())
+    }
+
+    /// The most recently published pre-key bundle JSON for a peer, if any.
+    pub fn get_prekeys(&self, peer_id: &str) -> Option<String> {
+        let conn = self.conn.lock().unwrap();
+        conn.query_row(
+            "SELECT bundle_json FROM prekeys WHERE peer_id = ?1",
+            params![peer_id],
+            |r| r.get(0),
         )
         .optional()
         .unwrap_or(None)
@@ -433,6 +467,30 @@ mod tests {
         let keys = store.get_user_keys("peer-x").expect("keys must be stored");
         assert_eq!(keys, ("curve-a".to_string(), "ed-a".to_string()));
         assert_eq!(store.first_seen_for("peer-x"), Some(now));
+    }
+
+    #[test]
+    fn set_prekeys_roundtrip_returns_stored_json() {
+        let store = Store::open_in_memory().unwrap();
+        let now = unix_now();
+        let json = r#"{"version":1,"identity_key":"AA=="}"#;
+        store.set_prekeys("peer-x", json, now).unwrap();
+        assert_eq!(store.get_prekeys("peer-x").as_deref(), Some(json));
+    }
+
+    #[test]
+    fn set_prekeys_replaces_previous_bundle() {
+        let store = Store::open_in_memory().unwrap();
+        let now = unix_now();
+        store.set_prekeys("peer-x", "first", now).unwrap();
+        store.set_prekeys("peer-x", "second", now + 1).unwrap();
+        assert_eq!(store.get_prekeys("peer-x").as_deref(), Some("second"));
+    }
+
+    #[test]
+    fn get_prekeys_returns_none_for_unknown_peer() {
+        let store = Store::open_in_memory().unwrap();
+        assert_eq!(store.get_prekeys("peer-ghost"), None);
     }
 
     #[test]

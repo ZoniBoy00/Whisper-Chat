@@ -10,7 +10,9 @@ export function MessageBubble({ message }: MessageBubbleProps) {
   const { outgoing } = message;
 
   return (
-    <div className={cx("flex", outgoing ? "justify-end" : "justify-start")}>
+    <div
+      className={cx("flex animate-msg-in", outgoing ? "justify-end" : "justify-start")}
+    >
       <div
         className={cx(
           "max-w-[68%] rounded-2xl px-4 py-2 shadow-sm shadow-black/20",

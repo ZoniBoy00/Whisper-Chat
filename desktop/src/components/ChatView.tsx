@@ -1,6 +1,7 @@
 import { useEffect, useRef } from "react";
 import { Lock, MessagesSquare } from "lucide-react";
 import type { Conversation } from "../types";
+import { shortPeerId } from "../lib/format";
 import { Avatar } from "./Avatar";
 import { MessageBubble } from "./MessageBubble";
 import { Composer } from "./Composer";
@@ -41,10 +42,10 @@ export function ChatView({ conversation, onSend }: ChatViewProps) {
   return (
     <main className="flex min-w-0 flex-1 flex-col bg-wp-bg">
       <header className="flex items-center gap-3 border-b border-wp-line/10 bg-wp-panel px-5 py-3">
-        <Avatar name={conversation.name} size={38} />
+        <Avatar name={shortPeerId(conversation.peerId)} size={38} />
         <div className="min-w-0 flex-1">
-          <p className="truncate text-sm font-semibold text-wp-text">
-            {conversation.name}
+          <p className="truncate font-mono text-sm font-semibold text-wp-text">
+            {shortPeerId(conversation.peerId, 16)}
           </p>
           <p className="flex items-center gap-1 text-xs text-wp-dim">
             <Lock className="h-3 w-3 text-wp-accent" />
@@ -53,7 +54,12 @@ export function ChatView({ conversation, onSend }: ChatViewProps) {
         </div>
       </header>
 
-      <div ref={scrollRef} className="flex-1 overflow-y-auto px-6 py-6">
+      <div
+        ref={scrollRef}
+        role="log"
+        aria-label={`Messages with ${shortPeerId(conversation.peerId, 16)}`}
+        className="flex-1 overflow-y-auto px-6 py-6"
+      >
         <div className="mx-auto flex max-w-3xl flex-col gap-2">
           {conversation.messages.map((message) => (
             <MessageBubble key={message.id} message={message} />

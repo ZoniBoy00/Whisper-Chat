@@ -10,12 +10,17 @@
 //!   routed when the sender field matches the authenticated peer ID.
 //! - Only opaque ciphertext blobs are persisted (SQLite), bounded per peer
 //!   (MAX_OFFLINE_BLOBS) and expired by TTL (7 days).
-//! - Envelope throughput is rate limited per source IP (token bucket).
+//! - Peers publish their public X3DH pre-key bundle (PreKeyBundle) so other
+//!   peers can start encrypted sessions. Bundles are verified (Ed25519
+//!   signature) and bound to the publishing peer before being stored.
+//! - Envelope throughput and pre-key traffic are rate limited per source IP
+//!   (token buckets).
 
 use std::collections::HashMap;
 use std::sync::Arc;
 
 use axum::extract::ws::{Message as WsMessage, WebSocket};
+use e2ee_core::prekey::PreKeyBundle;
 use e2ee_core::{Identity, SignedHello};
 use futures_util::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
@@ -84,6 +89,14 @@ enum ClientMessage {
     /// delivered rows (a successful fetch acknowledges delivery).
     #[serde(rename = "fetch_since")]
     FetchSince { since: u64 },
+    /// Publish the caller's current X3DH pre-key bundle so other peers can
+    /// fetch it and start an encrypted session. The bundle is verified and
+    /// bound to the authenticated peer ID before being persisted.
+    #[serde(rename = "publish_prekeys")]
+    PublishPrekeys { bundle: Box<PreKeyBundle> },
+    /// Request another peer's pre-key bundle (public directory lookup).
+    #[serde(rename = "fetch_prekeys")]
+    FetchPrekeys { peer_id: String },
 }
 
 /// Messages the SERVER sends to the client.
@@ -98,6 +111,12 @@ enum ServerMessage {
     /// Delivery confirmation for a sent envelope (by client seq).
     #[serde(rename = "ack")]
     Acknowledged { seq: u64 },
+    /// Confirmation that a published pre-key bundle was accepted and stored.
+    #[serde(rename = "prekeys_published")]
+    PrekeysPublished,
+    /// The requested peer's pre-key bundle.
+    #[serde(rename = "prekeys")]
+    Prekeys { bundle: Box<PreKeyBundle> },
     /// Protocol error.
     Error { code: String },
 }
@@ -108,6 +127,10 @@ enum ServerMessage {
 
 /// Per-IP token bucket. Each accepted envelope consumes one token; tokens are
 /// refilled continuously up to the burst capacity.
+///
+/// Pre-key traffic shares the same limiter but keys its buckets as
+/// `prekey:<ip>`, so a pre-key storm can neither starve envelope routing nor
+/// leak into the envelope budget (and vice versa).
 pub struct RateLimiter {
     buckets: std::sync::Mutex<HashMap<String, Bucket>>,
     burst: f64,
@@ -273,6 +296,12 @@ impl Relay {
                             let _ = self
                                 .send(&peer_id, ServerMessage::Envelopes { envelopes: blobs })
                                 .await;
+                        }
+                        Ok(ClientMessage::PublishPrekeys { bundle }) => {
+                            self.publish_prekeys(&peer_id, &ip, *bundle).await;
+                        }
+                        Ok(ClientMessage::FetchPrekeys { peer_id: target }) => {
+                            self.fetch_prekeys(&peer_id, &ip, &target).await;
                         }
                         // Re-registration or protocol violations: ignore for now.
                         Ok(_) => {}
@@ -500,6 +529,117 @@ impl Relay {
             .unwrap_or_default()
     }
 
+    /// Publish a peer's pre-key bundle so other peers can fetch it for the
+    /// X3DH handshake. The bundle is only accepted when:
+    /// 1. its Ed25519 signature verifies over the identity and one-time keys
+    ///    (`ensure_valid`), and
+    /// 2. the identity key fingerprints to the authenticated peer ID.
+    ///
+    /// Pre-key traffic is rate limited per source IP under the `prekey:<ip>`
+    /// bucket (see [`RateLimiter`]).
+    async fn publish_prekeys(&self, peer_id: &str, ip: &str, bundle: PreKeyBundle) {
+        if !self.inner.limiter.try_take(&format!("prekey:{ip}")) {
+            tracing::warn!(ip = %ip, "pre-key rate limit exceeded");
+            let _ = self
+                .send(
+                    peer_id,
+                    ServerMessage::Error {
+                        code: "rate_limited".into(),
+                    },
+                )
+                .await;
+            return;
+        }
+
+        if let Err(err) = bundle.ensure_valid() {
+            tracing::warn!(peer = %peer_id, "rejecting invalid pre-key bundle: {err}");
+            let _ = self
+                .send(
+                    peer_id,
+                    ServerMessage::Error {
+                        code: "invalid_bundle".into(),
+                    },
+                )
+                .await;
+            return;
+        }
+
+        let derived = Identity::peer_id_from_curve25519(&bundle.identity_key);
+        if derived != peer_id {
+            tracing::warn!(peer = %peer_id, derived = %derived, "pre-key bundle identity mismatch");
+            let _ = self
+                .send(
+                    peer_id,
+                    ServerMessage::Error {
+                        code: "identity_mismatch".into(),
+                    },
+                )
+                .await;
+            return;
+        }
+
+        match serde_json::to_string(&bundle) {
+            Ok(json) => match self.inner.store.set_prekeys(peer_id, &json, unix_now()) {
+                Ok(()) => {
+                    let _ = self.send(peer_id, ServerMessage::PrekeysPublished).await;
+                }
+                Err(err) => {
+                    tracing::error!(peer = %peer_id, "failed to persist pre-key bundle: {err}");
+                }
+            },
+            Err(err) => {
+                tracing::error!(peer = %peer_id, "failed to serialize pre-key bundle: {err}")
+            }
+        }
+    }
+
+    /// Return the pre-key bundle another peer published, or `no_prekeys` when
+    /// none is stored. Pre-key fetches are public directory lookups: any
+    /// authenticated peer may query any other peer. Fetching is rate limited
+    /// per source IP under the `prekey:<ip>` bucket like publishing.
+    async fn fetch_prekeys(&self, peer_id: &str, ip: &str, target: &str) {
+        if !self.inner.limiter.try_take(&format!("prekey:{ip}")) {
+            tracing::warn!(ip = %ip, "pre-key rate limit exceeded");
+            let _ = self
+                .send(
+                    peer_id,
+                    ServerMessage::Error {
+                        code: "rate_limited".into(),
+                    },
+                )
+                .await;
+            return;
+        }
+
+        match self.inner.store.get_prekeys(target) {
+            Some(json) => match serde_json::from_str::<PreKeyBundle>(&json) {
+                Ok(bundle) => {
+                    let _ = self
+                        .send(
+                            peer_id,
+                            ServerMessage::Prekeys {
+                                bundle: Box::new(bundle),
+                            },
+                        )
+                        .await;
+                }
+                Err(err) => {
+                    tracing::error!(peer = %target, "stored pre-key bundle is corrupt: {err}");
+                }
+            },
+            None => {
+                let _ = self
+                    .send(
+                        peer_id,
+                        ServerMessage::Error {
+                            code: "no_prekeys".into(),
+                        },
+                    )
+                    .await;
+            }
+        }
+    }
+
     /// Send a server message to a specific peer if they are online.
     async fn send(&self, peer_id: &str, msg: ServerMessage) -> bool {
         let online = self.inner.online.read().await;
@@ -670,5 +810,55 @@ mod tests {
         // The original identity is untouched.
         let (_, ed) = relay.inner.store.get_user_keys(&hello.peer_id).unwrap();
         assert_eq!(ed, hello.ed25519_key);
+    }
+
+    #[tokio::test]
+    async fn publish_and_fetch_prekeys_roundtrip_preserves_bundle() {
+        let store = Store::open_in_memory().unwrap();
+        let relay = Relay::with_store(store);
+        let mut identity = Identity::new();
+        let peer_id = identity.peer_id();
+        let bundle = identity.pre_key_bundle(3);
+
+        relay
+            .publish_prekeys(&peer_id, "127.0.0.1", bundle.clone())
+            .await;
+        let json = relay
+            .inner
+            .store
+            .get_prekeys(&peer_id)
+            .expect("bundle must be persisted");
+        let restored: PreKeyBundle =
+            serde_json::from_str(&json).expect("stored bundle must deserialize");
+        assert_eq!(restored, bundle);
+    }
+
+    #[tokio::test]
+    async fn publish_prekeys_rejects_identity_mismatch() {
+        let store = Store::open_in_memory().unwrap();
+        let relay = Relay::with_store(store);
+        let owner = Identity::new();
+        let peer_id = owner.peer_id();
+        // A valid bundle owned by a different identity must be rejected: its
+        // identity key fingerprints to the other peer, not to `peer_id`.
+        let mut other = Identity::new();
+        let foreign = other.pre_key_bundle(3);
+
+        relay.publish_prekeys(&peer_id, "127.0.0.1", foreign).await;
+        assert_eq!(relay.inner.store.get_prekeys(&peer_id), None);
+    }
+
+    #[tokio::test]
+    async fn publish_prekeys_rejects_invalid_bundle() {
+        let store = Store::open_in_memory().unwrap();
+        let relay = Relay::with_store(store);
+        let mut identity = Identity::new();
+        let peer_id = identity.peer_id();
+        let mut bundle = identity.pre_key_bundle(2);
+        // Swapping a one-time key invalidates the signature.
+        bundle.one_time_keys[0] = Identity::new().curve25519_key();
+
+        relay.publish_prekeys(&peer_id, "127.0.0.1", bundle).await;
+        assert_eq!(relay.inner.store.get_prekeys(&peer_id), None);
     }
 }

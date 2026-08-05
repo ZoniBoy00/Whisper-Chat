@@ -2,14 +2,11 @@ use std::fs;
 use std::path::PathBuf;
 
 use serde::Serialize;
-use tauri::Manager;
+use tauri::{Manager, State};
 
-/// Identity information reported to the UI.
-#[derive(Serialize)]
-struct IdentityInfo {
-    peer_id: String,
-    exists: bool,
-}
+mod relay;
+
+use relay::{ChatState, RelayClient};
 
 /// Resolve the on-disk location of the persisted identity.
 fn identity_path(app: &tauri::AppHandle) -> Result<PathBuf, String> {
@@ -69,13 +66,84 @@ fn delete_identity(app: tauri::AppHandle) -> Result<(), String> {
     }
 }
 
+/// Identity information reported to the UI.
+#[derive(Serialize)]
+struct IdentityInfo {
+    peer_id: String,
+    exists: bool,
+}
+
+/// Connect to the relay using the persisted identity and start the pumps.
+#[tauri::command]
+async fn connect_relay(state: State<'_, RelayClient>) -> Result<(), String> {
+    state.connect().await.map_err(|e| e.to_string())
+}
+
+/// Generate and publish a fresh batch of one-time pre-keys.
+#[tauri::command]
+async fn publish_prekeys(state: State<'_, RelayClient>) -> Result<(), String> {
+    state.publish_prekeys().await.map_err(|e| e.to_string())
+}
+
+/// Establish an encrypted session with a peer and send the first message.
+#[tauri::command]
+async fn start_chat(state: State<'_, RelayClient>, peer_id: String) -> Result<(), String> {
+    state.start_chat(&peer_id).await.map_err(|e| e.to_string())
+}
+
+/// Encrypt and send a message over the established session. `client_id` is a
+/// UI-generated id that travels back inside the emitted `chat-message` event so
+/// the UI can deduplicate optimistic insertions.
+#[tauri::command]
+async fn send_message(
+    state: State<'_, RelayClient>,
+    peer_id: String,
+    text: String,
+    client_id: String,
+) -> Result<(), String> {
+    state
+        .send_message(&peer_id, &text, &client_id)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// Snapshot of identity, connection, contacts and messages for the UI.
+#[tauri::command]
+async fn get_chat_state(state: State<'_, RelayClient>) -> Result<ChatState, String> {
+    state.get_chat_state().map_err(|e| e.to_string())
+}
+
+/// Close the relay connection (used when resetting the identity).
+#[tauri::command]
+async fn disconnect_relay(state: State<'_, RelayClient>) -> Result<(), String> {
+    state.disconnect().map_err(|e| e.to_string())
+}
+
+/// Close the connection and wipe all in-memory chat state. Called when the
+/// identity is reset so stale data never survives into a fresh identity.
+#[tauri::command]
+async fn reset_relay(state: State<'_, RelayClient>) -> Result<(), String> {
+    state.reset().map_err(|e| e.to_string())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        .setup(|app| {
+            app.manage(RelayClient::new(app.handle().clone()));
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             get_identity,
             generate_identity,
-            delete_identity
+            delete_identity,
+            connect_relay,
+            publish_prekeys,
+            start_chat,
+            send_message,
+            get_chat_state,
+            disconnect_relay,
+            reset_relay
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

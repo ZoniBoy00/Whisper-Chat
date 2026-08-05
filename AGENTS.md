@@ -1,71 +1,71 @@
 # AGENTS.md — Whisper
 
-Yhteinen kontekstidokumentti tekoälyavustajille (agentit), jotka työskentelevät
-tässä repossa. Tekniset termit ovat englanniksi, selitteet suomeksi.
+Shared context document for AI assistants (agents) working in this repository.
+Technical terms are in English; the original annotations were in Finnish.
 
-## Projektin kuvaus
+## Project description
 
-Whisper (työnimi Operation Ghost) on privacy-first, end-to-end-salattu (E2EE)
-chat — WhatsApp/Signal/Telegram -korvaaja.
+Whisper (working title Operation Ghost) is a privacy-first, end-to-end-encrypted
+(E2EE) chat — a WhatsApp/Signal/Telegram replacement.
 
-- **`server/`** (crate `whisper-relay`): sokea välittäjä (blind relay). Se näkee
-  vain salatut enveloppet (encrypted envelopes) — ei koskaan plaintextiä tai
-  avaimia. Palvelimella ei ole pääsyä viestien sisältöön.
-- **`e2ee-core/`**: jaettu kryptoydin (crypto core). Perustuu **vodozemac**-kirjastoon:
-  X3DH-avainvaihto + Double Ratchet -viestisalaus. Kaikki salaustyö tapahtuu täällä,
-  ei koskaan palvelimella.
+- **`server/`** (crate `whisper-relay`): blind relay. It sees only encrypted
+  envelopes — never plaintext or keys. The server has no access to message
+  content.
+- **`e2ee-core/`**: the shared crypto core. Built on the **vodozemac** library:
+  X3DH key exchange + Double Ratchet message encryption. All crypto work
+  happens here, never on the server.
 
-Arkkitehtuurin ydinperiaate: **palvelin on zero-knowledge** — se voi välittää ja
-tallentaa vain salattuja enveloppeja.
+Core architectural principle: **the server is zero-knowledge** — it can only
+relay and store encrypted envelopes.
 
-## Tekniset säännöt
+## Technical rules
 
-1. Koodikommentit AINA **englannin** kielellä. Suomenkieliset kommentit eivät ole
-   sallittuja (README- ja doksikieli on eri asia).
-2. **Kryptoa EI kirjoiteta itse** — kaikki kryptografia tulee
-   [vodozemac](https://github.com/matrix-org/vodozemac)-kirjastosta (X3DH,
-   Double Ratchet). Omia kryptoprimitiivejä, omia protokollaversioita tai
-   "parannuksia" olemassa oleviin algoritmeihin ei hyväksytä.
-3. **TDD**: kaikki kryptomuutokset vaativat testit ennen mergeä. Testit kirjoitetaan
-   ensin tai vähintään samassa commitissa kuin koodi.
-4. **"Jos toimii, anna olla"** (if it works, leave it alone) — älä refaktoroi
-   toimivaa koodia ilman erillistä syytä. Vältä turhia kosmeettisia muutoksia.
-5. **Server-spesifejä tiedostoja ei stageata GitHubiin**: `server/data/` (runtime-tiedot)
-   ja `.env` (salaisuudet). Näiden tulee olla `.gitignore`ssä eikä niitä koskaan
-   lisätä repo-muutoksiin.
-6. **Code hardening**: release-buildit aina workspace-profiililla
-   (`lto="fat"`, `panic="abort"`, `strip=true` — määritetty juuren Cargo.toml:ssa).
-   Älä lisää debug-symboleita, älä vaihda `panic="unwind"`ia tuotantoon, äläkä
-   koskaan vie salaisuuksia tai avaimia UI/JS-kerrokseen.
+1. Code comments ALWAYS in **English**. Finnish comments are not allowed
+   (README and documentation language is a separate matter).
+2. **No hand-rolled cryptography** — all cryptography comes from the
+   [vodozemac](https://github.com/matrix-org/vodozemac) library (X3DH,
+   Double Ratchet). Own crypto primitives, own protocol versions or
+   "improvements" to existing algorithms are not accepted.
+3. **TDD**: all crypto changes require tests before merge. Tests are written
+   first, or at minimum in the same commit as the code.
+4. **"If it works, leave it alone"** — do not refactor working code without a
+   specific reason. Avoid unnecessary cosmetic changes.
+5. **Server-specific files are never staged to GitHub**: `server/data/`
+   (runtime data) and `.env` (secrets). These must be in `.gitignore` and
+   never added to repository changes.
+6. **Code hardening**: release builds always use the workspace profile
+   (`lto="fat"`, `panic="abort"`, `strip=true` — configured in the root
+   Cargo.toml). Do not add debug symbols, do not switch `panic="unwind"` in
+   production, and never expose secrets or keys to the UI/JS layer.
 
-## Pipeline-työnjako
+## Pipeline division of labor
 
-Työ tehdään jäjestelmällisesti seuraavassa järjestyksessä:
+Work is done systematically in the following order:
 
-1. **Planner** — suunnittelee tehtävän, pilkkoo sen osatehtäviin.
-2. **Coder(s)** — toteuttavat koodia. Max **3 koodaajaa rinnakkain** (ei enempää,
-   jotta ei tule konflikteja samaan koodikantaan).
-3. **Tester** — ajaa testit ja varmistaa että muutokset toimivat.
-4. **Reviewer** — tarkistaa koodin (suojaus, tyyli, säännöt).
-5. **Reporter** — raportoi lopputuloksen käyttäjälle.
-6. Käyttäjä **hyväksyy** tuloksen.
-7. **Push** — muutokset viedään GitHubiin.
+1. **Planner** — plans the task, breaks it into subtasks.
+2. **Coder(s)** — implement code. Max **3 coders in parallel** (no more, to
+   avoid conflicts in the same codebase).
+3. **Tester** — runs the tests and verifies the changes work.
+4. **Reviewer** — reviews the code (security, style, rules).
+5. **Reporter** — reports the result to the user.
+6. The user **approves** the result.
+7. **Push** — changes are pushed to GitHub.
 
-Kukin rooli odottaa edellisen valmistumista; rinnakkaista koodausta max 3.
+Each role waits for the previous one to finish; parallel coding is capped at 3.
 
-## Komentojen pikaohje
+## Quick reference for commands
 
 ```sh
-# Aja koko workspacen testit
+# Run the whole workspace's tests
 cargo test --workspace
 
-# Lint + hylkää varoitukset
+# Lint + reject warnings
 cargo clippy --workspace -- -D warnings
 
-# Formatoinnin tarkistus
+# Formatting check
 cargo fmt --check
 
-# Smoke test (vaatii, että serveri on käynnissä eri terminaalissa):
+# Smoke test (requires the server to be running in a separate terminal):
 cd server
 cargo build
 node tests/smoke.mjs

@@ -3,7 +3,7 @@ name = "whisper-relay"
 version = "0.1.0"
 edition = "2021"
 description = "Whisper — zero-knowledge blind relay server for E2EE messaging"
-license = "Apache-2.0"
+license = "MIT"
 
 [dependencies]
 axum = { version = "0.7", features = ["ws"] }

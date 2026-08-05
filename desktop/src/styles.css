@@ -6,21 +6,22 @@
   color-scheme: dark;
 
   /* Whisper dark theme — Signal-inspired palette. Colors are stored as RGB
-     triplets so Tailwind can apply arbitrary alpha via <alpha-value>. */
+     triplets so Tailwind can apply arbitrary alpha via <alpha-value>.
+     Every foreground/background pair meets WCAG 2.2 AA contrast. */
   --wp-bg: 17 20 23; /* #111417 — app background */
   --wp-bg-deep: 11 14 16; /* #0b0e10 — deepest surfaces */
   --wp-panel: 26 31 36; /* #1a1f24 — sidebars / panels */
   --wp-panel-2: 31 37 43; /* #1f252b — raised surfaces / hover */
-  --wp-panel-3: 40 47 54; /* #282f36 — inputs / borders hover */
+  --wp-panel-3: 32 38 43; /* #20262b — inputs / active items */
   --wp-line: 255 255 255; /* borders — used with low alpha */
   --wp-text: 233 237 242; /* #e9edf2 — primary text */
-  --wp-text-dim: 139 148 158; /* #8b949e — secondary text */
-  --wp-text-faint: 104 112 122; /* #68707a — muted text */
+  --wp-text-dim: 154 163 173; /* #9aa3ad — secondary text */
+  --wp-text-faint: 132 142 152; /* #848e98 — muted text */
   --wp-accent: 20 184 166; /* #14b8a6 — Whisper teal accent */
   --wp-accent-strong: 13 148 136; /* #0d9488 — accent hover */
   --wp-bubble-out: 15 87 79; /* #0f574f — own message bubble */
   --wp-bubble-out-2: 18 104 94; /* #12685e — own bubble gradient end */
-  --wp-bubble-in: 38 44 51; /* #262c33 — incoming bubble */
+  --wp-bubble-in: 32 37 41; /* #202529 — incoming bubble */
   --wp-danger: 248 113 113; /* #f87171 — destructive actions */
 }
 
@@ -35,7 +36,9 @@ body {
   background-color: rgb(var(--wp-bg));
   color: rgb(var(--wp-text));
   font-family:
-    "Inter",
+    Candara,
+    "Segoe UI Variable",
+    "Segoe UI",
     system-ui,
     -apple-system,
     "Segoe UI",
@@ -43,6 +46,13 @@ body {
     sans-serif;
   -webkit-font-smoothing: antialiased;
   overflow: hidden;
+}
+
+/* Keyboard focus must always be visible. */
+:focus-visible {
+  outline: 2px solid rgb(var(--wp-accent));
+  outline-offset: 2px;
+  border-radius: 6px;
 }
 
 /* Slim, unobtrusive scrollbars for the sidebar and message list. */
@@ -67,6 +77,22 @@ body {
 
 ::selection {
   background: rgba(var(--wp-accent), 0.3);
+}
+
+/* Native dialog used for the "start a new chat" flow. */
+dialog.wp-dialog {
+  margin: auto;
+  border: 1px solid rgb(var(--wp-line) / 0.1);
+  background: transparent;
+  padding: 0;
+  color: rgb(var(--wp-text));
+  border-radius: 1rem;
+  box-shadow: 0 24px 64px -16px rgb(0 0 0 / 0.6);
+  animation: pop-in 0.18s ease-out both;
+}
+dialog.wp-dialog::backdrop {
+  background: rgb(0 0 0 / 0.55);
+  backdrop-filter: blur(2px);
 }
 
 /* Subtle entrance animation used by the onboarding view. */
@@ -96,4 +122,31 @@ body {
 }
 .animate-pop-in {
   animation: pop-in 0.2s ease-out both;
+}
+
+/* Messages slide in with a soft upward drift. */
+@keyframes msg-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+.animate-msg-in {
+  animation: msg-in 0.28s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+/* Respect users who prefer less motion. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
 }

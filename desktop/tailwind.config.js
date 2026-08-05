@@ -4,6 +4,11 @@ export default {
   content: ["./index.html", "./src/**/*.{ts,tsx}"],
   theme: {
     extend: {
+      fontFamily: {
+        display: ['"Palatino Linotype"', "Palatino", '"Book Antiqua"', "Georgia", "serif"],
+        sans: ["Candara", '"Segoe UI Variable"', '"Segoe UI"', "system-ui", "sans-serif"],
+        mono: ['"Cascadia Mono"', '"Cascadia Code"', "Consolas", "monospace"],
+      },
       colors: {
         wp: {
           bg: "rgb(var(--wp-bg) / <alpha-value>)",

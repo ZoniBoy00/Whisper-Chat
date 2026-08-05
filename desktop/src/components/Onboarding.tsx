@@ -57,7 +57,7 @@ export function Onboarding({ onCreated }: OnboardingProps) {
       <div className="relative z-10 flex w-full max-w-lg animate-fade-in-up flex-col items-center px-6 text-center">
         <Logo size={84} />
 
-        <h1 className="mt-7 text-4xl font-semibold tracking-tight text-wp-text">
+        <h1 className="mt-7 font-display text-4xl font-semibold tracking-tight text-wp-text">
           Welcome to Whisper
         </h1>
         <p className="mt-3 max-w-md text-base leading-relaxed text-wp-dim">

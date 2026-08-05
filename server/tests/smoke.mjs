@@ -35,6 +35,37 @@ function makeIdentity() {
     curve25519_key: curveRaw.toString("base64"),
     ed25519_key: edRaw.toString("base64"),
     signature: sign(null, Buffer.from(peerId, "utf8"), edPriv).toString("base64"),
+    edPriv,
+  };
+}
+
+// Build a signed pre-key bundle for an `identity` (from makeIdentity) holding
+// `count` fresh one-time keys. Mirrors PreKeyBundle::signed_bytes in
+// e2ee-core: the ed25519 signature covers the raw x25519 identity key
+// followed by every one-time key in ascending base64 order.
+//
+// Key fields are emitted unpadded-base64 to match vodozemac's to_base64 wire
+// format exactly (Node's toString("base64") would add trailing "=" padding).
+function makeBundle(identity, count) {
+  const unpadded = (buf) => buf.toString("base64").replace(/=+$/, "");
+  const oneTimeRaw = [];
+  for (let i = 0; i < count; i++) {
+    const { publicKey } = generateKeyPairSync("x25519");
+    const der = publicKey.export({ type: "spki", format: "der" });
+    oneTimeRaw.push(der.subarray(der.length - 32));
+  }
+  oneTimeRaw.sort((a, b) => a.toString("base64").localeCompare(b.toString("base64")));
+  const signature = sign(
+    null,
+    Buffer.concat([Buffer.from(identity.curve25519_key, "base64"), ...oneTimeRaw]),
+    identity.edPriv
+  );
+  return {
+    version: 1,
+    identity_key: unpadded(Buffer.from(identity.curve25519_key, "base64")),
+    signing_key: unpadded(Buffer.from(identity.ed25519_key, "base64")),
+    signature: unpadded(signature),
+    one_time_keys: oneTimeRaw.map(unpadded),
   };
 }
 
@@ -326,6 +357,49 @@ async function main() {
   );
   check("invalid hello: tampered signature is rejected with invalid_hello", true);
   eveConn.ws.close();
+
+  // --- Test (a): pre-key publish + fetch roundtrip ---
+  // Alice publishes her signed pre-key bundle; Bob fetches it and receives
+  // the exact same bundle (identity key, signing key and one-time keys).
+  const aliceBundle = makeBundle(alice, 5);
+  aliceConn.ws.sendJson({ type: "publish_prekeys", bundle: aliceBundle });
+  await waitFor("prekeys_published", () =>
+    aliceConn.ws.messages.some((m) => m.type === "prekeys_published")
+  );
+  check("prekeys: publish acknowledged with prekeys_published", true);
+
+  bob4.ws.sendJson({ type: "fetch_prekeys", peer_id: alice.peer_id });
+  await waitFor("prekeys reply", () =>
+    bob4.ws.messages.some((m) => m.type === "prekeys")
+  );
+  const fetchedBundle = bob4.ws.messages.filter((m) => m.type === "prekeys").pop().bundle;
+  check(
+    "prekeys: fetch roundtrip returns the published bundle",
+    fetchedBundle &&
+      fetchedBundle.identity_key === aliceBundle.identity_key &&
+      fetchedBundle.signing_key === aliceBundle.signing_key &&
+      fetchedBundle.signature === aliceBundle.signature &&
+      JSON.stringify(fetchedBundle.one_time_keys) === JSON.stringify(aliceBundle.one_time_keys)
+  );
+
+  // --- Test (b): identity mismatch ---
+  // Alice tries to publish a bundle owned by a different identity. The bundle
+  // is cryptographically valid, but its identity key fingerprints to another
+  // peer, so the relay must reject it.
+  const oscar = makeIdentity();
+  aliceConn.ws.sendJson({ type: "publish_prekeys", bundle: makeBundle(oscar, 3) });
+  await waitFor("identity_mismatch error", () =>
+    aliceConn.ws.messages.some((m) => m.type === "error" && m.code === "identity_mismatch")
+  );
+  check("prekeys: foreign bundle rejected with identity_mismatch", true);
+
+  // --- Test (c): no_prekeys ---
+  // Dave never published a bundle, so fetching his pre-keys must fail.
+  bob4.ws.sendJson({ type: "fetch_prekeys", peer_id: dave.peer_id });
+  await waitFor("no_prekeys error", () =>
+    bob4.ws.messages.some((m) => m.type === "error" && m.code === "no_prekeys")
+  );
+  check("prekeys: unknown peer returns no_prekeys", true);
 
   aliceConn.ws.close();
   bob4.ws.close();

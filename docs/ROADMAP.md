@@ -1,112 +1,129 @@
-# Whisper (e2ee-chat) — Tekninen Tiekartta
+# Whisper (Whisper-Chat) — Technical Roadmap
 
-> Whisper — "kuiskaus". Viestit ovat kuiskauksia: vain lähettäjä ja vastaanottaja
-> kuulevat. Privacy-first, end-to-end-encrypted (E2EE) yleiskäyttöinen chat —
-> WhatsApp/Signal/Telegram -korvaaja, ilman takaovia ja skannausmekanismeja.
+> Whisper — "a whisper". Messages are whispers: only the sender and the
+> recipient can hear them. Privacy-first, end-to-end-encrypted (E2EE)
+> general-purpose chat — a WhatsApp/Signal/Telegram replacement without
+> backdoors or scanning mechanisms.
 >
-> **Päiväys:** 2026-08-05 (päivitetty: brändi, tuotevisio, hardening, deploy-suojaus)
-> **Tila:** Suunnittelu (Phase 1) — relay + kryptoydin koodattu ja testattu
-> **Alkuperä:** Sovellusmäärittely + Gemini-ristiintarkistus + Byte-arviointi
-> **Työnimi (ennen brändäystä):** Operation Ghost
+> **Date:** 2026-08-05 (updated: branding, product vision, hardening, deployment security)
+> **Status:** Planning (Phase 1) — relay + crypto core coded and tested
+> **Origin:** App specification + Gemini cross-check + Byte evaluation
+> **Working title (before branding):** Operation Ghost
 
 ---
 
-## 1. Tavoite ja tuotevisio
+## 1. Goal and Product Vision
 
-**Yleiskäyttöinen, helppo, moderni chat** joka korvaa WhatsAppin, Signalin ja Telegramin — ei tekninen lelu. Tinkimätön E2EE kaikessa: viestit, ryhmät, media, puhelut.
+**A general-purpose, easy, modern chat** that replaces WhatsApp, Signal and
+Telegram — not a technical toy. Uncompromising E2EE everywhere: messages,
+groups, media, calls.
 
-| Ominaisuus | Tavoite |
+| Feature | Goal |
 |---|---|
-| **Helppo käyttöönotto** | Asenna → avainpari luodaan automaattisesti → jaa oma ID kutsulinkkinä. Ei puhelinnumeroa, ei sähköpostia, ei tilejä. |
-| **Moderni UI** | Puhdas, minimalistinen, Signal/Telegram-taso. Dark theme, Lucide-ikonit, nopea ja responsiivinen. |
-| **Kaikki E2EE** | 1:1 viestit, ryhmät, media, tiedostot, ääni- ja videopuhelut. Palvelin ei näe mitään sisällöstä. |
-| **Turvallinen oletuksena** | Secure by default — ei opt-in -turvaa. Vahvistetut kontaktit (safety numbers), katoavat viestit. |
-| **Kevyt & nopea** | Desktop < 20 MB, akkuystävällinen mobiili, nopea synkronointi. |
-| **Kestävä sääntelyä vastaan** | Arkkitehtuuri tekee sisällön skannauksesta teknisesti mahdotonta (ei "yhtä valitsinta" jota säännellä). |
+| **Easy onboarding** | Install → key pair generated automatically → share your ID as an invite link. No phone number, no email, no accounts. |
+| **Modern UI** | Clean, minimalist, Signal/Telegram-grade. Dark theme, Lucide icons, fast and responsive. |
+| **Everything E2EE** | 1:1 messages, groups, media, files, voice and video calls. The server never sees any content. |
+| **Secure by default** | No opt-in security. Verified contacts (safety numbers), disappearing messages. |
+| **Light & fast** | Desktop < 20 MB, battery-friendly mobile, fast sync. |
+| **Resilient to regulation** | The architecture makes content scanning technically impossible (there is no "single switch" to regulate). |
 
-**Metadata-malli (päätös):** Ei Tor-relayta, ei onion-reititystä, ei mixnetiä. Palvelin näkee reititystiedot (kuka puhuu kelle + IP) — **täsmälleen kuten Signal ja WhatsApp**. Yksityisyys tulee E2EE:stä, ei verkon piilottamisesta. Tämä on hyväksytty ja rehellinen malli normaalikäyttäjälle.
+**Metadata model (decision):** no Tor relay, no onion routing, no mixnet. The
+server sees routing information (who talks to whom + IP) — **exactly like
+Signal and WhatsApp**. Privacy comes from E2EE, not from hiding the network.
+This is an accepted and honest model for the average user.
 
-## 2. Keskeiset periaatteet
+## 2. Core Principles
 
-| Periaate | Mitä se tarkoittaa käytännössä |
+| Principle | What it means in practice |
 |---|---|
-| **Zero-Knowledge (rehellisesti)** | E2EE suojaa **sisällön**. Palvelin näkee vain salatut enveloppet, peer ID:t ja liikennemäärät. Metatiedot palvelimella ovat olemassa (välitys vaatii) — dokumentoitu rehellisesti. |
-| **Zero-Trust** | Mikään yksittäinen komponentti ei voi vuotaa keskusteluja. Jokainen kerros oletetaan vihamieliseksi. |
-| **Ei omaa kryptoa** | Kaikki kryptografia tulee todistetusta, auditoidusta kirjastosta (`vodozemac`). Oma krypto = varma katastrofi. |
-| **Helppous ei saa rikkoa turvaa** | Turvallinen oletuksena; turva ei vaadi käyttäjältä teknistä osaamista. |
-| **Kevyt & nopea** | Desktop-binaari < 20 MB, muistinkulutus murto-osa Electronista, akkuystävällinen mobiili. |
-| **Ei takaovia** | Ei palvelinpuolen skannausta, ei E2EE-kiertoteitä, ei telemetriaa. |
-| **Scope-kuri** | MVP = Desktop + relay + 1:1 E2EE. Ryhmät, media, puhelut ja mobiili eivät kuulu MVP:hen. |
+| **Zero-Knowledge (honestly)** | E2EE protects the **content**. The server sees only encrypted envelopes, peer IDs and traffic volumes. Metadata on the server exists (routing requires it) — documented honestly. |
+| **Zero-Trust** | No single component can leak conversations. Every layer is assumed hostile. |
+| **No hand-rolled crypto** | All cryptography comes from a proven, audited library (`vodozemac`). Own crypto is a guaranteed disaster. |
+| **Ease must not break security** | Secure by default; security never requires technical skill from the user. |
+| **Light & fast** | Desktop binary < 20 MB, memory usage a fraction of Electron, battery-friendly mobile. |
+| **No backdoors** | No server-side scanning, no E2EE workarounds, no telemetry. |
+| **Scope discipline** | MVP = Desktop + relay + 1:1 E2EE. Groups, media, calls and mobile are out of MVP scope. |
 
-**Miksi tämä kestää Chat Control -tyyppisen sääntelyn?**
-Chat Control / client-side scanning vaatii skannausmekanismin asiakassovellukseen. Koska Whisperin asiakassovellus ei **pysty** näkemään sisältöä (avaimet Double Ratchet -istunnossa, viestit salataan ennen levylle kirjoittamista), ei ole olemassa "yhtä valitsinta" jota säännellä. Sisällön skannaus ei ole mahdollista ilman koko sovelluksen uudelleenkirjoitusta.
+**Why this withstands Chat-Control-style regulation?**
+Chat Control / client-side scanning requires a scanning mechanism in the
+client app. Because the Whisper client **cannot** see content (keys live in
+the Double Ratchet session, messages are encrypted before being written to
+disk), there is no "single switch" to regulate. Content scanning is not
+possible without rewriting the entire application.
 
 ---
 
-## 3. Lukitut päätökset
+## 3. Locked Decisions
 
-| # | Päätös |
+| # | Decision |
 |---|---|
-| 1 | 🛑 **Ei Double Ratchet -toteutusta itse** → **`vodozemac`** (Apache-2.0, auditoitu). `libsignal` (AGPL) hylätty. |
-| 2 | **Ei onion/Tor** → Signal/WhatsApp-malli: E2EE sisällölle, palvelin näkee reitityksen. |
-| 3 | **Scope-kuri** → MVP = Desktop + relay + 1:1 E2EE. |
-| 4 | **"Zero-knowledge" määritelty rehellisesti** → sisältö suojattu, metatiedot olemassa. |
-| 5 | **Nimi:** **Whisper** (työnimi Operation Ghost). Repo `ZoniBoy00/e2ee-chat`, lisenssi MIT. |
+| 1 | 🛑 **No hand-rolled Double Ratchet** → **`vodozemac`** (Apache-2.0, audited). `libsignal` (AGPL) rejected. |
+| 2 | **No onion/Tor** → Signal/WhatsApp model: E2EE for content, server sees routing. |
+| 3 | **Scope discipline** → MVP = Desktop + relay + 1:1 E2EE. |
+| 4 | **"Zero-knowledge" defined honestly** → content protected, metadata exists. |
+| 5 | **Name:** **Whisper** (working title Operation Ghost). Repo `ZoniBoy00/Whisper-Chat`, MIT license. |
 
 ---
 
-## 4. Teknologiapino (Tech Stack)
+## 4. Tech Stack
 
-**Ydinperiaate: yksi jaettu Rust-ydin (`e2ee-core`), jota käyttävät** Tauri desktop (natiivina), Flutter mobiili (`flutter_rust_bridge`) ja testit. Salauslogiikka kirjoitetaan **kerran**, testataan **kerran**, jaetaan kaikkialle.
+**Core principle: one shared Rust core (`e2ee-core`) used by** the Tauri
+desktop (natively), Flutter mobile (`flutter_rust_bridge`) and the tests. The
+crypto logic is written **once**, tested **once**, shared everywhere.
 
-| Kerros | Valinta | Perustelu |
+| Layer | Choice | Rationale |
 |---|---|---|
-| **Jaettu ydin** | Rust crate **`e2ee-core`** | Sama salaus/protokolla kaikille alustoille |
-| **Salaus** | **vodozemac** (X3DH + Double Ratchet) | Apache-2.0, auditoitu, ei omaa kryptoa |
-| **Relay/backend** | Rust + **axum + tokio + WebSocket** | Kevyt, nopea, turvallinen muistinhallinta |
-| **Palvelin-DB** | **SQLite** (vain ciphertext-envelopet + prekeyt, TTL) | Ei salaamatonta dataa koskaan levylle |
-| **Desktop** | **Tauri v2** (Rust-ydin + React/TS) | ~10 MB vs Electron 100+ MB |
-| **UI** | **React + TypeScript + Tailwind + shadcn/ui + Lucide-ikonit** | Moderni, siisti, nopea kehitys, dark theme |
-| **Lokaali DB (client)** | rusqlite + **SQLCipher** | Salattu paikallinen historia |
-| **Mobiili (vaihe 8)** | **Flutter + flutter_rust_bridge** | Yksi koodikanta iOS+Android, sama Rust-ydin |
-| **Puhelut (vaihe 7)** | WebRTC (DTLS-SRTP) + coturn (STUN/TURN) | P2P, salattu media |
-| **Transport** | TLS 1.3 + sertifikaattipinning | Suojaa liikenteen päästä päähän palvelimelle |
-| **Deploy** | Hetzner VPS + systemd (kovetettu), GitHub Actions CI | Olemassa oleva infra |
-| **Testaus** | `cargo test` (TDD), `clippy -D warnings`, `proptest`, `cargo audit` | Krypto ilman testejä = ei mergeä |
+| **Shared core** | Rust crate **`e2ee-core`** | Same crypto/protocol for every platform |
+| **Cryptography** | **vodozemac** (X3DH + Double Ratchet) | Apache-2.0, audited, no hand-rolled crypto |
+| **Relay/backend** | Rust + **axum + tokio + WebSocket** | Light, fast, memory-safe |
+| **Server DB** | **SQLite** (ciphertext envelopes + prekeys only, TTL) | No unencrypted data ever written to disk |
+| **Desktop** | **Tauri v2** (Rust core + React/TS) | ~10 MB vs Electron 100+ MB |
+| **UI** | **React + TypeScript + Tailwind + shadcn/ui + Lucide icons** | Modern, clean, fast to develop, dark theme |
+| **Local DB (client)** | rusqlite + **SQLCipher** | Encrypted local history |
+| **Mobile (phase 8)** | **Flutter + flutter_rust_bridge** | One codebase for iOS+Android, same Rust core |
+| **Calls (phase 7)** | WebRTC (DTLS-SRTP) + coturn (STUN/TURN) | P2P, encrypted media |
+| **Transport** | TLS 1.3 + certificate pinning | Protects traffic end to end to the server |
+| **Deploy** | Hetzner VPS + systemd (hardened), GitHub Actions CI | Existing infrastructure |
+| **Testing** | `cargo test` (TDD), `clippy -D warnings`, `proptest`, `cargo audit` | Crypto without tests = no merge |
 
-### Miksi ei X?
+### Why not X?
 
-| Vaihtoehto | Miksi ei |
+| Alternative | Why not |
 |---|---|
-| Electron | 100+ MB binaari, 200+ MB RAM. Rikkoo "kevyt ja nopea" -arvon. |
-| React Native | JS-silta hidastaa kryptoa, kaksi riippuvuuskaaosta. |
-| Go backend | Valid, mutta Rust antaa suorituskyvyn **ja** muistiturvallisuuden + jaetun kryptoytimen. |
-| libsignal (AGPL) | AGPL pakottaa koko projektin samaan lisenssiin. |
+| Electron | 100+ MB binary, 200+ MB RAM. Breaks the "light and fast" value. |
+| React Native | JS bridge slows down crypto, two dependency ecosystems. |
+| Go backend | Valid, but Rust delivers performance **and** memory safety + a shared crypto core. |
+| libsignal (AGPL) | AGPL forces the whole project under the same license. |
 
 ---
 
-## 5. Kryptografinen suunnitelma
+## 5. Cryptographic Plan
 
-### Identiteetti (ei henkilötietoja)
-- **Avainpari:** X25519 (avaintenvaihto) + Ed25519 (allekirjoitukset).
-- **Peer ID:** hash identiteettijulkisavaimesta (SHA-256 → 16 hex) — ei puhelinnumeroa, ei nimeä.
-- **Safety Numbers:** kontaktien vahvistus QR-koodilla/numerosarjalla (kuten Signal). Ei luottamusta palvelimeen.
+### Identity (no personal data)
+- **Key pair:** X25519 (key exchange) + Ed25519 (signatures).
+- **Peer ID:** hash of the identity public key (SHA-256 → 16 hex) — no phone
+  number, no name.
+- **Safety Numbers:** contact verification via QR code / digit sequence (like
+  Signal). No trust in the server.
 
-### Istunnon muodostus (X3DH) ja viestit (Double Ratchet)
-1. Alice hakee Bobin **prekey-bundlen** (allekirjoitettu, tamper-suojattu — ks. `e2ee-core/src/prekey.rs`).
-2. X3DH-kättely → root key → **Double Ratchet -istunto**.
-3. Viestit salataan **AES-256-GCM**/**ChaCha20-Poly1305**, avaimet **HKDF-SHA256**. Täysi forward & backward secrecy.
-4. **Kirjasto:** `vodozemac` (LUKITTU). **TDD-vaatimus:** kryptomuutos ilman testejä = ei mergeä.
+### Session setup (X3DH) and messages (Double Ratchet)
+1. Alice fetches Bob's **prekey bundle** (signed, tamper-protected — see `e2ee-core/src/prekey.rs`).
+2. X3DH handshake → root key → **Double Ratchet session**.
+3. Messages are encrypted with **AES-256-GCM**/**ChaCha20-Poly1305**, keys from
+   **HKDF-SHA256**. Full forward & backward secrecy.
+4. **Library:** `vodozemac` (LOCKED). **TDD requirement:** crypto change
+   without tests = no merge.
 
-### Ryhmät (vaihe 6) & Post-Quantum (vaihe 9+)
-- Ryhmät: **Sender Keys / Megolm**. Tulevaisuus: MLS (RFC 9420).
-- PQ: **X25519Kyber768** hybridi — "harvest now, decrypt later" -suoja. Ei v1:ssä, mutta tilaa jätetty.
+### Groups (phase 6) & Post-Quantum (phase 9+)
+- Groups: **Sender Keys / Megolm**. Future: MLS (RFC 9420).
+- PQ: **X25519Kyber768** hybrid — "harvest now, decrypt later" protection. Not
+  in v1, but room is left for it.
 
 ---
 
-## 6. Arkkitehtuuri
+## 6. Architecture
 
-### 6.1 Kaavio
+### 6.1 Diagram
 
 ```
 ┌─────────────┐     WebSocket (TLS 1.3)     ┌──────────────────┐
@@ -115,137 +132,148 @@ Chat Control / client-side scanning vaatii skannausmekanismin asiakassovelluksee
 └─────┬───────┘      ciphertext only         └────────┬─────────┘
       │                                              │
       │ e2ee-core (Rust)                             │ SQLite
-      │  ├─ vodozemac (X3DH+Ratchet)                │ (envelopet,
-      │  ├─ wire-protocol (serde, versionoitu)       │  prekeyt,
-      │  └─ local store (SQLCipher)                  │  userit)
+      │  ├─ vodozemac (X3DH+Ratchet)                │ (envelopes,
+      │  ├─ wire-protocol (serde, versioned)         │  prekeys,
+      │  └─ local store (SQLCipher)                  │  users)
       └──────────────────────────────────────────────┘
 ```
 
-### 6.2 Viestin elinkaari
-1. Lähettäjä luo/päivittää Double Ratchet -sessionin vastaanottajan prekeyllä.
-2. Viesti salataan → ciphertext-envelope.
-3. Envelope relaylle → tallennus (SQLite, TTL 7 vrk) + välitys.
-4. Vastaanottaja purkaa sessionin → **palvelin ei näe mitään**.
+### 6.2 Message lifecycle
+1. The sender creates/updates a Double Ratchet session with the recipient's prekey.
+2. The message is encrypted → ciphertext envelope.
+3. The envelope goes to the relay → stored (SQLite, TTL 7 days) + forwarded.
+4. The recipient unwraps the session → **the server sees nothing**.
 
-### 6.3 Palvelimen rooli & metadata (hyväksytty malli)
+### 6.3 The server's role & metadata (accepted model)
 
-Palvelin näkee vain `{ sender, recipient, payload: <opaque ciphertext>, seq }`. Ei viestihistoriaa plaintextinä, ei profiileja, ei analyytiikkaa. Reititystiedot (kuka puhuu kelle, IP) näkyvät kuten Signalissa/WhatsAppissa — tämä on **hyväksytty tuotevalinta**, ei puute.
+The server sees only `{ sender, recipient, payload: <opaque ciphertext>, seq }`. No
+plaintext message history, no profiles, no analytics. Routing information (who
+talks to whom, IP) is visible just as in Signal/WhatsApp — this is an
+**accepted product choice**, not a shortcoming.
 
-| Taso | Whisper (v1) |
+| Level | Whisper (v1) |
 |---|---|
-| Viestin sisältö | 🔒 E2EE (Double Ratchet) |
-| Reititys | ⚠️ Palvelin näkee peer ID:t (välitys vaatii) — kuten Signal |
-| IP-osoitteet | ⚠️ Palvelin näkee IP:t (TLS suojaa matkan) |
-| Liikennemallit | ⚠️ Näkyy → kevyt padding (valinnainen myöhemmin) |
+| Message content | 🔒 E2EE (Double Ratchet) |
+| Routing | ⚠️ Server sees peer IDs (routing requires it) — like Signal |
+| IP addresses | ⚠️ Server sees IPs (TLS protects them in transit) |
+| Traffic patterns | ⚠️ Visible → light padding (optional later) |
 
 ---
 
-## 7. Kehitysvaiheet (Phases)
+## 7. Development Phases
 
-> Jokainen vaihe = oma pipeline-run (Planner → Coder(s) → Tester → Reviewer → Reporter). Välissä integraatiotesti.
+> Each phase = one pipeline run (Planner → Coder(s) → Tester → Reviewer → Reporter).
+> Integration tests in between.
 
-| Vaihe | Sisältö | Agentit | Status |
+| Phase | Content | Agents | Status |
 |---|---|---|---|
-| **0** | Repo + workspace, CI, AGENTS.md | 1 | ✅ **tehty** |
-| **1** | **Salausydin `e2ee-core`** (vodozemac: identiteetti, prekeyt, X3DH, ratchet, wire v1, signed hello) | 2 | ✅ **tehty — 23/23 testiä** |
-| **2** | **Relay-palvelin** (WebSocket, SQLite offline-jono, `fetch_since`, rate limiting, signed hello + spoofing-suojaus) | 1 | ✅ **tehty** |
-| **3** | **Desktop-kuori:** Tauri v2 + React/TS + shadcn/ui — kirjautumisnäkymä (avainpari lokaalisti), kontaktiview, chat-näkymä | 1 | 🟡 **kuori tehty** (identity-commandit, onboarding, layout) — ⚠️ Windows-linkitys vaatii MSVC Build Tools; CI (Linux) toimii |
-| **4** | **E2EE-integraatio:** 1:1-viestit päästä päähän (prekey-vaihto → session → salaus → relay → purku) | 1–2 | ⏳ |
-| **5** | **UI/UX:** moderni, minimalistinen, helppo — Signal/Telegram-taso (dark theme, Lucide, kutsulinkit, contactit, tila-indikaattorit) | 1–2 | ⏳ |
-| **6** | **Ryhmät + katoavat viestit:** Megolm, disappearing messages | 2 | 🔒 MVP:n jälkeen |
-| **7** | **Media + puhelut:** salattu tiedostonsiirto, WebRTC (DTLS-SRTP) + coturn | 2 | 🔒 MVP:n jälkeen |
-| **8** | **Mobiili:** Flutter + flutter_rust_bridge; push (APNs/FCM — vain "sinulla on viesti") | erillinen | 🔒 MVP:n jälkeen |
-| **9** | **Auditointi + PQ:** cargo audit, fuzz, ulkoinen review, threat model, X25519Kyber768 | — | 🔒 MVP:n jälkeen |
+| **0** | Repo + workspace, CI, AGENTS.md | 1 | ✅ **done** |
+| **1** | **Crypto core `e2ee-core`** (vodozemac: identity, prekeys, X3DH, ratchet, wire v1, signed hello) | 2 | ✅ **done — 23/23 tests** |
+| **2** | **Relay server** (WebSocket, SQLite offline queue, `fetch_since`, rate limiting, signed hello + spoofing protection) | 1 | ✅ **done** |
+| **3** | **Desktop shell:** Tauri v2 + React/TS + shadcn/ui — login view (key pair locally), contact view, chat view | 1 | 🟡 **shell done** (identity commands, onboarding, layout) — ⚠️ Windows linking requires MSVC Build Tools; CI (Linux) works |
+| **4** | **E2EE integration:** 1:1 messages end to end (prekey exchange → session → encryption → relay → decryption) | 1–2 | ⏳ |
+| **5** | **UI/UX:** modern, minimalist, easy — Signal/Telegram-grade (dark theme, Lucide, invite links, contacts, status indicators) | 1–2 | ⏳ |
+| **6** | **Groups + disappearing messages:** Megolm, disappearing messages | 2 | 🔒 After MVP |
+| **7** | **Media + calls:** encrypted file transfer, WebRTC (DTLS-SRTP) + coturn | 2 | 🔒 After MVP |
+| **8** | **Mobile:** Flutter + flutter_rust_bridge; push (APNs/FCM — only "you have a message") | separate | 🔒 After MVP |
+| **9** | **Audit + PQ:** cargo audit, fuzz, external review, threat model, X25519Kyber768 | — | 🔒 After MVP |
 
-**MVP = vaiheet 0–5.** Realistinen aikataulu pipeline-työllä: **2–4 viikkoa**.
+**MVP = phases 0–5.** Realistic timeline with pipeline work: **2–4 weeks**.
 
 ---
 
 ## 8. Code Hardening (anti-debug / anti-reverse)
 
-Rust on jo lähtökohtaisesti huomattavasti vaikeampi reverseata kuin JS/Python. Tavoite: **nostaa kynnystä niin korkealle, ettei kukaan vaivaudu** — 100 %:a suojaa ei ole olemassa, eikä sellaista luvata.
+Rust is already considerably harder to reverse engineer than JS/Python. Goal:
+**raise the bar high enough that nobody bothers** — 100% protection does not
+exist and is not promised.
 
-| Tekniikka | Missä | Tila |
+| Technique | Where | Status |
 |---|---|---|
-| **Release-profiilit:** `opt-level=3`, `lto="fat"`, `codegen-units=1`, `panic="abort"`, `strip=true` | workspace Cargo.toml | ✅ tehty |
-| **Ei debug-symboleja tuotannossa** | release-buildit | ✅ (strip) |
-| **Krypto pelkästään Rustissa** (ei JS-kerroksessa) | e2ee-core | ✅ arkkitehtuurissa |
-| **UI-ilman salaisuuksia:** React-kerros ei koskaan käsittele avaimia — vain salatut blobit | desktop | ⏳ vahvistetaan vaiheessa 3 |
-| **Mobiili-hardening:** Android R8/ProGuard + native strip, iOS strip + code signing | mobiili | 🔒 vaihe 8 |
-| **Integrity/tamper-evidence** (binäärin eheystarkistus, harkinnanvarainen) | desktop | 🔒 vaihe 9 |
-| **Cargo audit + riippuvuuskuri** (minimoidaan riippuvuuksia = pienempi hyökkäyspinta) | koko projekti | ⏳ jatkuva |
+| **Release profiles:** `opt-level=3`, `lto="fat"`, `codegen-units=1`, `panic="abort"`, `strip=true` | workspace Cargo.toml | ✅ done |
+| **No debug symbols in production** | release builds | ✅ (strip) |
+| **Crypto only in Rust** (never in the JS layer) | e2ee-core | ✅ in architecture |
+| **UI without secrets:** the React layer never handles keys — only encrypted blobs | desktop | ⏳ to be confirmed in phase 3 |
+| **Mobile hardening:** Android R8/ProGuard + native strip, iOS strip + code signing | mobile | 🔒 phase 8 |
+| **Integrity/tamper-evidence** (binary integrity check, discretionary) | desktop | 🔒 phase 9 |
+| **Cargo audit + dependency discipline** (minimized dependencies = smaller attack surface) | whole project | ⏳ ongoing |
 
-**Sääntö agentille:** release-buildit aina stripatuilla symboleilla, `panic="abort"` ei saa olla "unwind" tuotannossa, salaisuuksia ei koskaan JS-/UI-kerrokseen.
+**Rule for agents:** release builds always with stripped symbols; `panic="abort"`
+must not be "unwind" in production; secrets never go into the JS/UI layer.
 
 ---
 
-## 9. Palvelimen suojaus (deploy)
+## 9. Server Security (deploy)
 
-| Toimenpide | Kuvaus |
+| Measure | Description |
 |---|---|
-| **Oma käyttäjä ilman sudoa** | Palvelu pyörii `whisper`-käyttäjänä, ei rootina |
-| **systemd-hardening** | `NoNewPrivileges`, `ProtectSystem=strict`, `PrivateTmp`, `ProtectHome`, tyhjä `CapabilityBoundingSet` — unit-template repoissa (`server/deploy/`) |
-| **Vain tarvittavat portit auki** | ufw: 443 (ja 80 redirect) tai Cloudflare Tunnel; SSH vain avaimella + fail2ban |
-| **TLS 1.3** | Certbot/Let's Encrypt, HSTS, sertifikaattipinning clientissä |
-| **Rate limiting + koko-rajoitukset** | ✅ tehty (token bucket 60/min/IP, 8 MiB enveloppe-korkki) |
-| **Ei viestisisältölokeja** | Logit vain peer ID -tasolla, log-rotatointi, `RUST_LOG=info` |
-| **Salaisuudet** | `.env` + `WHISPER_DB_PATH`; `.env.example` dokumentoitu, ei koskaan repoihin |
-| **Päivitykset** | Automaattinen turvapäivitys (unattended-upgrades), `cargo audit` CI:ssä |
-| **Tietokanta** | Vain ciphertext-envelopet, TTL 7 vrk, 500/peer-korkki, `server/data/` gitignored |
+| **Dedicated user without sudo** | The service runs as the `whisper` user, never root |
+| **systemd hardening** | `NoNewPrivileges`, `ProtectSystem=strict`, `PrivateTmp`, `ProtectHome`, empty `CapabilityBoundingSet` — unit template in the repo (`server/deploy/`) |
+| **Only required ports open** | ufw: 443 (and 80 redirect) or Cloudflare Tunnel; SSH key-only + fail2ban |
+| **TLS 1.3** | Certbot/Let's Encrypt, HSTS, certificate pinning in the client |
+| **Rate limiting + size limits** | ✅ done (token bucket 60/min/IP, 8 MiB envelope cap) |
+| **No message-content logs** | Logs only at peer-ID level, log rotation, `RUST_LOG=info` |
+| **Secrets** | `.env` + `WHISPER_DB_PATH`; `.env.example` documented, never committed to the repo |
+| **Updates** | Automatic security updates (unattended-upgrades), `cargo audit` in CI |
+| **Database** | Ciphertext envelopes only, TTL 7 days, 500/peer cap, `server/data/` gitignored |
 
 ---
 
-## 10. Multi-Agent-työnjako
+## 10. Multi-Agent Division of Labor
 
-| Agentti | Missä | Rooli |
+| Agent | Where | Role |
 |---|---|---|
-| **OpenCode + Agnes** | Jonin PC | Pääkoodari — feature-lanet |
-| **Byte (minä)** | VPS/Hermes | Suunnittelu, arkkitehtuuri, testit, review, infra, deploy |
-| **OpenCode (2. instanssi)** | Jonin PC | Rinnakkainen feature-lane / review |
+| **OpenCode + Agnes** | Joni's PC | Lead coder — feature lanes |
+| **Byte (me)** | VPS/Hermes | Planning, architecture, tests, review, infra, deploy |
+| **OpenCode (2nd instance)** | Joni's PC | Parallel feature lane / review |
 
-**Per vaihe:** Joni → "mene" → bite-sized taskit → rinnakkaiset coderit (max 3) → testeri → reviewer → raportti → hyväksyntä → push.
+**Per phase:** Joni → "go" → bite-sized tasks → parallel coders (max 3) →
+tester → reviewer → report → approval → push.
 
 ---
 
 ## 11. Infra & Repo
 
-- **Relay:** Hetzner VPS + systemd (`whisper-relay.service`), Cloudflare Tunnel tai suora portti.
-- **CI:** GitHub Actions — `cargo test --workspace`, `clippy -D warnings`, `fmt` joka push.
-- **Repo:** `ZoniBoy00/e2ee-chat` (yksityinen aluksi, julkinen myöhemmin). **Lisenssi: MIT.**
-- **Nimeäminen:** Brändi **Whisper**; tekniset nimet `e2ee-core` (ydin) ja `whisper-relay` (relay). Rename tehty 2026-08-05.
+- **Relay:** Hetzner VPS + systemd (`whisper-relay.service`), Cloudflare
+  Tunnel or direct port.
+- **CI:** GitHub Actions — `cargo test --workspace`, `clippy -D warnings`,
+  `fmt` on every push.
+- **Repo:** `ZoniBoy00/Whisper-Chat` (private initially, public later). **License: MIT.**
+- **Naming:** brand **Whisper**; technical names `e2ee-core` (core) and
+  `whisper-relay` (relay). Rename done 2026-08-05.
 
 ---
 
-## 12. Riskit & Realismi
+## 12. Risks & Realism
 
-| Riski | Lievennys |
+| Risk | Mitigation |
 |---|---|
-| Krypto on vaikeaa | vodozemac + TDD + review + audit |
-| Metadata näkyy palvelimelle | **Hyväksytty tuotevalinta** (Signal-malli) — rehellisesti dokumentoitu |
-| Scope creep | Vaiheet 6–8 rajattu MVP:n ulkopuolelle |
-| DoS / spämmi | Rate limiting, koko-korkki, signed hello (seuraava), TTL |
-| Store-säännöt (skannauspaine) | Puhdas arkkitehtuuri; E2EE suojattu laissa (EU) |
-| Anti-reverse ei ole absoluuttista | Kynnystä nostetaan, ei luvata mahdotonta |
+| Crypto is hard | vodozemac + TDD + review + audit |
+| Metadata visible to the server | **Accepted product choice** (Signal model) — documented honestly |
+| Scope creep | Phases 6–8 kept out of the MVP |
+| DoS / spam | Rate limiting, size cap, signed hello (next), TTL |
+| Store rules (scanning pressure) | Clean architecture; E2EE protected by law (EU) |
+| Anti-reverse is not absolute | The bar is raised, not the impossible promised |
 
-**Avoimet kysymykset:**
-1. Web (selain) -tuki? (WASM mahdollista — ei MVP:ssä)
-2. Desktop-push-ilmoitukset MVP:hen?
-
----
-
-## 13. Status & seuraavaksi (TODO)
-
-**✅ Tehty (2026-08-05):**
-- [x] Vaihe 0: workspace, CI, AGENTS.md, .gitignore
-- [x] Vaihe 1: `e2ee-core` (vodozemac) — 23/23 testiä
-- [x] Vaihe 2: relay + SQLite + fetch_since + rate limit + signed hello (spoofing-suojaus) — 19/19 testiä, smoke 15/15
-- [x] Code hardening: release-profiilit, systemd-template, .env.example
-- [x] Rename `ghost-relay` → `whisper-relay` (crate, env-muuttujat `WHISPER_*`, deploy-unit)
-
-**⏳ Heti seuraavaksi:**
-- [ ] Asenna MSVC Build Tools + Windows SDK (Windows-linkitystä varten — `cargo test --workspace` lokaalisti)
-- [ ] Vaihe 4: E2EE-integraatio (prekey-vaihto → session → salaus → relay → purku desktopissa)
+**Open questions:**
+1. Web (browser) support? (WASM possible — not in MVP)
+2. Desktop push notifications in the MVP?
 
 ---
 
-*Whisper — "Mä hoidan." 🔒*
+## 13. Status & Next Steps (TODO)
+
+**✅ Done (2026-08-05):**
+- [x] Phase 0: workspace, CI, AGENTS.md, .gitignore
+- [x] Phase 1: `e2ee-core` (vodozemac) — 23/23 tests
+- [x] Phase 2: relay + SQLite + fetch_since + rate limit + signed hello (spoofing protection) — 19/19 tests, smoke 15/15
+- [x] Code hardening: release profiles, systemd template, .env.example
+- [x] Rename `ghost-relay` → `whisper-relay` (crate, `WHISPER_*` env vars, deploy unit)
+
+**⏳ Next up:**
+- [ ] Install MSVC Build Tools + Windows SDK (for Windows linking — `cargo test --workspace` locally)
+- [ ] Phase 4: E2EE integration (prekey exchange → session → encryption → relay → decryption in the desktop)
+
+---
+
+*Whisper — "I've got this." 🔒*

@@ -24,9 +24,10 @@ export function CopyButton({ value, label }: CopyButtonProps) {
     <button
       type="button"
       onClick={() => void handleCopy()}
+      aria-label={label ? undefined : "Copy Whisper ID"}
       className="inline-flex items-center gap-1.5 rounded-lg border border-wp-line/10 bg-wp-panel-2 px-3 py-1.5 text-xs font-medium text-wp-dim transition hover:bg-wp-panel-3 hover:text-wp-text"
     >
-      <Icon className="h-3.5 w-3.5" />
+      <Icon className="h-3.5 w-3.5" aria-hidden="true" />
       {label ? <span>{copied ? "Copied" : label}</span> : null}
     </button>
   );

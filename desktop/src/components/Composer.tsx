@@ -42,6 +42,7 @@ export function Composer({ onSend }: ComposerProps) {
             }
           }}
           placeholder="Type a message"
+          aria-label="Message"
           className="max-h-36 min-h-[42px] flex-1 resize-none rounded-2xl bg-wp-panel-2 px-4 py-2.5 text-sm text-wp-text placeholder-wp-faint outline-none transition focus:ring-1 focus:ring-wp-accent/50"
         />
         <button
@@ -49,6 +50,7 @@ export function Composer({ onSend }: ComposerProps) {
           onClick={submit}
           disabled={!text.trim()}
           title="Send message"
+          aria-label="Send message"
           className="inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-wp-accent text-wp-deep shadow-lg shadow-wp-accent/25 transition hover:bg-wp-accent-strong disabled:cursor-not-allowed disabled:opacity-40"
         >
           <Send className="h-4 w-4" strokeWidth={2.2} />
