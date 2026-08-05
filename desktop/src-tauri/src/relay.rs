@@ -1687,31 +1687,102 @@ impl RelayClient {
                 self.handle_friend_requests(incoming, outgoing)
             }
             ServerMessage::Error { code } => {
-                let err = RelayError::Relay(code);
-                // Resolve the oldest outstanding request across every queue.
-                if let Some(tx) = mutex_guard(&self.inner.pending_prekeys)?.pop_front() {
-                    let _ = tx.send(Err(err));
-                } else if let Some(tx) = mutex_guard(&self.inner.pending_register)?.pop_front() {
-                    let _ = tx.send(Err(err));
-                } else if let Some(tx) = mutex_guard(&self.inner.pending_search)?.pop_front() {
-                    let _ = tx.send(Err(err));
-                } else if let Some(tx) = mutex_guard(&self.inner.pending_profile)?.pop_front() {
-                    let _ = tx.send(Err(err));
-                } else if let Some(tx) = mutex_guard(&self.inner.pending_group_created)?.pop_front()
-                {
-                    let _ = tx.send(Err(err));
-                } else if let Some(tx) =
-                    mutex_guard(&self.inner.pending_group_member_added)?.pop_front()
-                {
-                    let _ = tx.send(Err(err));
-                } else if let Some((_, tx)) =
-                    mutex_guard(&self.inner.pending_group_info)?.pop_front()
-                {
-                    let _ = tx.send(Err(err));
-                } else if let Some(tx) = mutex_guard(&self.inner.pending_group_op)?.pop_front() {
-                    let _ = tx.send(Err(err));
-                } else if let Some(tx) = mutex_guard(&self.inner.pending_contact_ops)?.pop_front() {
-                    let _ = tx.send(Err(err));
+                // Route the error to the queue that actually owns the failed
+                // request. A blind "oldest waiter across every queue" fallback
+                // lets an unrelated stale waiter (e.g. a leftover pre-key
+                // fetch) swallow errors meant for group/profile requests,
+                // which then time out — and, for example, a stale group can
+                // never learn that it is `not_a_member` anymore.
+                // Generic helper: resolve any pending request with a relay
+                // error. Each queue carries `Sender<Result<T, RelayError>>`
+                // with a different T, hence the generic function instead of a
+                // closure.
+                fn send_error<T>(tx: oneshot::Sender<Result<T, RelayError>>, code: &str) {
+                    let _ = tx.send(Err(RelayError::Relay(code.to_string())));
+                }
+                match code.as_str() {
+                    // Group operations: membership/ownership errors.
+                    "not_a_member" | "group_not_found" | "not_admin" | "not_owner"
+                    | "invalid_group_name" => {
+                        if let Some((_, tx)) =
+                            mutex_guard(&self.inner.pending_group_info)?.pop_front()
+                        {
+                            send_error(tx, &code);
+                        } else if let Some(tx) =
+                            mutex_guard(&self.inner.pending_group_op)?.pop_front()
+                        {
+                            send_error(tx, &code);
+                        } else if let Some(tx) =
+                            mutex_guard(&self.inner.pending_group_created)?.pop_front()
+                        {
+                            send_error(tx, &code);
+                        } else if let Some(tx) =
+                            mutex_guard(&self.inner.pending_group_member_added)?.pop_front()
+                        {
+                            send_error(tx, &code);
+                        }
+                    }
+                    // Contact/friend + pre-key operations.
+                    "not_contacts" | "already_pending" | "already_contacts" | "cannot_add_self"
+                    | "not_found" => {
+                        if let Some(tx) = mutex_guard(&self.inner.pending_prekeys)?.pop_front() {
+                            send_error(tx, &code);
+                        } else if let Some(tx) =
+                            mutex_guard(&self.inner.pending_contact_ops)?.pop_front()
+                        {
+                            send_error(tx, &code);
+                        }
+                    }
+                    // Profile/username/avatar operations.
+                    "invalid_username"
+                    | "username_taken"
+                    | "bad_signature"
+                    | "invalid_display_name"
+                    | "invalid_avatar"
+                    | "no_profile"
+                    | "media_error" => {
+                        if let Some(tx) = mutex_guard(&self.inner.pending_register)?.pop_front() {
+                            send_error(tx, &code);
+                        } else if let Some(tx) =
+                            mutex_guard(&self.inner.pending_search)?.pop_front()
+                        {
+                            send_error(tx, &code);
+                        } else if let Some(tx) =
+                            mutex_guard(&self.inner.pending_profile)?.pop_front()
+                        {
+                            send_error(tx, &code);
+                        }
+                    }
+                    // Unknown code: fall back to the oldest waiter anywhere.
+                    _ => {
+                        if let Some(tx) = mutex_guard(&self.inner.pending_prekeys)?.pop_front() {
+                            send_error(tx, &code);
+                        } else if let Some(tx) =
+                            mutex_guard(&self.inner.pending_register)?.pop_front()
+                        {
+                            send_error(tx, &code);
+                        } else if let Some(tx) =
+                            mutex_guard(&self.inner.pending_search)?.pop_front()
+                        {
+                            send_error(tx, &code);
+                        } else if let Some(tx) =
+                            mutex_guard(&self.inner.pending_profile)?.pop_front()
+                        {
+                            send_error(tx, &code);
+                        } else if let Some((_, tx)) =
+                            mutex_guard(&self.inner.pending_group_info)?.pop_front()
+                        {
+                            send_error(tx, &code);
+                        } else if let Some(tx) =
+                            mutex_guard(&self.inner.pending_group_op)?.pop_front()
+                        {
+                            send_error(tx, &code);
+                        } else if let Some(tx) =
+                            mutex_guard(&self.inner.pending_contact_ops)?.pop_front()
+                        {
+                            send_error(tx, &code);
+                        }
+                    }
                 }
                 Ok(())
             }
