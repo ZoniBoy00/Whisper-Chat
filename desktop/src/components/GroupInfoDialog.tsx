@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
+  ArrowLeftRight,
   Crown,
   Loader2,
   LogOut,
@@ -14,6 +15,7 @@ import type { GroupInfo, GroupMember } from "../types";
 import { cx, shortPeerId } from "../lib/format";
 import type { TFunction } from "../i18n/types";
 import { useI18n } from "../i18n/I18nContext";
+import { useToast } from "../hooks/useToast";
 import { Avatar } from "./Avatar";
 
 interface GroupInfoDialogProps {
@@ -26,6 +28,7 @@ interface GroupInfoDialogProps {
   onDemote: (groupId: string, peerId: string) => Promise<void>;
   onRemove: (groupId: string, peerId: string) => Promise<void>;
   onLeave: (groupId: string) => Promise<void>;
+  onTransferOwnership: (groupId: string, peerId: string) => Promise<void>;
 }
 
 /** A role badge. The owner badge is yellow/highlighted per WhatsApp/Signal
@@ -63,14 +66,18 @@ export function GroupInfoDialog({
   onDemote,
   onRemove,
   onLeave,
+  onTransferOwnership,
 }: GroupInfoDialogProps) {
   const { t } = useI18n();
+  const { toast } = useToast();
   const dialogRef = useRef<HTMLDialogElement>(null);
   const [info, setInfo] = useState<GroupInfo | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [busyPeer, setBusyPeer] = useState<string | null>(null);
   const [confirmingLeave, setConfirmingLeave] = useState(false);
+  const [transferTarget, setTransferTarget] = useState("");
+  const [confirmingTransfer, setConfirmingTransfer] = useState(false);
 
   const reload = useCallback(
     async (id: string) => {
@@ -92,6 +99,8 @@ export function GroupInfoDialog({
     if (!dialog) return;
     if (open && !dialog.open) {
       setConfirmingLeave(false);
+      setConfirmingTransfer(false);
+      setTransferTarget("");
       setError(null);
       dialog.showModal();
       if (groupId) void reload(groupId);
@@ -112,7 +121,9 @@ export function GroupInfoDialog({
       await action();
       if (groupId) await reload(groupId);
     } catch (err) {
-      setError(String(err).replace(/^Error:\s*/, ""));
+      const message = String(err).replace(/^Error:\s*/, "");
+      setError(message);
+      toast(message, "error");
     } finally {
       setBusyPeer(null);
     }
@@ -130,8 +141,38 @@ export function GroupInfoDialog({
       await onLeave(groupId);
       onOpenChange(false);
     } catch (err) {
-      setError(String(err).replace(/^Error:\s*/, ""));
+      const message = String(err).replace(/^Error:\s*/, "");
+      setError(message);
+      toast(message, "error");
       setConfirmingLeave(false);
+    } finally {
+      setBusyPeer(null);
+    }
+  };
+
+  /** Transfer ownership to the selected member: a first click arms the
+   *  confirmation (like leaving), a second click executes. On success the
+   *  dialog reloads so the caller's role badge and the transfer control
+   *  reflect the new owner right away. */
+  const handleTransfer = async () => {
+    if (!groupId || !transferTarget) return;
+    if (!confirmingTransfer) {
+      setConfirmingTransfer(true);
+      return;
+    }
+    setBusyPeer("__transfer__");
+    setError(null);
+    try {
+      await onTransferOwnership(groupId, transferTarget);
+      setTransferTarget("");
+      setConfirmingTransfer(false);
+      if (groupId) await reload(groupId);
+      toast(t("toast.group_transferred"), "success");
+    } catch (err) {
+      const message = String(err).replace(/^Error:\s*/, "");
+      setError(message);
+      toast(message, "error");
+      setConfirmingTransfer(false);
     } finally {
       setBusyPeer(null);
     }
@@ -284,6 +325,60 @@ export function GroupInfoDialog({
           ) : null}
 
           <div className="border-t border-wp-line/10 pt-4">
+            {canManage && info && info.members.some((m) => m.role !== "owner") ? (
+              <div className="mb-4">
+                <p className="mb-2 text-xs leading-snug text-wp-faint">
+                  {t("groupInfo.transfer_ownership_hint")}
+                </p>
+                <div className="flex items-center gap-2">
+                  <label
+                    className="sr-only"
+                    htmlFor="transfer-owner-select"
+                  >
+                    {t("groupInfo.transfer_owner_select_aria")}
+                  </label>
+                  <select
+                    id="transfer-owner-select"
+                    value={transferTarget}
+                    onChange={(e) => {
+                      setTransferTarget(e.target.value);
+                      setConfirmingTransfer(false);
+                    }}
+                    disabled={busyPeer !== null}
+                    className="min-w-0 flex-1 rounded-xl border border-wp-line/10 bg-wp-panel-3 px-3 py-2 text-xs text-wp-text focus:border-wp-accent focus:outline-none disabled:opacity-40"
+                  >
+                    <option value="">{t("groupInfo.transfer_owner_placeholder")}</option>
+                    {info.members
+                      .filter((member) => member.role !== "owner")
+                      .map((member) => (
+                        <option key={member.peer_id} value={member.peer_id}>
+                          {member.peer_id}
+                        </option>
+                      ))}
+                  </select>
+                  <button
+                    type="button"
+                    onClick={() => void handleTransfer()}
+                    disabled={busyPeer !== null || !transferTarget}
+                    className={cx(
+                      "inline-flex shrink-0 items-center justify-center gap-2 rounded-xl px-3 py-2 text-xs font-semibold transition",
+                      confirmingTransfer
+                        ? "bg-wp-danger/15 text-wp-danger"
+                        : "border border-wp-line/10 text-wp-dim hover:bg-wp-panel-3 hover:text-wp-text disabled:opacity-40"
+                    )}
+                  >
+                    {busyPeer === "__transfer__" ? (
+                      <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                    ) : (
+                      <ArrowLeftRight className="h-3.5 w-3.5" aria-hidden="true" />
+                    )}
+                    {confirmingTransfer
+                      ? t("common.confirm_again")
+                      : t("groupInfo.transfer_ownership")}
+                  </button>
+                </div>
+              </div>
+            ) : null}
             {myRole === "owner" ? (
               <p className="mb-2 text-xs leading-snug text-wp-faint">
                 {t("groupInfo.leave_group_owner_hint")}

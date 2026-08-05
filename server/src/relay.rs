@@ -214,6 +214,14 @@ enum ClientMessage {
     /// member, and the owner cannot remove themselves.
     #[serde(rename = "remove_member")]
     RemoveMember { group_id: String, peer_id: String },
+    /// Transfer group ownership to `new_owner_peer_id`. Only the current owner
+    /// may call this; on success the old owner becomes an admin and the new
+    /// owner takes over the owner role.
+    #[serde(rename = "transfer_ownership")]
+    TransferOwnership {
+        group_id: String,
+        new_owner_peer_id: String,
+    },
 }
 
 /// Messages the SERVER sends to the client.
@@ -309,6 +317,13 @@ pub(crate) enum ServerMessage {
     /// reply).
     #[serde(rename = "group_member_removed")]
     GroupMemberRemoved { group_id: String, peer_id: String },
+    /// Confirmation that group ownership was transferred to `new_owner_peer_id`
+    /// (`transfer_ownership` reply). The old owner is now an admin.
+    #[serde(rename = "ownership_transferred")]
+    OwnershipTransferred {
+        group_id: String,
+        new_owner_peer_id: String,
+    },
     /// Protocol error.
     Error { code: String },
 }
@@ -488,6 +503,8 @@ impl Relay {
             .write()
             .await
             .insert(peer_id.clone(), out_tx.clone());
+        let online_count = self.inner.online.read().await.len();
+        tracing::info!(peer = %peer_id, ip = %ip, online = online_count, "peer online");
 
         // 2b) Announce the peer is online to everyone watching them. Any peer
         //     that reconnects mid-watch sees a fresh `online: true` push.
@@ -611,6 +628,13 @@ impl Relay {
                         }) => {
                             self.remove_member(&peer_id, &ip, &group_id, &target).await;
                         }
+                        Ok(ClientMessage::TransferOwnership {
+                            group_id,
+                            new_owner_peer_id,
+                        }) => {
+                            self.transfer_ownership(&peer_id, &ip, &group_id, &new_owner_peer_id)
+                                .await;
+                        }
                         // Re-registration or protocol violations: ignore for now.
                         Ok(_) => {}
                         Err(_) => {
@@ -643,6 +667,7 @@ impl Relay {
 
         // 6) Cleanup: unregister, persist last-seen and notify watchers.
         self.inner.online.write().await.remove(&peer_id);
+        let online_count = self.inner.online.read().await.len();
         let _ = self.inner.store.set_last_seen(&peer_id, unix_now());
         self.broadcast_presence(&peer_id, false).await;
         // Drop this socket's own watch registrations: its channel is dead, so
@@ -654,7 +679,7 @@ impl Relay {
             .iter_mut()
             .for_each(|(_, watchers)| watchers.retain(|w| w.peer_id != peer_id));
         pump_out.abort();
-        tracing::info!(peer = %peer_id, "peer disconnected");
+        tracing::info!(peer = %peer_id, online = online_count, "peer disconnected");
     }
 
     /// Wait for the client's signed `hello` within a timeout window.
@@ -838,6 +863,12 @@ impl Relay {
         let _ = self
             .send(sender_peer, ServerMessage::Acknowledged { seq })
             .await;
+        tracing::debug!(
+            sender = %sender_peer,
+            recipient = %envelope.recipient,
+            seq,
+            "envelope routed"
+        );
     }
 
     /// Deliver a single envelope to its recipient: live to an online socket,

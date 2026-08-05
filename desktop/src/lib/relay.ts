@@ -190,6 +190,12 @@ export function removeMember(groupId: string, peerId: string): Promise<void> {
   return invoke("remove_member", { groupId, peerId });
 }
 
+/** Transfer group ownership to `peerId` (owner only). The old owner becomes
+ *  an admin; `peerId` takes over the owner role. */
+export function transferOwnership(groupId: string, peerId: string): Promise<void> {
+  return invoke("transfer_ownership", { groupId, peerId });
+}
+
 /** Remove the caller from a group's roster. */
 export function leaveGroup(groupId: string): Promise<void> {
   return invoke("leave_group", { groupId });

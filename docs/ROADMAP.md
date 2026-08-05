@@ -5,7 +5,7 @@
 > general-purpose chat — a WhatsApp/Signal/Telegram replacement without
 > backdoors or scanning mechanisms.
 >
-> **Date:** 2026-08-05 (updated: branding, product vision, hardening, deployment security)
+> **Date:** 2026-08-05 (updated: branding, product vision, hardening, deployment security, relay logging + graceful shutdown, i18n/notifications UX)
 > **Status:** Planning (Phase 1) — relay + crypto core coded and tested
 > **Origin:** App specification + Gemini cross-check + Byte evaluation
 > **Working title (before branding):** Operation Ghost
@@ -175,8 +175,10 @@ talks to whom, IP) is visible just as in Signal/WhatsApp — this is an
 | **4** | **E2EE integration:** 1:1 messages end to end (prekey exchange → session → encryption → relay → decryption), session persistence | 1–2 | ✅ **done** |
 | **5** | **UI/UX:** Signal/Telegram-grade — read receipts (blue ticks), typing indicator, display names, Online/Last seen presence, WhatsApp-style chat list, settings | 1–2 | ✅ **done** |
 | **5.5** | **Username & Profile System:** signed username binding (Ed25519), avatars via /media, search by username/UID | 2 | ✅ **done** — spec: `docs/PROFILE-SYSTEM.md` |
-| **6** | **Groups:** Megolm E2EE groups — owner/admin roles, key sharing over 1:1 E2EE, WhatsApp/Signal-style group chat + info UI | 2 | ✅ **done** |
+| **6** | **Groups:** Megolm E2EE groups — owner/admin roles, multi-sender (every member sends with an own Megolm session), ownership transfer, key sharing over 1:1 E2EE, WhatsApp/Signal-style group chat + info UI | 2 | ✅ **done** |
 | **6.5** | **Disappearing messages:** per-chat TTL, auto-delete both ends | 1–2 | 🔒 Next |
+| **6.6** | **i18n + notifications:** EN/FI translations, native notifications + sounds, unread badges, pinned chats, in-chat message search, day separators, context menus, auto-reconnect | 1–2 | ✅ **done** |
+| **6.7** | **Group multi-sender:** every member sends with their own outbound Megolm session (created on first group-key receipt); connection toasts | 1 | ✅ **done** (toasts ⏳) |
 | **7** | **Media + calls:** encrypted file transfer, WebRTC (DTLS-SRTP) + coturn | 2 | 🔒 After MVP |
 | **8** | **Mobile:** Flutter + flutter_rust_bridge; push (APNs/FCM — only "you have a message") | separate | 🔒 After MVP |
 | **9** | **Audit + PQ:** cargo audit, fuzz, external review, threat model, X25519Kyber768 | — | 🔒 After MVP |
@@ -275,13 +277,21 @@ tester → reviewer → report → approval → push.
 **✅ Done (2026-08-05):**
 - [x] Phase 0: workspace, CI, AGENTS.md, .gitignore
 - [x] Phase 1: `e2ee-core` (vodozemac) — 48/48 tests
-- [x] Phase 2: relay + SQLite + fetch_since + rate limit + signed hello (spoofing protection) — 108/108 tests, smoke 67/67
+- [x] Phase 2: relay + SQLite + fetch_since + rate limit + signed hello (spoofing protection) — 112/112 tests, smoke 67/67
+- [x] Phase 5.5: username & profile system (signed bindings, avatars, search)
+- [x] Phase 6: groups — owner/admin roles, multi-sender (own Megolm session per member), ownership transfer, Megolm key sharing over 1:1 E2EE
+- [x] Phase 6.6: i18n (EN/FI) + native notifications/sounds, unread badges, pinned chats, in-chat search, day separators, context menus, auto-reconnect
+- [x] Phase 6.7: group multi-sender — every member sends with an own outbound Megolm session
+- [x] Relay ops: structured logging (`RUST_LOG`-controllable, peer-ID level only) + graceful shutdown on Ctrl+C/SIGTERM (clean exit, no `STATUS_CONTROL_C_EXIT`)
 - [x] Code hardening: release profiles, systemd template, .env.example
 - [x] Rename `ghost-relay` → `whisper-relay` (crate, `WHISPER_*` env vars, deploy unit)
 
+**Test counts (2026-08-05):** 219 unit tests — e2ee-core 48, whisper-relay 112,
+whisper-desktop 59; smoke suite 67/67 checks.
+
 **⏳ Next up:**
-- [ ] Install MSVC Build Tools + Windows SDK (for Windows linking — `cargo test --workspace` locally)
-- [ ] Phase 4: E2EE integration (prekey exchange → session → encryption → relay → decryption in the desktop)
+- [ ] Phase 6.5: disappearing messages (per-chat TTL, auto-delete both ends)
+- [ ] Connection toasts for auto-reconnect events
 
 ---
 

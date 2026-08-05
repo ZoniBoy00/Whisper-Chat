@@ -23,7 +23,9 @@ sender and the recipient can read them.
   (via the audited [vodozemac](https://github.com/matrix-org/vodozemac) library).
   Forward and backward secrecy on every message.
 - **End-to-end encrypted groups** — Megolm group encryption with owner/admin
-  roles, signed username aliases and avatars (WhatsApp/Signal-style group UI).
+  roles, multi-sender (every member sends with their own Megolm session),
+  ownership transfer, signed username aliases and avatars (WhatsApp/Signal-style
+  group UI).
 - **Read receipts, typing & presence** — blue double ticks when a message is
   read, live "typing…" indicators and Online / Last seen status (WhatsApp-style).
 - **Username & profile system** — register a unique signed username (Ed25519
@@ -46,6 +48,16 @@ sender and the recipient can read them.
 - **Modern dark UI** — clean, minimalist, Signal/Telegram-grade desktop shell
   (Tauri v2 + React + TypeScript + Tailwind + Lucide icons), Discord-style
   splashscreen and tasteful motion.
+- **Full i18n (EN/FI)** — the whole UI is translated into English and Finnish
+  with a language switcher.
+- **Native notifications & sounds** — desktop notifications, alert sounds and
+  per-option notification previews.
+- **Unread badges & pinned chats** — per-chat unread counts (cleared on open)
+  and pinning your favourite conversations to the top.
+- **In-chat message search, day separators & context menus** — find any
+  message, grouped history by day, and right-click actions on messages.
+- **Auto-reconnect** — the client reconnects to the relay automatically and
+  surfaces connection state in the UI.
 - **Cross-platform future** — Tauri desktop today, Flutter mobile coming (one
   shared Rust crypto core).
 - **Hardened release builds** — `lto="fat"`, `panic="abort"`, `strip=true`
@@ -207,8 +219,8 @@ cargo fmt --check
 
 ## Testing & TDD
 
-- **209 unit tests** across the workspace (e2ee-core 48, whisper-desktop 53,
-  whisper-relay 108)
+- **219 unit tests** across the workspace (e2ee-core 48, whisper-desktop 59,
+  whisper-relay 112)
 - **67 smoke tests** covering live routing, offline delivery, SQLite
   persistence, `fetch_since` sync, rate limiting and signed-hello spoofing
   protection
@@ -231,9 +243,9 @@ Licensed under the **MIT License**. Cryptography is provided by
 1:1 integration, polished UI/UX.
 
 **After MVP (phases 6–9):** disappearing messages, encrypted media + calls,
-mobile (Flutter). Groups, presence and privacy controls are already in.
-media + calls (WebRTC/DTLS-SRTP), Flutter mobile, external audit +
-post-quantum (X25519Kyber768).
+mobile (Flutter), external audit + post-quantum (X25519Kyber768). Groups
+(owner/admin roles, multi-sender, ownership transfer), presence and privacy
+controls are already in; **connection toasts** are coming.
 
 See [docs/ROADMAP.md](docs/ROADMAP.md) for the full technical roadmap.
 

@@ -76,6 +76,11 @@ pub struct ContactRow {
     pub last_seen: Option<i64>,
 }
 
+/// A persisted inbound group session: `(group_id, sender_peer_id)` maps to the
+/// group name plus the Megolm pickle. Multi-sender Megolm keeps one inbound
+/// session per group sender, so the key carries both.
+pub type StoredGroupInbound = HashMap<(String, String), (String, String)>;
+
 /// Thread-safe handle to the shared SQLite store.
 pub struct ChatStore {
     conn: Mutex<Connection>,
@@ -173,15 +178,43 @@ impl ChatStore {
                 pickle   TEXT NOT NULL
             );
             CREATE TABLE IF NOT EXISTS group_inbound (
-                group_id TEXT PRIMARY KEY,
+                group_id TEXT NOT NULL,
+                sender   TEXT NOT NULL,
                 name     TEXT NOT NULL,
-                pickle   TEXT NOT NULL
+                pickle   TEXT NOT NULL,
+                PRIMARY KEY (group_id, sender)
             );
             CREATE TABLE IF NOT EXISTS settings (
                 key   TEXT PRIMARY KEY,
                 value TEXT NOT NULL
             );",
         )?;
+
+        // Migration: `group_inbound` gained a `sender` column for multi-sender
+        // Megolm (one inbound session per group sender). SQLite has no
+        // `ADD COLUMN ... PRIMARY KEY`, so detect the old single-sender shape
+        // and rebuild the table, carrying legacy rows over with an empty
+        // sender (the recipient then falls back to that session during
+        // decrypt until the senders re-share their keys).
+        let inbound_columns: Vec<String> = conn
+            .prepare("PRAGMA table_info(group_inbound)")?
+            .query_map([], |row| row.get::<_, String>(1))?
+            .collect::<rusqlite::Result<_>>()?;
+        if !inbound_columns.iter().any(|c| c.as_str() == "sender") {
+            conn.execute_batch(
+                "ALTER TABLE group_inbound RENAME TO group_inbound_legacy;
+                 CREATE TABLE group_inbound (
+                     group_id TEXT NOT NULL,
+                     sender   TEXT NOT NULL,
+                     name     TEXT NOT NULL,
+                     pickle   TEXT NOT NULL,
+                     PRIMARY KEY (group_id, sender)
+                 );
+                 INSERT INTO group_inbound (group_id, sender, name, pickle)
+                     SELECT group_id, '', name, pickle FROM group_inbound_legacy;
+                 DROP TABLE group_inbound_legacy;",
+            )?;
+        }
         Ok(())
     }
 
@@ -223,22 +256,21 @@ impl ChatStore {
         Ok(groups)
     }
 
-    /// Replace the whole inbound group-session map (group_id -> (name,
-    /// Megolm pickle)). A full rewrite keeps it simple, mirroring
-    /// [`ChatStore::replace_sessions`].
-    pub fn replace_group_inbound(
-        &self,
-        groups: &HashMap<String, (String, String)>,
-    ) -> Result<(), StoreError> {
+    /// Replace the whole inbound group-session map (`(group_id, sender) ->
+    /// (name, Megolm pickle)`). A full rewrite keeps it simple, mirroring
+    /// [`ChatStore::replace_sessions`]. Multi-sender Megolm keeps one inbound
+    /// session per group sender, so the key carries both the group id and the
+    /// sender's peer id.
+    pub fn replace_group_inbound(&self, groups: &StoredGroupInbound) -> Result<(), StoreError> {
         let mut conn = self.conn()?;
         let tx = conn.transaction()?;
         tx.execute("DELETE FROM group_inbound", [])?;
         {
             let mut stmt = tx.prepare(
-                "INSERT INTO group_inbound (group_id, name, pickle) VALUES (?1, ?2, ?3)",
+                "INSERT INTO group_inbound (group_id, sender, name, pickle) VALUES (?1, ?2, ?3, ?4)",
             )?;
-            for (group_id, (name, pickle)) in groups {
-                stmt.execute(params![group_id, name, pickle])?;
+            for ((group_id, sender), (name, pickle)) in groups {
+                stmt.execute(params![group_id, sender, name, pickle])?;
             }
         }
         tx.commit()?;
@@ -246,17 +278,20 @@ impl ChatStore {
     }
 
     /// Load every persisted inbound group session as a
-    /// `group_id -> (name, pickle)` map.
-    pub fn load_group_inbound(&self) -> Result<HashMap<String, (String, String)>, StoreError> {
+    /// `(group_id, sender) -> (name, pickle)` map.
+    pub fn load_group_inbound(&self) -> Result<StoredGroupInbound, StoreError> {
         let conn = self.conn()?;
-        let mut stmt = conn.prepare("SELECT group_id, name, pickle FROM group_inbound")?;
+        let mut stmt = conn.prepare("SELECT group_id, sender, name, pickle FROM group_inbound")?;
         let rows = stmt.query_map([], |row| {
-            Ok((row.get::<_, String>(0)?, (row.get(1)?, row.get(2)?)))
+            Ok((
+                (row.get::<_, String>(0)?, row.get::<_, String>(1)?),
+                (row.get(2)?, row.get(3)?),
+            ))
         })?;
         let mut groups = HashMap::new();
         for row in rows {
-            let (id, rest) = row?;
-            groups.insert(id, rest);
+            let (key, rest) = row?;
+            groups.insert(key, rest);
         }
         Ok(groups)
     }
@@ -681,24 +716,45 @@ mod tests {
         let store = ChatStore::open_in_memory(TEST_KEY).expect("open in-memory store");
         store
             .replace_group_inbound(&HashMap::from([(
-                "g1".to_string(),
+                ("g1".to_string(), "alice".to_string()),
                 ("Squad".to_string(), r#"{"ratchet":1}"#.to_string()),
             )]))
             .expect("store inbound");
         let loaded = store.load_group_inbound().expect("load inbound");
         assert_eq!(loaded.len(), 1);
-        assert_eq!(loaded["g1"].0, "Squad");
-        assert_eq!(loaded["g1"].1, r#"{"ratchet":1}"#);
+        assert_eq!(loaded[&("g1".to_string(), "alice".to_string())].0, "Squad");
+        assert_eq!(
+            loaded[&("g1".to_string(), "alice".to_string())].1,
+            r#"{"ratchet":1}"#
+        );
 
+        // A second sender's session for the same group coexists.
+        store
+            .replace_group_inbound(&HashMap::from([
+                (
+                    ("g1".to_string(), "alice".to_string()),
+                    ("Squad".to_string(), r#"{"ratchet":1}"#.to_string()),
+                ),
+                (
+                    ("g1".to_string(), "bob".to_string()),
+                    ("Squad".to_string(), r#"{"ratchet":2}"#.to_string()),
+                ),
+            ]))
+            .expect("store both senders");
+        let loaded = store.load_group_inbound().expect("reload inbound");
+        assert_eq!(loaded.len(), 2, "each sender keeps its own inbound session");
+        assert!(loaded.contains_key(&("g1".to_string(), "bob".to_string())));
+
+        // A fresh rewrite drops stale rows.
         store
             .replace_group_inbound(&HashMap::from([(
-                "g2".to_string(),
-                ("New".to_string(), r#"{"ratchet":2}"#.to_string()),
+                ("g2".to_string(), "alice".to_string()),
+                ("New".to_string(), r#"{"ratchet":3}"#.to_string()),
             )]))
             .expect("rewrite inbound");
         let loaded = store.load_group_inbound().expect("reload inbound");
         assert_eq!(loaded.len(), 1);
-        assert!(loaded.contains_key("g2"));
+        assert!(loaded.contains_key(&("g2".to_string(), "alice".to_string())));
     }
 
     #[test]
@@ -825,6 +881,43 @@ mod tests {
             1,
             "another peer's history must survive"
         );
+    }
+
+    #[test]
+    fn legacy_group_inbound_table_is_migrated_to_multi_sender_shape() {
+        let path = temp_db_path("group-inbound-migration");
+        let _ = std::fs::remove_file(&path);
+        // Simulate a database created before multi-sender Megolm: one inbound
+        // session per group, no sender column.
+        {
+            let conn = Connection::open(&path).expect("open legacy db");
+            conn.execute_batch(
+                "CREATE TABLE group_inbound (
+                     group_id TEXT PRIMARY KEY,
+                     name     TEXT NOT NULL,
+                     pickle   TEXT NOT NULL
+                 );
+                 INSERT INTO group_inbound (group_id, name, pickle)
+                     VALUES ('g1', 'Squad', '{\"ratchet\":1}');",
+            )
+            .expect("create legacy schema");
+        }
+        let store = ChatStore::open(&path, TEST_KEY).expect("migrated db must open");
+        // The legacy row survives with an empty sender (the defensive fallback
+        // key used while senders re-share their keys).
+        let loaded = store.load_group_inbound().expect("load inbound");
+        assert_eq!(loaded.len(), 1);
+        assert!(loaded.contains_key(&("g1".to_string(), String::new())));
+        // The multi-sender shape works on the migrated schema.
+        store
+            .replace_group_inbound(&HashMap::from([(
+                ("g1".to_string(), "alice".to_string()),
+                ("Squad".to_string(), r#"{"ratchet":1}"#.to_string()),
+            )]))
+            .expect("write multi-sender inbound");
+        let loaded = store.load_group_inbound().expect("reload inbound");
+        assert!(loaded.contains_key(&("g1".to_string(), "alice".to_string())));
+        std::fs::remove_file(&path).ok();
     }
 
     #[test]

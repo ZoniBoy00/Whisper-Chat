@@ -7,6 +7,7 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { Loader2 } from "lucide-react";
 import { cx } from "./lib/format";
 import { I18nProvider, useI18n } from "./i18n/I18nContext";
+import { ToastProvider } from "./hooks/useToast";
 import { Onboarding } from "./components/Onboarding";
 import { MainView } from "./components/MainView";
 import { Splash } from "./components/Splash";
@@ -164,7 +165,9 @@ function MainApp() {
 export default function App() {
   return (
     <I18nProvider>
-      <WindowRouter />
+      <ToastProvider>
+        <WindowRouter />
+      </ToastProvider>
     </I18nProvider>
   );
 }

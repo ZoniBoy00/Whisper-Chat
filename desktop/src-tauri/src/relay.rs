@@ -158,9 +158,11 @@ pub enum RelayError {
     /// A Megolm group-session operation failed.
     #[error("group error: {0}")]
     Group(#[from] e2ee_core::GroupError),
-    /// The group has no outbound Megolm session. In the MVP model only the
-    /// group creator holds one, so a regular member cannot send to the group.
-    #[error("only the group creator can send messages in this version")]
+    /// The group has no outbound Megolm session. In the multi-sender model
+    /// every member owns one (created automatically when they first receive
+    /// the group key), so this only fires in the brief window before that
+    /// join-time setup completes.
+    #[error("group {0} has no outbound session yet")]
     NoOutboundGroup(String),
     /// The relay replied with an error code.
     #[error("relay error: {0}")]
@@ -282,6 +284,10 @@ enum ClientMessage {
     /// Remove a member from a group (owner only).
     #[serde(rename = "remove_member")]
     RemoveMember { group_id: String, peer_id: String },
+    /// Transfer group ownership to `peer_id` (owner only). The old owner
+    /// becomes an admin; `peer_id` takes over the owner role.
+    #[serde(rename = "transfer_ownership")]
+    TransferOwnership { group_id: String, peer_id: String },
 }
 
 /// Messages the SERVER sends to the client (matches `server/src/relay.rs`).
@@ -365,6 +371,13 @@ enum ServerMessage {
     /// reply).
     #[serde(rename = "group_member_removed")]
     GroupMemberRemoved { group_id: String, peer_id: String },
+    /// Confirmation that group ownership was transferred to `new_owner_peer_id`
+    /// (`transfer_ownership` reply). The old owner is now an admin.
+    #[serde(rename = "ownership_transferred")]
+    OwnershipTransferred {
+        group_id: String,
+        new_owner_peer_id: String,
+    },
     /// A protocol error code.
     Error { code: String },
 }
@@ -728,9 +741,10 @@ struct RelayInner {
     /// this identity created) the outbound session.
     groups: RwLock<HashMap<String, GroupInfoState>>,
     /// Megolm inbound sessions for groups this identity joined, keyed by
-    /// group_id. Built from the creator's `session_key` shared over a 1:1
-    /// Double Ratchet envelope.
-    inbound_groups: Mutex<HashMap<String, InboundGroup>>,
+    /// (group_id, sender_peer_id). Each sender shares its own outbound
+    /// session key over a 1:1 Double Ratchet envelope, so a recipient keeps
+    /// one inbound session per sender and can decrypt every member's stream.
+    inbound_groups: Mutex<HashMap<String, HashMap<String, InboundGroup>>>,
     /// In-flight `create_group` requests (replies are ordered, so FIFO works).
     pending_group_created: Mutex<VecDeque<oneshot::Sender<GroupCreatedResponse>>>,
     /// In-flight `add_group_member` requests, resolved in FIFO order.
@@ -1332,6 +1346,10 @@ impl RelayClient {
             ServerMessage::GroupMemberRemoved { group_id, peer_id } => {
                 self.handle_group_member_removed(&group_id, &peer_id)
             }
+            ServerMessage::OwnershipTransferred {
+                group_id,
+                new_owner_peer_id,
+            } => self.handle_ownership_transferred(&group_id, &new_owner_peer_id),
             ServerMessage::Error { code } => {
                 let err = RelayError::Relay(code);
                 // Resolve the oldest outstanding request across every queue.
@@ -1462,9 +1480,15 @@ impl RelayClient {
                 // Group-key shares travel as an encrypted serialized JSON
                 // payload inside an ordinary message (so the relay only ever
                 // sees ciphertext). They are recognised here and turned into
-                // an inbound Megolm session instead of a chat message.
-                if let Ok(group_key) = serde_json::from_slice::<GroupKeyPayload>(&plaintext) {
+                // an inbound Megolm session instead of a chat message. The key
+                // is attributed to the sender of the 1:1 envelope that carried
+                // it (backfilling the payload's `sender` field when an older
+                // share omitted it).
+                if let Ok(mut group_key) = serde_json::from_slice::<GroupKeyPayload>(&plaintext) {
                     if group_key.kind == "group_key" {
+                        if group_key.sender.is_empty() {
+                            group_key.sender = sender.clone();
+                        }
                         self.save_sessions()?;
                         self.handle_group_key(&group_key)?;
                         return Ok(None);
@@ -1627,9 +1651,12 @@ impl RelayClient {
         {
             let mut inbound = mutex_guard(&self.inner.inbound_groups)?;
             let mut groups = write_guard(&self.inner.groups)?;
-            for (group_id, (name, pickle)) in stored_group_inbound {
+            for ((group_id, sender), (name, pickle)) in stored_group_inbound {
                 if let Ok(session) = InboundGroup::from_json(&pickle) {
-                    inbound.insert(group_id.clone(), session);
+                    inbound
+                        .entry(group_id.clone())
+                        .or_default()
+                        .insert(sender, session);
                     groups.entry(group_id).or_insert(GroupInfoState {
                         name,
                         members: Vec::new(),
@@ -1735,13 +1762,15 @@ impl RelayClient {
         {
             let groups = read_guard(&self.inner.groups)?;
             let inbound_sessions = mutex_guard(&self.inner.inbound_groups)?;
-            for (group_id, session) in inbound_sessions.iter() {
-                if let Ok(json) = session.to_json() {
-                    let name = groups
-                        .get(group_id)
-                        .map(|g| g.name.clone())
-                        .unwrap_or_default();
-                    inbound.insert(group_id.clone(), (name, json));
+            for (group_id, senders) in inbound_sessions.iter() {
+                let name = groups
+                    .get(group_id)
+                    .map(|g| g.name.clone())
+                    .unwrap_or_default();
+                for (sender, session) in senders.iter() {
+                    if let Ok(json) = session.to_json() {
+                        inbound.insert((group_id.clone(), sender.clone()), (name.clone(), json));
+                    }
                 }
             }
         }

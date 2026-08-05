@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { Loader2, Plus, UserPlus, Users, X } from "lucide-react";
 import { cx, shortPeerId } from "../lib/format";
 import { useI18n } from "../i18n/I18nContext";
+import { useToast } from "../hooks/useToast";
 
 interface NewGroupDialogProps {
   open: boolean;
@@ -22,6 +23,7 @@ export function NewGroupDialog({
   myPeerId,
 }: NewGroupDialogProps) {
   const { t } = useI18n();
+  const { toast } = useToast();
   const dialogRef = useRef<HTMLDialogElement>(null);
   const nameInputRef = useRef<HTMLInputElement>(null);
   const [name, setName] = useState("");
@@ -95,7 +97,9 @@ export function NewGroupDialog({
       await onCreate(trimmedName, members);
       onOpenChange(false);
     } catch (err) {
-      setError(String(err).replace(/^Error:\s*/, ""));
+      const message = String(err).replace(/^Error:\s*/, "");
+      setError(message);
+      toast(message, "error");
     } finally {
       setCreating(false);
     }

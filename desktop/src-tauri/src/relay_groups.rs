@@ -16,7 +16,7 @@
 use super::*;
 
 /// Internal, in-memory group state. Not serializable: it owns the (secret)
-/// Megolm outbound session for groups this identity created.
+/// Megolm outbound session used to encrypt this identity's group messages.
 pub(crate) struct GroupInfoState {
     /// Public group name.
     pub(crate) name: String,
@@ -24,14 +24,17 @@ pub(crate) struct GroupInfoState {
     pub(crate) members: Vec<GroupMember>,
     /// This identity's role in the group, when known.
     pub(crate) my_role: Option<String>,
-    /// The outbound Megolm session; `Some` only for groups this identity
-    /// created (they are the only sender in the MVP model).
+    /// Our own outbound Megolm session. In the multi-sender model EVERY member
+    /// holds one (created automatically when they first receive the group's
+    /// key), so each member can send to the group.
     pub(crate) outbound: Option<OutboundGroup>,
 }
 
-/// The plaintext JSON of a Megolm session-key share. The creator encrypts it
+/// The plaintext JSON of a Megolm session-key share. A member encrypts it
 /// inside an ordinary 1:1 Double Ratchet message so the relay never sees the
-/// key; the recipient parses it and builds an [`InboundGroup`].
+/// key; the recipient parses it and builds an [`InboundGroup`] keyed by the
+/// sharing member's peer ID. `sender` defaults to empty for robustness against
+/// older shares; the 1:1 envelope's authenticated sender is then used.
 #[derive(Debug, Deserialize)]
 pub(crate) struct GroupKeyPayload {
     /// Always "group_key"; distinguishes the share from ordinary text.
@@ -42,6 +45,9 @@ pub(crate) struct GroupKeyPayload {
     pub(crate) session_key: String,
     /// The public group name, used to surface the group in the chat list.
     pub(crate) group_name: String,
+    /// The member who shared this key (their own outbound session).
+    #[serde(default)]
+    pub(crate) sender: String,
 }
 
 impl RelayClient {
@@ -250,6 +256,21 @@ impl RelayClient {
         .await
     }
 
+    /// Transfer group ownership to `peer_id`. The relay only allows the
+    /// current owner to transfer; on success the old owner becomes an admin
+    /// and `peer_id` takes over the owner role.
+    pub async fn transfer_ownership(
+        &self,
+        group_id: &str,
+        peer_id: &str,
+    ) -> Result<(), RelayError> {
+        self.group_op(ClientMessage::TransferOwnership {
+            group_id: group_id.to_string(),
+            peer_id: peer_id.to_string(),
+        })
+        .await
+    }
+
     /// Send a promote/demote/remove/leave request and wait for its
     /// confirmation, then refresh the cached roster so the UI reflects the new
     /// membership immediately.
@@ -274,6 +295,10 @@ impl RelayClient {
         } else if let ClientMessage::PromoteMember { group_id, .. }
         | ClientMessage::DemoteMember { group_id, .. } = message
         {
+            let _ = self.get_group_info(&group_id).await;
+        } else if let ClientMessage::TransferOwnership { group_id, .. } = message {
+            // The roster (and our own role) changed: refresh so the chat list
+            // and group panel reflect the new owner immediately.
             let _ = self.get_group_info(&group_id).await;
         }
         Ok(())
@@ -336,9 +361,10 @@ impl RelayClient {
         client_id: &str,
     ) -> Result<(), RelayError> {
         let my_peer_id = self.my_peer_id()?;
-        // Encrypt with the outbound Megolm session. Only the group's creator
-        // holds one in the MVP model, so a member attempting to send fails
-        // with `NoOutboundGroup`.
+        // Encrypt with our own outbound Megolm session. Every member owns one
+        // in the multi-sender model (created on first group-key receipt), so
+        // only a member that joined but has not finished the join-time setup
+        // yet can hit `NoOutboundGroup` here.
         let ciphertext = {
             let mut groups = write_guard(&self.inner.groups)?;
             let group = groups
@@ -406,7 +432,8 @@ impl RelayClient {
     /// Encrypt a `group_key` share (the Megolm session key + group name) inside
     /// the 1:1 session with `peer_id` and send it as an ordinary message. The
     /// recipient recognises the plaintext JSON and stores the inbound session
-    /// instead of rendering it as a chat message.
+    /// (keyed by this identity's peer ID) instead of rendering it as a chat
+    /// message.
     fn send_group_key(
         &self,
         peer_id: &str,
@@ -420,6 +447,7 @@ impl RelayClient {
             "group_id": group_id,
             "session_key": session_key,
             "group_name": group_name,
+            "sender": my_peer_id,
         });
         let (olm, session_id) = {
             let mut sessions = mutex_guard(&self.inner.sessions)?;
@@ -444,8 +472,9 @@ impl RelayClient {
     // Inbound group handling
     // ---------------------------------------------------------------------
 
-    /// Decrypt a Megolm group envelope with the group's inbound session and
-    /// record it in the group's message thread.
+    /// Decrypt a Megolm group envelope with the sender's inbound session and
+    /// record it in the group's message thread. Envelopes from a sender whose
+    /// session key we have not received yet are skipped defensively.
     pub(crate) fn ingest_group(
         &self,
         wire: &Envelope,
@@ -455,7 +484,7 @@ impl RelayClient {
             EnvelopeContent::Group { ciphertext, .. } => ciphertext.clone(),
             _ => return Ok(None),
         };
-        let plaintext = match self.decrypt_group(group_id, &ciphertext) {
+        let plaintext = match self.decrypt_group(group_id, &wire.sender_peer_id, &ciphertext) {
             Some(bytes) => bytes,
             None => return Ok(None),
         };
@@ -464,21 +493,33 @@ impl RelayClient {
         Ok(Some(self.record_incoming(group_id, text)?))
     }
 
-    /// Decrypt a Megolm ciphertext with the group's inbound session. Returns
-    /// `None` (and logs) when no inbound session exists yet or the ratchet
-    /// rejects the message — a missing session key must never break the
-    /// inbound pump.
-    fn decrypt_group(&self, group_id: &str, ciphertext: &str) -> Option<Vec<u8>> {
+    /// Decrypt a Megolm ciphertext with the inbound session built from that
+    /// sender's shared session key. Returns `None` (and logs) when no session
+    /// exists for this (group_id, sender) pair or the ratchet rejects the
+    /// message — a missing session key must never break the inbound pump. A
+    /// legacy fallback tries the empty-sender session (migrated from the old
+    /// single-sender shape) so pre-multi-sender groups keep decrypting.
+    fn decrypt_group(&self, group_id: &str, sender: &str, ciphertext: &str) -> Option<Vec<u8>> {
         let mut inbound = match mutex_guard(&self.inner.inbound_groups) {
             Ok(g) => g,
             Err(_) => return None,
         };
-        let session = match inbound.get_mut(group_id) {
-            Some(session) => session,
+        let senders = match inbound.get_mut(group_id) {
+            Some(senders) => senders,
             None => {
                 eprintln!("whisper desktop: no inbound group session for {group_id}");
                 return None;
             }
+        };
+        let session = match senders.get_mut(sender) {
+            Some(session) => session,
+            None => match senders.get_mut("") {
+                Some(legacy) => legacy,
+                None => {
+                    eprintln!("whisper desktop: no inbound session for {group_id} from {sender}");
+                    return None;
+                }
+            },
         };
         match session.decrypt(ciphertext) {
             Ok(bytes) => Some(bytes),
@@ -489,11 +530,35 @@ impl RelayClient {
         }
     }
 
-    /// Store a received Megolm `session_key` share as the group's inbound
-    /// session and surface the group in the chat list under its name.
+    /// Store a received Megolm `session_key` share as an inbound session keyed
+    /// by the sharing member (who is identified by the `sender` field in the
+    /// payload, or by the authenticated 1:1 envelope sender when the field is
+    /// absent) and surface the group in the chat list under its name.
+    ///
+    /// The FIRST key received for a group marks our join: besides keeping the
+    /// sender's inbound session we set up our own side so we can send too —
+    /// fetch the roster, create our own outbound session and share its key to
+    /// every other member over 1:1 sessions. That setup runs in the background
+    /// (it needs a `get_group_info` round-trip) so the inbound pump is never
+    /// blocked.
     pub(crate) fn handle_group_key(&self, payload: &GroupKeyPayload) -> Result<(), RelayError> {
+        // The caller (`ingest`) backfills the authenticated 1:1 sender into
+        // `payload.sender`; an empty sender here is a defensive fallback that
+        // stores the key under the empty "legacy" key used by `decrypt_group`.
+        let sender = payload.sender.clone();
         let inbound = InboundGroup::new(&payload.session_key)?;
-        mutex_guard(&self.inner.inbound_groups)?.insert(payload.group_id.clone(), inbound);
+        // First join: this group was unknown before the key arrived.
+        let is_first_join = {
+            let groups = read_guard(&self.inner.groups)?;
+            !groups.contains_key(&payload.group_id)
+        };
+        {
+            let mut inbound_groups = mutex_guard(&self.inner.inbound_groups)?;
+            inbound_groups
+                .entry(payload.group_id.clone())
+                .or_default()
+                .insert(sender, inbound);
+        }
         // Register the group so the chat list and header render it by name.
         write_guard(&self.inner.groups)?
             .entry(payload.group_id.clone())
@@ -509,6 +574,72 @@ impl RelayClient {
         // The roster is unknown until a get_group_info round-trip; fetch it in
         // the background so the chat list shows a real member count.
         self.spawn_group_info_refresh(&payload.group_id);
+        // On the very first key for a group we join the multi-sender setup:
+        // create our own outbound and share it with the other members.
+        if is_first_join {
+            let client = self.clone();
+            let group_id = payload.group_id.clone();
+            let group_name = payload.group_name.clone();
+            tauri::async_runtime::spawn(async move {
+                if let Err(err) = client
+                    .establish_outbound_and_share(&group_id, &group_name)
+                    .await
+                {
+                    eprintln!(
+                        "whisper desktop: failed to set up outbound session for group {group_id}: {err}"
+                    );
+                }
+            });
+        }
+        Ok(())
+    }
+
+    /// Join-time multi-sender setup for a group we just received a key for:
+    /// fetch the roster, create our OWN outbound Megolm session and share its
+    /// key to every other member over 1:1 sessions (each share identifies us
+    /// as the sender). Runs once per group, off the inbound pump.
+    async fn establish_outbound_and_share(
+        &self,
+        group_id: &str,
+        group_name: &str,
+    ) -> Result<(), RelayError> {
+        let my_peer_id = self.my_peer_id()?;
+        // (a) The roster tells us who else is in the group (the server only
+        //     exposes it to members, and we were just added).
+        let info = self.get_group_info(group_id).await?;
+        // (b) Create our own outbound session and (d) store it with the
+        //     fresh roster, so sends work immediately after this returns.
+        let outbound = OutboundGroup::new();
+        let session_key = outbound.session_key();
+        {
+            let mut groups = write_guard(&self.inner.groups)?;
+            if let Some(group) = groups.get_mut(group_id) {
+                group.members = info.members.clone();
+                group.my_role = info.my_role.clone();
+                group.outbound = Some(outbound);
+            }
+        }
+        self.save_group_sessions()?;
+        // (c) Share our own session key to every OTHER member over 1:1
+        //     sessions. Best-effort per member, like the creator's share.
+        for member in &info.members {
+            if member.peer_id == my_peer_id {
+                continue;
+            }
+            let result = async {
+                if !mutex_guard(&self.inner.sessions)?.contains_key(&member.peer_id) {
+                    self.start_chat(&member.peer_id).await?;
+                }
+                self.send_group_key(&member.peer_id, group_id, &session_key, group_name)
+            }
+            .await;
+            if let Err(err) = result {
+                eprintln!(
+                    "whisper desktop: failed to share group key to {}: {err}",
+                    member.peer_id
+                );
+            }
+        }
         Ok(())
     }
 
@@ -608,6 +739,44 @@ impl RelayClient {
                 members,
                 my_role,
             }));
+        }
+        Ok(())
+    }
+
+    /// A `ownership_transferred` reply mirrors the role swap into the cached
+    /// roster (old owner becomes an admin, the new owner takes over) and
+    /// resolves the in-flight request.
+    pub(crate) fn handle_ownership_transferred(
+        &self,
+        group_id: &str,
+        new_owner_peer_id: &str,
+    ) -> Result<(), RelayError> {
+        if let Ok(mut groups) = write_guard(&self.inner.groups) {
+            if let Some(group) = groups.get_mut(group_id) {
+                let old_owner: Option<String> = group
+                    .members
+                    .iter()
+                    .find(|m| m.role == "owner")
+                    .map(|m| m.peer_id.clone());
+                for member in group.members.iter_mut() {
+                    if Some(member.peer_id.as_str()) == old_owner.as_deref() {
+                        member.role = "admin".to_string();
+                    }
+                    if member.peer_id == new_owner_peer_id {
+                        member.role = "owner".to_string();
+                    }
+                }
+                if let Ok(my_peer_id) = self.my_peer_id() {
+                    group.my_role = group
+                        .members
+                        .iter()
+                        .find(|m| m.peer_id == my_peer_id)
+                        .map(|m| m.role.clone());
+                }
+            }
+        }
+        if let Some(tx) = mutex_guard(&self.inner.pending_group_op)?.pop_front() {
+            let _ = tx.send(Ok(()));
         }
         Ok(())
     }
@@ -733,6 +902,15 @@ mod tests {
         })
         .expect("serialize");
         assert_eq!(leave["type"], "leave_group");
+
+        let transfer = serde_json::to_value(ClientMessage::TransferOwnership {
+            group_id: "g-1".into(),
+            peer_id: "bob".into(),
+        })
+        .expect("serialize");
+        assert_eq!(transfer["type"], "transfer_ownership");
+        assert_eq!(transfer["group_id"], "g-1");
+        assert_eq!(transfer["peer_id"], "bob");
     }
 
     #[test]
@@ -808,17 +986,40 @@ mod tests {
             ServerMessage::GroupMemberRemoved { group_id, peer_id }
                 if group_id == "g-1" && peer_id == "bob"
         ));
+
+        let transferred: ServerMessage = serde_json::from_str(
+            r#"{"type":"ownership_transferred","group_id":"g-1","new_owner_peer_id":"bob"}"#,
+        )
+        .expect("parse");
+        match transferred {
+            ServerMessage::OwnershipTransferred {
+                group_id,
+                new_owner_peer_id,
+            } => {
+                assert_eq!(group_id, "g-1");
+                assert_eq!(new_owner_peer_id, "bob");
+            }
+            other => panic!("unexpected variant: {other:?}"),
+        }
     }
 
     #[test]
     fn group_key_payload_parses() {
-        let text =
-            r#"{"kind":"group_key","group_id":"g-1","session_key":"abc","group_name":"Squad"}"#;
+        let text = r#"{"kind":"group_key","group_id":"g-1","session_key":"abc","group_name":"Squad","sender":"alice"}"#;
         let payload: GroupKeyPayload = serde_json::from_str(text).expect("parse");
         assert_eq!(payload.kind, "group_key");
         assert_eq!(payload.group_id, "g-1");
         assert_eq!(payload.session_key, "abc");
         assert_eq!(payload.group_name, "Squad");
+        assert_eq!(payload.sender, "alice");
+
+        // A share without a `sender` field (older clients) still parses; the
+        // inbound pump backfills the authenticated 1:1 sender afterwards.
+        let legacy =
+            r#"{"kind":"group_key","group_id":"g-1","session_key":"abc","group_name":"Squad"}"#;
+        let payload: GroupKeyPayload =
+            serde_json::from_str(legacy).expect("legacy share must parse");
+        assert_eq!(payload.sender, "");
     }
 
     #[test]
@@ -850,14 +1051,18 @@ mod tests {
         assert_eq!(plaintext, b"hello group");
 
         // A group-key share travels as an ordinary encrypted Message whose
-        // plaintext is the JSON payload.
+        // plaintext is the JSON payload. The share identifies the member that
+        // owns the outbound session, so the recipient keys its inbound session
+        // by that member's peer id.
         let payload = serde_json::json!({
             "kind": "group_key",
             "group_id": "g-1",
             "session_key": session_key,
             "group_name": "Squad",
+            "sender": "alice",
         });
         let parsed: GroupKeyPayload = serde_json::from_value(payload).expect("parse");
+        assert_eq!(parsed.sender, "alice");
         let mut member_inbound =
             InboundGroup::new(&parsed.session_key).expect("member key must parse");
         assert_eq!(member_inbound.session_id(), outbound.session_id());
@@ -866,5 +1071,69 @@ mod tests {
             member_inbound.decrypt(&next).expect("decrypt"),
             b"second message"
         );
+    }
+
+    #[test]
+    fn multi_sender_members_decrypt_each_others_streams() {
+        // Two members of the same group. Each holds its OWN outbound Megolm
+        // session and shares its session key to the other, who builds an
+        // inbound session from it. Both can send with their own stream and
+        // decrypt the other's messages with the correct inbound session — a
+        // session from the wrong sender must never open another's ciphertext.
+        let mut alice_outbound = OutboundGroup::new();
+        let mut bob_outbound = OutboundGroup::new();
+        let alice_key = alice_outbound.session_key();
+        let bob_key = bob_outbound.session_key();
+
+        // Each peer keeps the OTHER's session key as its inbound session.
+        let mut alice_inbound_for_bob = InboundGroup::new(&bob_key).expect("bob's key must parse");
+        let mut bob_inbound_for_alice =
+            InboundGroup::new(&alice_key).expect("alice's key must parse");
+
+        // The two senders have distinct session ids, so their streams never
+        // collide under the (group_id, sender) key.
+        assert_ne!(alice_outbound.session_id(), bob_outbound.session_id());
+        assert_eq!(
+            alice_outbound.session_id(),
+            bob_inbound_for_alice.session_id()
+        );
+        assert_eq!(
+            bob_outbound.session_id(),
+            alice_inbound_for_bob.session_id()
+        );
+
+        // Alice encrypts with her own stream; only bob's inbound (built from
+        // alice's key) decrypts it.
+        let a1 = alice_outbound.encrypt(b"alice says hi");
+        assert_eq!(
+            bob_inbound_for_alice
+                .decrypt(&a1)
+                .expect("bob decrypts alice"),
+            b"alice says hi"
+        );
+        assert!(
+            alice_inbound_for_bob.decrypt(&a1).is_err(),
+            "bob's stream must not open alice's ciphertext"
+        );
+
+        // Bob encrypts with his own stream; only alice's inbound (built from
+        // bob's key) decrypts it.
+        let b1 = bob_outbound.encrypt(b"bob replies");
+        assert_eq!(
+            alice_inbound_for_bob
+                .decrypt(&b1)
+                .expect("alice decrypts bob"),
+            b"bob replies"
+        );
+        assert!(
+            bob_inbound_for_alice.decrypt(&b1).is_err(),
+            "alice's stream must not open bob's ciphertext"
+        );
+
+        // Both streams keep working independently across further messages.
+        let a2 = alice_outbound.encrypt(b"alice again");
+        let b2 = bob_outbound.encrypt(b"bob again");
+        assert_eq!(bob_inbound_for_alice.decrypt(&a2).unwrap(), b"alice again");
+        assert_eq!(alice_inbound_for_bob.decrypt(&b2).unwrap(), b"bob again");
     }
 }
