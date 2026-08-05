@@ -173,10 +173,38 @@ impl Store {
                 group_id  TEXT NOT NULL,
                 peer_id   TEXT NOT NULL,
                 joined_at INTEGER NOT NULL,
+                role      TEXT NOT NULL DEFAULT 'member',
                 PRIMARY KEY (group_id, peer_id)
             );
             CREATE INDEX IF NOT EXISTS idx_group_members_group_id
                 ON group_members (group_id);",
+        )?;
+
+        // Migration: databases created before the group-roles feature lack the
+        // `role` column in `group_members`. SQLite has no
+        // `ADD COLUMN IF NOT EXISTS`, so inspect the live schema and alter it
+        // in place when needed. Existing members default to "member"; the
+        // backfill below then re-promotes each group's owner.
+        let group_columns: Vec<String> = conn
+            .prepare("PRAGMA table_info(group_members)")?
+            .query_map([], |row| row.get::<_, String>(1))?
+            .collect::<rusqlite::Result<_>>()?;
+        if !group_columns.iter().any(|c| c.as_str() == "role") {
+            conn.execute(
+                "ALTER TABLE group_members ADD COLUMN role TEXT NOT NULL DEFAULT 'member'",
+                [],
+            )?;
+        }
+
+        // Backfill: owners of groups created before the roles feature must be
+        // promoted to "owner" (the ALTER defaulted them to "member").
+        conn.execute(
+            "UPDATE group_members
+             SET role = 'owner'
+             WHERE (group_id, peer_id) IN (
+                 SELECT id, owner_peer_id FROM groups
+             )",
+            [],
         )?;
 
         // Migration: databases created before the signed-hello binding lack
@@ -216,6 +244,16 @@ impl Store {
         // INTEGER (a unix-seconds timestamp), so it needs its own ALTER.
         if !columns.iter().any(|c| c.as_str() == "last_seen") {
             conn.execute("ALTER TABLE users ADD COLUMN last_seen INTEGER", [])?;
+        }
+
+        // Migration: databases created before the privacy feature lack the
+        // `presence_visible` flag. It is an INTEGER (0/1) defaulting to 1
+        // (visible), so it needs its own ALTER.
+        if !columns.iter().any(|c| c.as_str() == "presence_visible") {
+            conn.execute(
+                "ALTER TABLE users ADD COLUMN presence_visible INTEGER NOT NULL DEFAULT 1",
+                [],
+            )?;
         }
         Ok(())
     }
@@ -452,6 +490,36 @@ impl Store {
         .flatten()
     }
 
+    /// Set whether a peer's online status and last-seen are visible to other
+    /// peers. When hidden, presence reports and pushes for this peer always
+    /// carry `online: false` and `last_seen: null` regardless of the peer's
+    /// actual connection state. Creating or updating an existing row is the
+    /// same operation; the original `first_seen` is preserved on update.
+    pub fn set_presence_visible(&self, peer_id: &str, visible: bool) -> SqlResult<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "INSERT INTO users (peer_id, presence_visible, first_seen) VALUES (?1, ?2, ?3)
+             ON CONFLICT(peer_id) DO UPDATE SET presence_visible = excluded.presence_visible",
+            params![peer_id, visible as i64, unix_now()],
+        )?;
+        Ok(())
+    }
+
+    /// Whether a peer's online status is visible to others. Peers that have
+    /// never been seen by the relay (or never opted out) default to visible.
+    pub fn get_presence_visible(&self, peer_id: &str) -> bool {
+        let conn = self.conn.lock().unwrap();
+        conn.query_row(
+            "SELECT presence_visible FROM users WHERE peer_id = ?1",
+            params![peer_id],
+            |r| r.get::<_, i64>(0),
+        )
+        .optional()
+        .unwrap_or(None)
+        .map(|value| value != 0)
+        .unwrap_or(true)
+    }
+
     /// Store a peer's current pre-key bundle, replacing any previous bundle
     /// (INSERT OR REPLACE). The relay persists bundles as opaque JSON — it
     /// never inspects the key material.
@@ -496,8 +564,8 @@ impl Store {
             params![id, name, owner, created_at],
         )?;
         tx.execute(
-            "INSERT INTO group_members (group_id, peer_id, joined_at)
-             VALUES (?1, ?2, ?3)",
+            "INSERT INTO group_members (group_id, peer_id, joined_at, role)
+             VALUES (?1, ?2, ?3, 'owner')",
             params![id, owner, created_at],
         )?;
         tx.commit()
@@ -522,16 +590,57 @@ impl Store {
         .unwrap_or(None)
     }
 
-    /// Add `peer_id` to a group's membership. Idempotent: adding an existing
-    /// member is a no-op.
+    /// Add `peer_id` to a group's membership with the default "member" role.
+    /// Idempotent: adding an existing member is a no-op.
     pub fn add_group_member(&self, group_id: &str, peer_id: &str, joined_at: i64) -> SqlResult<()> {
         let conn = self.conn.lock().unwrap();
         conn.execute(
-            "INSERT OR IGNORE INTO group_members (group_id, peer_id, joined_at)
-             VALUES (?1, ?2, ?3)",
+            "INSERT OR IGNORE INTO group_members (group_id, peer_id, joined_at, role)
+             VALUES (?1, ?2, ?3, 'member')",
             params![group_id, peer_id, joined_at],
         )?;
         Ok(())
+    }
+
+    /// Set (or insert) a member's role in a group: "owner", "admin" or
+    /// "member". Idempotent: re-adding a member with a role replaces it.
+    pub fn set_member_role(&self, group_id: &str, peer_id: &str, role: &str) -> SqlResult<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "INSERT INTO group_members (group_id, peer_id, joined_at, role)
+             VALUES (?1, ?2, ?3, ?4)
+             ON CONFLICT(group_id, peer_id) DO UPDATE SET role = excluded.role",
+            params![group_id, peer_id, unix_now(), role],
+        )?;
+        Ok(())
+    }
+
+    /// The current role of `peer_id` in `group_id`, if they are a member.
+    pub fn get_member_role(&self, group_id: &str, peer_id: &str) -> Option<String> {
+        let conn = self.conn.lock().unwrap();
+        conn.query_row(
+            "SELECT role FROM group_members WHERE group_id = ?1 AND peer_id = ?2",
+            params![group_id, peer_id],
+            |r| r.get(0),
+        )
+        .optional()
+        .unwrap_or(None)
+    }
+
+    /// Every member of a group with its current role, in join order (then
+    /// peer ID) for deterministic ordering: `(peer_id, role)`.
+    pub fn members_with_roles(&self, group_id: &str) -> Vec<(String, String)> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn
+            .prepare(
+                "SELECT peer_id, role FROM group_members WHERE group_id = ?1
+                 ORDER BY joined_at, peer_id",
+            )
+            .expect("valid statement");
+        stmt.query_map(params![group_id], |r| Ok((r.get(0)?, r.get(1)?)))
+            .expect("query ok")
+            .filter_map(|r| r.ok())
+            .collect()
     }
 
     /// Remove `peer_id` from a group. Removing a non-member is a no-op.
@@ -1125,6 +1234,60 @@ mod tests {
     }
 
     #[test]
+    fn presence_visible_defaults_to_visible_for_unknown_peers() {
+        let store = Store::open_in_memory().unwrap();
+        assert!(
+            store.get_presence_visible("peer-ghost"),
+            "a peer that never opted out must be visible by default"
+        );
+    }
+
+    #[test]
+    fn set_presence_visible_hides_and_restores_a_peer() {
+        let store = Store::open_in_memory().unwrap();
+        let now = unix_now();
+        store
+            .register_user_with_keys("peer-x", "curve-a", "ed-a", now)
+            .unwrap();
+        assert!(store.get_presence_visible("peer-x"));
+
+        store.set_presence_visible("peer-x", false).unwrap();
+        assert!(!store.get_presence_visible("peer-x"));
+
+        // Re-enabling restores visibility without disturbing other fields.
+        store.set_presence_visible("peer-x", true).unwrap();
+        assert!(store.get_presence_visible("peer-x"));
+        assert_eq!(store.first_seen_for("peer-x"), Some(now));
+    }
+
+    #[test]
+    fn migration_adds_presence_visible_column_to_legacy_users_table() {
+        let path = std::env::temp_dir().join(format!(
+            "whisper-relay-privacy-migration-{}.db",
+            uuid::Uuid::new_v4()
+        ));
+        // Simulate a database created before the privacy feature.
+        {
+            let conn = Connection::open(&path).expect("open legacy db");
+            conn.execute_batch(
+                "CREATE TABLE users (
+                     peer_id    TEXT PRIMARY KEY,
+                     first_seen INTEGER NOT NULL
+                 );
+                 INSERT INTO users (peer_id, first_seen) VALUES ('peer-old', 1);",
+            )
+            .expect("create legacy schema");
+        }
+        let store = Store::open(&path).expect("migrated db must open");
+        // Legacy rows default to visible; the flag can be flipped afterwards.
+        assert!(store.get_presence_visible("peer-old"));
+        store.set_presence_visible("peer-old", false).unwrap();
+        assert!(!store.get_presence_visible("peer-old"));
+        assert_eq!(store.first_seen_for("peer-old"), Some(1));
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
     fn migration_adds_last_seen_column_to_legacy_users_table() {
         let path = std::env::temp_dir().join(format!(
             "whisper-relay-last-seen-migration-{}.db",
@@ -1305,6 +1468,133 @@ mod tests {
         );
         assert_eq!(store.list_group_members("g2"), vec!["bob".to_string()]);
         assert!(!store.is_group_member("g2", "alice"));
+    }
+
+    #[test]
+    fn create_group_gives_owner_the_owner_role() {
+        let store = Store::open_in_memory().unwrap();
+        store.create_group("g1", "Squad", "alice", 100).unwrap();
+        assert_eq!(
+            store.get_member_role("g1", "alice").as_deref(),
+            Some("owner")
+        );
+        assert_eq!(
+            store.members_with_roles("g1"),
+            vec![("alice".to_string(), "owner".to_string())]
+        );
+    }
+
+    #[test]
+    fn add_group_member_defaults_to_member_role() {
+        let store = Store::open_in_memory().unwrap();
+        store.create_group("g1", "Squad", "alice", 100).unwrap();
+        store.add_group_member("g1", "bob", 200).unwrap();
+        assert_eq!(
+            store.get_member_role("g1", "bob").as_deref(),
+            Some("member")
+        );
+    }
+
+    #[test]
+    fn set_member_role_updates_and_inserts_roles() {
+        let store = Store::open_in_memory().unwrap();
+        store.create_group("g1", "Squad", "alice", 100).unwrap();
+        store.add_group_member("g1", "bob", 200).unwrap();
+
+        store.set_member_role("g1", "bob", "admin").unwrap();
+        assert_eq!(store.get_member_role("g1", "bob").as_deref(), Some("admin"));
+
+        // Downgrade back to a regular member.
+        store.set_member_role("g1", "bob", "member").unwrap();
+        assert_eq!(
+            store.get_member_role("g1", "bob").as_deref(),
+            Some("member")
+        );
+
+        // Inserting a never-before-seen member with a role also works.
+        store.set_member_role("g1", "carol", "admin").unwrap();
+        assert!(store.is_group_member("g1", "carol"));
+        assert_eq!(
+            store.get_member_role("g1", "carol").as_deref(),
+            Some("admin")
+        );
+    }
+
+    #[test]
+    fn get_member_role_returns_none_for_non_members() {
+        let store = Store::open_in_memory().unwrap();
+        store.create_group("g1", "Squad", "alice", 100).unwrap();
+        assert_eq!(store.get_member_role("g1", "bob"), None);
+        assert_eq!(store.get_member_role("ghost", "alice"), None);
+    }
+
+    #[test]
+    fn members_with_roles_lists_every_role_in_join_order() {
+        let store = Store::open_in_memory().unwrap();
+        store.create_group("g1", "Squad", "alice", 100).unwrap();
+        store.add_group_member("g1", "bob", 200).unwrap();
+        store.add_group_member("g1", "carol", 300).unwrap();
+        store.set_member_role("g1", "bob", "admin").unwrap();
+
+        let members = store.members_with_roles("g1");
+        assert_eq!(
+            members,
+            vec![
+                ("alice".to_string(), "owner".to_string()),
+                ("bob".to_string(), "admin".to_string()),
+                ("carol".to_string(), "member".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn migration_adds_role_column_and_backfills_owners() {
+        let path = std::env::temp_dir().join(format!(
+            "whisper-relay-role-migration-{}.db",
+            uuid::Uuid::new_v4()
+        ));
+        // Simulate a database created before the roles feature: `group_members`
+        // lacks the `role` column, and the legacy group's owner has no role.
+        {
+            let conn = Connection::open(&path).expect("open legacy db");
+            conn.execute_batch(
+                "CREATE TABLE groups (
+                     id            TEXT PRIMARY KEY,
+                     name          TEXT NOT NULL,
+                     owner_peer_id TEXT NOT NULL,
+                     created_at    INTEGER NOT NULL
+                 );
+                 CREATE TABLE group_members (
+                     group_id  TEXT NOT NULL,
+                     peer_id   TEXT NOT NULL,
+                     joined_at INTEGER NOT NULL,
+                     PRIMARY KEY (group_id, peer_id)
+                 );
+                 INSERT INTO groups (id, name, owner_peer_id, created_at)
+                     VALUES ('g1', 'Squad', 'alice', 1);
+                 INSERT INTO group_members (group_id, peer_id, joined_at)
+                     VALUES ('g1', 'alice', 1), ('g1', 'bob', 2);",
+            )
+            .expect("create legacy schema");
+        }
+        let store = Store::open(&path).expect("migrated db must open");
+        // The owner must have been promoted by the backfill...
+        assert_eq!(
+            store.get_member_role("g1", "alice").as_deref(),
+            Some("owner")
+        );
+        // ...while the regular member keeps the default role.
+        assert_eq!(
+            store.get_member_role("g1", "bob").as_deref(),
+            Some("member")
+        );
+        // Newly added members also default to "member" on the migrated schema.
+        store.add_group_member("g1", "carol", 3).unwrap();
+        assert_eq!(
+            store.get_member_role("g1", "carol").as_deref(),
+            Some("member")
+        );
+        std::fs::remove_file(&path).ok();
     }
 
     #[test]

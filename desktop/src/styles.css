@@ -26,6 +26,8 @@
   --wp-danger: 248 113 113; /* #f87171 — destructive actions */
   --wp-read: 109 164 255; /* #6da4ff — read receipt double tick (dark) */
   --wp-online: 37 211 102; /* #25d366 — WhatsApp-style online green (dark) */
+  --wp-owner: 250 204 21; /* #facd15 — group owner badge (yellow) */
+  --wp-owner-fg: 24 24 27; /* #18181b — text on the owner badge */
 }
 
 /* Whisper light theme — same semantic variables, light values. Every pair
@@ -51,6 +53,8 @@
   --wp-danger: 220 38 38; /* #dc2626 — destructive actions */
   --wp-read: 47 111 237; /* #2f6fed — read receipt double tick (light) */
   --wp-online: 21 128 61; /* #15803d — online green that meets AA on light */
+  --wp-owner: 202 138 4; /* #ca8a04 — group owner badge (amber-600) */
+  --wp-owner-fg: 255 251 235; /* #fffbeb — text on the owner badge */
 }
 
 html,
@@ -110,7 +114,9 @@ body {
   background: rgba(var(--wp-accent), 0.3);
 }
 
-/* Native dialog used for the "start a new chat" flow. */
+/* Native dialog used for the "start a new chat" flow. The opening is a soft
+   fade + scale; closing animates out before the element is torn down (the
+   React side adds `wp-dialog-closing` and defers `dialog.close()`). */
 dialog.wp-dialog {
   margin: auto;
   border: 1px solid rgb(var(--wp-line) / 0.1);
@@ -119,11 +125,37 @@ dialog.wp-dialog {
   color: rgb(var(--wp-text));
   border-radius: 1rem;
   box-shadow: 0 24px 64px -16px rgb(0 0 0 / 0.6);
-  animation: pop-in 0.18s ease-out both;
+  animation: dialog-in 0.2s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+dialog.wp-dialog-closing {
+  animation: dialog-out 0.15s ease-in both;
+  pointer-events: none;
 }
 dialog.wp-dialog::backdrop {
   background: rgb(0 0 0 / 0.55);
   backdrop-filter: blur(2px);
+}
+
+@keyframes dialog-in {
+  from {
+    opacity: 0;
+    transform: translateY(10px) scale(0.96);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+@keyframes dialog-out {
+  from {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+  to {
+    opacity: 0;
+    transform: translateY(6px) scale(0.97);
+  }
 }
 
 /* Subtle entrance animation used by the onboarding view. */
@@ -155,15 +187,16 @@ dialog.wp-dialog::backdrop {
   animation: pop-in 0.2s ease-out both;
 }
 
-/* Messages slide in with a soft upward drift. */
+/* Newly delivered messages slide up with a soft fade and a hint of scale.
+   Only the latest message animates; the existing history stays put. */
 @keyframes msg-in {
   from {
     opacity: 0;
-    transform: translateY(8px);
+    transform: translateY(8px) scale(0.98);
   }
   to {
     opacity: 1;
-    transform: translateY(0);
+    transform: translateY(0) scale(1);
   }
 }
 .animate-msg-in {
@@ -200,27 +233,118 @@ dialog.wp-dialog::backdrop {
 @keyframes splash-glow {
   0%,
   100% {
-    box-shadow: 0 0 24px 2px rgb(var(--wp-accent) / 0.18);
+    box-shadow: 0 0 28px 4px rgb(var(--wp-accent) / 0.2);
   }
   50% {
-    box-shadow: 0 0 46px 10px rgb(var(--wp-accent) / 0.34);
+    box-shadow: 0 0 54px 14px rgb(var(--wp-accent) / 0.38);
   }
 }
 .animate-splash-glow {
   animation: splash-glow 2.2s ease-in-out infinite;
 }
 
-/* Splash screen: indeterminate progress bar sweeping left to right. */
-@keyframes splash-progress {
-  0% {
-    transform: translateX(-250%);
+/* Splash screen: the logo mark pops in on mount. */
+@keyframes logo-in {
+  from {
+    opacity: 0;
+    transform: scale(0.82) translateY(10px);
   }
-  100% {
-    transform: translateX(350%);
+  to {
+    opacity: 1;
+    transform: scale(1) translateY(0);
   }
 }
-.splash-progress-bar {
-  animation: splash-progress 1.15s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+.animate-logo-in {
+  animation: logo-in 0.55s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+/* Splash screen: the wordmark rises in with a soft blur settling out. */
+@keyframes wordmark-in {
+  from {
+    opacity: 0;
+    transform: translateY(12px);
+    filter: blur(6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+    filter: blur(0);
+  }
+}
+.animate-wordmark-in {
+  animation: wordmark-in 0.5s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+/* Splash screen: quiet fade-in for secondary elements (tagline, loader). */
+@keyframes fade-in-soft {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+.animate-fade-in-soft {
+  animation: fade-in-soft 0.6s ease-out both;
+}
+
+/* Splash screen: two-segment loader sweeping left to right like a comet — a
+   bright leading head with a long, fading tail. Both bars share one absolute
+   translate so they drag together; the trailing bar is time-offset behind. */
+@keyframes splash-sweep {
+  0% {
+    transform: translateX(-160px);
+  }
+  100% {
+    transform: translateX(224px);
+  }
+}
+.splash-sweep-bar {
+  animation: splash-sweep 1.25s cubic-bezier(0.45, 0, 0.55, 1) infinite;
+}
+
+/* Main window: gentle fade-in of the whole app once the splash hands off. */
+@keyframes app-in {
+  from {
+    opacity: 0;
+    transform: scale(0.995);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+.animate-app-in {
+  animation: app-in 0.45s ease-out both;
+}
+
+/* Sidebar: a newly added conversation rises into the list. */
+@keyframes conv-in {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+.animate-conv-in {
+  animation: conv-in 0.3s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+/* Presence: soft breathing pulse on the "online" indicator dots. */
+@keyframes presence-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.35;
+  }
+}
+.animate-presence-pulse {
+  animation: presence-pulse 2.6s ease-in-out infinite;
 }
 
 /* Respect users who prefer less motion. */

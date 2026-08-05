@@ -10,6 +10,15 @@ export function shortPeerId(peerId: string, max = 12): string {
 }
 
 /**
+ * Whether an ID identifies a group rather than a peer. The relay assigns
+ * UUIDs ("123e4567-e89b-...") as group IDs, which always contain a hyphen;
+ * peer IDs are 24 lowercase hex characters with no separator.
+ */
+export function isGroupId(id: string): boolean {
+  return id.includes("-");
+}
+
+/**
  * Turn a server avatar path ("/media/{hash}") into an absolute URL by deriving
  * the origin from the relay's ws:// endpoint. Already-absolute URLs pass
  * through unchanged; returns null when no URL can be derived.

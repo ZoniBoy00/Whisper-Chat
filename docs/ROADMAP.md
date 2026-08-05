@@ -175,7 +175,8 @@ talks to whom, IP) is visible just as in Signal/WhatsApp — this is an
 | **4** | **E2EE integration:** 1:1 messages end to end (prekey exchange → session → encryption → relay → decryption), session persistence | 1–2 | ✅ **done** |
 | **5** | **UI/UX:** Signal/Telegram-grade — read receipts (blue ticks), typing indicator, display names, Online/Last seen presence, WhatsApp-style chat list, settings | 1–2 | ✅ **done** |
 | **5.5** | **Username & Profile System:** signed username binding (Ed25519), avatars via /media, search by username/UID | 2 | ✅ **done** — spec: `docs/PROFILE-SYSTEM.md` |
-| **6** | **Groups + disappearing messages:** Megolm, disappearing messages | 2 | 🔒 Next |
+| **6** | **Groups:** Megolm E2EE groups — owner/admin roles, key sharing over 1:1 E2EE, WhatsApp/Signal-style group chat + info UI | 2 | ✅ **done** |
+| **6.5** | **Disappearing messages:** per-chat TTL, auto-delete both ends | 1–2 | 🔒 Next |
 | **7** | **Media + calls:** encrypted file transfer, WebRTC (DTLS-SRTP) + coturn | 2 | 🔒 After MVP |
 | **8** | **Mobile:** Flutter + flutter_rust_bridge; push (APNs/FCM — only "you have a message") | separate | 🔒 After MVP |
 | **9** | **Audit + PQ:** cargo audit, fuzz, external review, threat model, X25519Kyber768 | — | 🔒 After MVP |

@@ -167,12 +167,98 @@ impl ChatStore {
                 avatar_url   TEXT,
                 last_seen    INTEGER
             );
+            CREATE TABLE IF NOT EXISTS group_outbound (
+                group_id TEXT PRIMARY KEY,
+                name     TEXT NOT NULL,
+                pickle   TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS group_inbound (
+                group_id TEXT PRIMARY KEY,
+                name     TEXT NOT NULL,
+                pickle   TEXT NOT NULL
+            );
             CREATE TABLE IF NOT EXISTS settings (
                 key   TEXT PRIMARY KEY,
                 value TEXT NOT NULL
             );",
         )?;
         Ok(())
+    }
+
+    /// Replace the whole outbound group-session map (group_id -> (name,
+    /// Megolm pickle)). A full rewrite keeps it simple: groups are few and the
+    /// session state must stay in lockstep with the in-memory map anyway.
+    pub fn replace_group_outbound(
+        &self,
+        groups: &HashMap<String, (String, String)>,
+    ) -> Result<(), StoreError> {
+        let mut conn = self.conn()?;
+        let tx = conn.transaction()?;
+        tx.execute("DELETE FROM group_outbound", [])?;
+        {
+            let mut stmt = tx.prepare(
+                "INSERT INTO group_outbound (group_id, name, pickle) VALUES (?1, ?2, ?3)",
+            )?;
+            for (group_id, (name, pickle)) in groups {
+                stmt.execute(params![group_id, name, pickle])?;
+            }
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Load every persisted outbound group session as a
+    /// `group_id -> (name, pickle)` map.
+    pub fn load_group_outbound(&self) -> Result<HashMap<String, (String, String)>, StoreError> {
+        let conn = self.conn()?;
+        let mut stmt = conn.prepare("SELECT group_id, name, pickle FROM group_outbound")?;
+        let rows = stmt.query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, (row.get(1)?, row.get(2)?)))
+        })?;
+        let mut groups = HashMap::new();
+        for row in rows {
+            let (id, rest) = row?;
+            groups.insert(id, rest);
+        }
+        Ok(groups)
+    }
+
+    /// Replace the whole inbound group-session map (group_id -> (name,
+    /// Megolm pickle)). A full rewrite keeps it simple, mirroring
+    /// [`ChatStore::replace_sessions`].
+    pub fn replace_group_inbound(
+        &self,
+        groups: &HashMap<String, (String, String)>,
+    ) -> Result<(), StoreError> {
+        let mut conn = self.conn()?;
+        let tx = conn.transaction()?;
+        tx.execute("DELETE FROM group_inbound", [])?;
+        {
+            let mut stmt = tx.prepare(
+                "INSERT INTO group_inbound (group_id, name, pickle) VALUES (?1, ?2, ?3)",
+            )?;
+            for (group_id, (name, pickle)) in groups {
+                stmt.execute(params![group_id, name, pickle])?;
+            }
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Load every persisted inbound group session as a
+    /// `group_id -> (name, pickle)` map.
+    pub fn load_group_inbound(&self) -> Result<HashMap<String, (String, String)>, StoreError> {
+        let conn = self.conn()?;
+        let mut stmt = conn.prepare("SELECT group_id, name, pickle FROM group_inbound")?;
+        let rows = stmt.query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, (row.get(1)?, row.get(2)?)))
+        })?;
+        let mut groups = HashMap::new();
+        for row in rows {
+            let (id, rest) = row?;
+            groups.insert(id, rest);
+        }
+        Ok(groups)
     }
 
     /// Insert or update one message row. The `id` is the primary key, so
@@ -352,6 +438,23 @@ impl ChatStore {
         )
         .optional()
         .map_err(StoreError::from)
+    }
+
+    /// Remove a contact row (and any learned display name / presence) from the
+    /// store. Used by the client-local "remove contact" action.
+    pub fn delete_contact(&self, peer_id: &str) -> Result<(), StoreError> {
+        let conn = self.conn()?;
+        conn.execute("DELETE FROM contacts WHERE peer_id = ?1", params![peer_id])?;
+        Ok(())
+    }
+
+    /// Remove every stored message row for a peer. Used by the client-local
+    /// "remove contact" action, which also drops the session so history and
+    /// keys for that peer are cleared on this device.
+    pub fn delete_messages_for(&self, peer_id: &str) -> Result<(), StoreError> {
+        let conn = self.conn()?;
+        conn.execute("DELETE FROM messages WHERE peer_id = ?1", params![peer_id])?;
+        Ok(())
     }
 
     /// Persist one settings value.
@@ -548,6 +651,57 @@ mod tests {
     }
 
     #[test]
+    fn group_outbound_sessions_roundtrip_and_replace() {
+        let store = ChatStore::open_in_memory(TEST_KEY).expect("open in-memory store");
+        store
+            .replace_group_outbound(&HashMap::from([(
+                "g1".to_string(),
+                ("Squad".to_string(), r#"{"ratchet":1}"#.to_string()),
+            )]))
+            .expect("store outbound");
+        let loaded = store.load_group_outbound().expect("load outbound");
+        assert_eq!(loaded.len(), 1);
+        assert_eq!(loaded["g1"].0, "Squad");
+        assert_eq!(loaded["g1"].1, r#"{"ratchet":1}"#);
+
+        // A fresh rewrite drops stale rows.
+        store
+            .replace_group_outbound(&HashMap::from([(
+                "g2".to_string(),
+                ("New".to_string(), r#"{"ratchet":2}"#.to_string()),
+            )]))
+            .expect("rewrite outbound");
+        let loaded = store.load_group_outbound().expect("reload outbound");
+        assert_eq!(loaded.len(), 1);
+        assert!(loaded.contains_key("g2"));
+    }
+
+    #[test]
+    fn group_inbound_sessions_roundtrip_and_replace() {
+        let store = ChatStore::open_in_memory(TEST_KEY).expect("open in-memory store");
+        store
+            .replace_group_inbound(&HashMap::from([(
+                "g1".to_string(),
+                ("Squad".to_string(), r#"{"ratchet":1}"#.to_string()),
+            )]))
+            .expect("store inbound");
+        let loaded = store.load_group_inbound().expect("load inbound");
+        assert_eq!(loaded.len(), 1);
+        assert_eq!(loaded["g1"].0, "Squad");
+        assert_eq!(loaded["g1"].1, r#"{"ratchet":1}"#);
+
+        store
+            .replace_group_inbound(&HashMap::from([(
+                "g2".to_string(),
+                ("New".to_string(), r#"{"ratchet":2}"#.to_string()),
+            )]))
+            .expect("rewrite inbound");
+        let loaded = store.load_group_inbound().expect("reload inbound");
+        assert_eq!(loaded.len(), 1);
+        assert!(loaded.contains_key("g2"));
+    }
+
+    #[test]
     fn settings_roundtrip_set_get_and_delete() {
         let store = ChatStore::open_in_memory(TEST_KEY).expect("open in-memory store");
         assert_eq!(store.get_setting("theme").expect("missing key"), None);
@@ -622,6 +776,55 @@ mod tests {
         let contact = store.get_contact("peer-1").expect("get contact").unwrap();
         assert_eq!(contact.display_name.as_deref(), Some("Alice"));
         assert_eq!(contact.last_seen, Some(123));
+    }
+
+    #[test]
+    fn delete_contact_removes_the_row() {
+        let store = ChatStore::open_in_memory(TEST_KEY).expect("open in-memory store");
+        store
+            .upsert_contact(&ContactRow {
+                peer_id: "peer-1".into(),
+                display_name: Some("Alice".into()),
+                username: None,
+                avatar_url: None,
+                last_seen: None,
+            })
+            .expect("upsert contact");
+        store.delete_contact("peer-1").expect("delete contact");
+        assert!(store.get_contact("peer-1").expect("get contact").is_none());
+        // Deleting an unknown contact is a no-op, not an error.
+        store
+            .delete_contact("ghost")
+            .expect("delete unknown contact");
+    }
+
+    #[test]
+    fn delete_messages_for_removes_only_that_peers_rows() {
+        let store = ChatStore::open_in_memory(TEST_KEY).expect("open in-memory store");
+        store
+            .upsert_message(
+                "peer-1",
+                &sample_message("m-1", "for peer 1", false, "delivered"),
+                None,
+            )
+            .expect("store for peer 1");
+        store
+            .upsert_message(
+                "peer-2",
+                &sample_message("m-2", "for peer 2", false, "delivered"),
+                None,
+            )
+            .expect("store for peer 2");
+
+        store
+            .delete_messages_for("peer-1")
+            .expect("delete peer 1 messages");
+        assert!(store.messages_for("peer-1").expect("load").is_empty());
+        assert_eq!(
+            store.messages_for("peer-2").expect("load").len(),
+            1,
+            "another peer's history must survive"
+        );
     }
 
     #[test]

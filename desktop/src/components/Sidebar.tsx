@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   Loader2,
   MessageCirclePlus,
@@ -32,6 +32,8 @@ interface SidebarProps {
   relayUrl: string;
   onSelect: (id: string) => void;
   onAddContact: () => void;
+  /** Open the "New group" dialog. */
+  onNewGroup: () => void;
   /** Start a chat directly with a peer (from a directory search result). */
   onStartChat: (peerId: string) => Promise<void>;
   onOpenSettings: () => void;
@@ -56,6 +58,7 @@ export function Sidebar({
   relayUrl,
   onSelect,
   onAddContact,
+  onNewGroup,
   onStartChat,
   onOpenSettings,
   onReconnect,
@@ -68,6 +71,27 @@ export function Sidebar({
   const [serverSearching, setServerSearching] = useState(false);
   const [serverSearchFailed, setServerSearchFailed] = useState(false);
   const [searchAddError, setSearchAddError] = useState<string | null>(null);
+  // Ids of conversations that have just appeared, so only the new row animates
+  // in. The initial mount is skipped so an existing list does not replay.
+  const [enteringIds, setEnteringIds] = useState<ReadonlySet<string>>(new Set());
+  const seenPeerIdsRef = useRef<Set<string> | null>(null);
+
+  useEffect(() => {
+    const seen = seenPeerIdsRef.current;
+    if (!seen) {
+      seenPeerIdsRef.current = new Set(conversations.map((c) => c.peerId));
+      setEnteringIds(new Set());
+      return;
+    }
+    const fresh = new Set<string>();
+    for (const conversation of conversations) {
+      if (!seen.has(conversation.peerId)) fresh.add(conversation.peerId);
+    }
+    if (fresh.size > 0) {
+      setEnteringIds(fresh);
+      for (const id of fresh) seen.add(id);
+    }
+  }, [conversations]);
 
   const trimmedQuery = query.trim().toLowerCase();
 
@@ -110,6 +134,7 @@ export function Sidebar({
 
   const filteredConversations = conversations.filter((conversation) =>
     conversation.peerId.toLowerCase().includes(trimmedQuery) ||
+    conversation.name.toLowerCase().includes(trimmedQuery) ||
     (conversation.displayName ?? "").toLowerCase().includes(trimmedQuery) ||
     (conversation.username ?? "").toLowerCase().includes(trimmedQuery)
   );
@@ -161,7 +186,7 @@ export function Sidebar({
           onClick={onOpenSettings}
           title="Settings"
           aria-label="Settings"
-          className="rounded-lg p-1.5 text-wp-dim transition hover:bg-wp-panel-2 hover:text-wp-text"
+          className="rounded-lg p-1.5 text-wp-dim transition hover:bg-wp-panel-2 hover:text-wp-text active:scale-90"
         >
           <Settings className="h-4 w-4" />
         </button>
@@ -173,7 +198,7 @@ export function Sidebar({
             aria-label="Identity options"
             aria-haspopup="true"
             aria-expanded={menuOpen}
-            className="rounded-lg p-1.5 text-wp-dim transition hover:bg-wp-panel-2 hover:text-wp-text"
+            className="rounded-lg p-1.5 text-wp-dim transition hover:bg-wp-panel-2 hover:text-wp-text active:scale-90"
           >
             <MoreVertical className="h-4 w-4" />
           </button>
@@ -239,15 +264,26 @@ export function Sidebar({
         <p className="text-xs font-semibold uppercase tracking-widest text-wp-faint">
           Conversations
         </p>
-        <button
-          type="button"
-          onClick={onAddContact}
-          title="Start a new chat"
-          aria-label="Start a new chat"
-          className="rounded-lg p-1.5 text-wp-dim transition hover:bg-wp-panel-2 hover:text-wp-text"
-        >
-          <SquarePen className="h-4 w-4" />
-        </button>
+        <div className="flex items-center gap-1">
+          <button
+            type="button"
+            onClick={onNewGroup}
+            title="New group"
+            aria-label="New group"
+            className="rounded-lg p-1.5 text-wp-dim transition hover:bg-wp-panel-2 hover:text-wp-text"
+          >
+            <Users className="h-4 w-4" />
+          </button>
+          <button
+            type="button"
+            onClick={onAddContact}
+            title="Start a new chat"
+            aria-label="Start a new chat"
+            className="rounded-lg p-1.5 text-wp-dim transition hover:bg-wp-panel-2 hover:text-wp-text"
+          >
+            <SquarePen className="h-4 w-4" />
+          </button>
+        </div>
       </div>
 
       {/* Conversation list / directory results */}
@@ -325,7 +361,7 @@ export function Sidebar({
             <button
               type="button"
               onClick={onAddContact}
-              className="mt-1 inline-flex items-center gap-2 rounded-xl bg-wp-accent px-4 py-2 text-sm font-semibold text-wp-accent-fg transition hover:bg-wp-accent-strong"
+              className="mt-1 inline-flex items-center gap-2 rounded-xl bg-wp-accent px-4 py-2 text-sm font-semibold text-wp-accent-fg transition hover:bg-wp-accent-strong active:scale-95"
             >
               <UserPlus className="h-3.5 w-3.5" />
               New Chat
@@ -349,8 +385,10 @@ export function Sidebar({
           filteredConversations.map((conversation) => {
             const last = conversation.messages[conversation.messages.length - 1];
             const active = conversation.id === activeId;
-            const displayName =
-              conversation.displayName ?? shortPeerId(conversation.peerId, 16);
+            const isGroup = conversation.isGroup === true;
+            const displayName = isGroup
+              ? conversation.name
+              : conversation.displayName ?? shortPeerId(conversation.peerId, 16);
             const online = presence[conversation.peerId]?.online === true;
             const avatarSrc = conversation.avatarUrl
               ? mediaUrl(relayUrl, conversation.avatarUrl)
@@ -362,16 +400,22 @@ export function Sidebar({
                 onClick={() => onSelect(conversation.id)}
                 aria-current={active ? "true" : undefined}
                 className={cx(
-                  "flex w-full items-center gap-3 rounded-xl px-3 py-3 text-left transition",
+                  "flex w-full items-center gap-3 rounded-xl px-3 py-3 text-left transition-colors duration-200 ease-out",
+                  enteringIds.has(conversation.id) && "animate-conv-in",
                   active ? "bg-wp-panel-3" : "hover:bg-wp-panel-2"
                 )}
               >
                 <div className="relative shrink-0">
-                  <Avatar name={displayName} size={44} src={avatarSrc} />
-                  {online ? (
+                  <Avatar
+                    name={displayName}
+                    size={44}
+                    src={isGroup ? null : avatarSrc}
+                    variant={isGroup ? "group" : "peer"}
+                  />
+                  {online && !isGroup ? (
                     <span
                       aria-hidden="true"
-                      className="absolute bottom-0 right-0 h-3 w-3 rounded-full border-2 border-wp-panel bg-wp-online"
+                      className="absolute bottom-0 right-0 h-3 w-3 animate-presence-pulse rounded-full border-2 border-wp-panel bg-wp-online"
                     />
                   ) : null}
                 </div>
@@ -396,9 +440,11 @@ export function Sidebar({
                   <p className="truncate text-sm text-wp-dim">
                     {last
                       ? `${last.outgoing ? "You: " : ""}${last.text}`
-                      : conversation.displayName
-                        ? shortPeerId(conversation.peerId)
-                        : ""}
+                      : isGroup
+                        ? `${conversation.memberCount ?? 0} members`
+                        : conversation.displayName
+                          ? shortPeerId(conversation.peerId)
+                          : ""}
                   </p>
                 </div>
               </button>
@@ -440,7 +486,7 @@ export function Sidebar({
             <button
               type="button"
               onClick={onReconnect}
-              className="rounded-lg bg-wp-panel-2 px-2.5 py-1.5 text-xs font-semibold text-wp-text transition hover:bg-wp-panel-3"
+              className="rounded-lg bg-wp-panel-2 px-2.5 py-1.5 text-xs font-semibold text-wp-text transition hover:bg-wp-panel-3 active:scale-95"
             >
               Reconnect
             </button>

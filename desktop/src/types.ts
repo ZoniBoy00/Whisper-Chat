@@ -23,6 +23,29 @@ export interface Conversation {
   username?: string | null;
   /** Server avatar path ("/media/{hash}"); null when not known. */
   avatarUrl?: string | null;
+  /** True for group chats (keyed by a relay-assigned group ID). */
+  isGroup?: boolean;
+  /** Group member count; used by the group header subtitle. */
+  memberCount?: number;
+}
+
+/** A group role: owner (creator), admin or a regular member. */
+export type GroupRole = "owner" | "admin" | "member";
+
+/** One member of a group roster with its current role. */
+export interface GroupMember {
+  peer_id: string;
+  role: GroupRole;
+}
+
+/** A group's public metadata returned by `get_chat_state` / `get_group_info`. */
+export interface GroupInfo {
+  group_id: string;
+  name: string;
+  owner_peer_id: string;
+  members: GroupMember[];
+  /** Our own role in the group; null while unknown. */
+  my_role: GroupRole | null;
 }
 
 /** A known conversation peer plus the public profile data they advertise. */
@@ -58,6 +81,8 @@ export interface ChatState {
   contacts: ContactInfo[];
   messages: Record<string, Message[]>;
   presence: Record<string, PresenceInfo>;
+  /** Groups this identity belongs to, with their rosters and roles. */
+  groups: GroupInfo[];
 }
 
 /** Payload of the `chat-message` event emitted for new plaintext. */
@@ -101,4 +126,14 @@ export interface PresenceEvent {
 export interface AppSettings {
   relay_url?: string;
   theme?: "dark" | "light";
+  /** Whether our online status and last-seen are shown to others. */
+  presence_visible?: boolean;
+  /** Whether we send end-to-end read receipts to the sender. */
+  read_receipts?: boolean;
+  /** Whether we broadcast typing indicators to the active peer. */
+  typing_indicator?: boolean;
+  /** Whether desktop notifications are shown for messages while unfocused. */
+  notifications_enabled?: boolean;
+  /** Whether notifications include the message text. */
+  notification_preview?: boolean;
 }

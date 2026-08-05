@@ -54,3 +54,11 @@ jobs:
         with:
           components: rustfmt
       - run: cargo fmt --check
+
+  smoke:
+    name: Smoke
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: bash scripts/run-smoke.sh

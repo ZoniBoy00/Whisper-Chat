@@ -143,6 +143,13 @@ enum ClientMessage {
     /// right now plus (when offline) its last-seen timestamp.
     #[serde(rename = "get_presence")]
     GetPresence { peer_id: String },
+    /// Toggle whether this peer's online status and last-seen are visible to
+    /// other peers. When hidden, every `get_presence` reply and every
+    /// `broadcast_presence` push for this peer reports `online: false` with
+    /// `last_seen: null`, so no one can tell when the peer is online or when
+    /// it was last seen. The relay replies with `privacy_updated`.
+    #[serde(rename = "set_privacy")]
+    SetPrivacy { presence_visible: bool },
     /// Register (or refresh) a signed username binding for the authenticated
     /// peer. `signature` is the base64 Ed25519 signature over the canonical
     /// bytes `username || 0x00 || curve25519_key_raw`; `avatar` is an optional
@@ -184,6 +191,19 @@ enum ClientMessage {
         group_id: String,
         envelope: Envelope,
     },
+    /// Promote `peer_id` to a group admin. Only the owner or an existing
+    /// admin may promote; promoting a member makes them an admin and
+    /// promoting an admin is a no-op.
+    #[serde(rename = "promote_member")]
+    PromoteMember { group_id: String, peer_id: String },
+    /// Demote `peer_id` from admin back to a regular member. Only the group
+    /// owner may demote, and the owner can never demote themselves.
+    #[serde(rename = "demote_member")]
+    DemoteMember { group_id: String, peer_id: String },
+    /// Remove `peer_id` from a group's roster. Only the owner may remove a
+    /// member, and the owner cannot remove themselves.
+    #[serde(rename = "remove_member")]
+    RemoveMember { group_id: String, peer_id: String },
 }
 
 /// Messages the SERVER sends to the client.
@@ -215,13 +235,18 @@ enum ServerMessage {
     /// every `watch_presence` subscriber when the peer connects/disconnects
     /// and as the reply to a `get_presence` request. `last_seen` is the peer's
     /// unix-seconds disconnect timestamp; it is `None` while the peer is
-    /// online or when it has never been seen.
+    /// online or when it has never been seen. Peers that hide their presence
+    /// (`set_privacy`) are always reported as `online: false` with a `null`
+    /// `last_seen`, even while connected.
     #[serde(rename = "presence")]
     Presence {
         peer_id: String,
         online: bool,
         last_seen: Option<i64>,
     },
+    /// Confirmation that the caller's privacy settings were updated.
+    #[serde(rename = "privacy_updated")]
+    PrivacyUpdated,
     /// Confirmation that the caller's username binding was registered.
     #[serde(rename = "profile_registered")]
     ProfileRegistered { username: String },
@@ -252,16 +277,42 @@ enum ServerMessage {
     #[serde(rename = "group_member_left")]
     GroupMemberLeft { group_id: String, peer_id: String },
     /// The public metadata + member roster of a group (`get_group_info`
-    /// reply).
+    /// reply). `members` carries each member's current role (owner/admin/
+    /// member) so clients can render role badges and permission-gated
+    /// controls.
     #[serde(rename = "group_info")]
     GroupInfo {
         group_id: String,
         name: String,
         owner_peer_id: String,
-        members: Vec<String>,
+        members: Vec<GroupMember>,
     },
+    /// Confirmation that `peer_id` was promoted to admin (`promote_member`
+    /// reply).
+    #[serde(rename = "group_member_promoted")]
+    GroupMemberPromoted { group_id: String, peer_id: String },
+    /// Confirmation that `peer_id` was demoted to a regular member
+    /// (`demote_member` reply).
+    #[serde(rename = "group_member_demoted")]
+    GroupMemberDemoted { group_id: String, peer_id: String },
+    /// Confirmation that `peer_id` was removed from a group (`remove_member`
+    /// reply).
+    #[serde(rename = "group_member_removed")]
+    GroupMemberRemoved { group_id: String, peer_id: String },
     /// Protocol error.
     Error { code: String },
+}
+
+/// One member of a group's roster, with its current role.
+///
+/// The role is relay-managed group metadata (owner/admin/member) and is NOT
+/// secret — it never carries key material or plaintext.
+#[derive(Debug, Clone, Serialize)]
+pub struct GroupMember {
+    /// The member's peer ID (fingerprint).
+    pub peer_id: String,
+    /// "owner", "admin" or "member".
+    pub role: String,
 }
 
 /// One hit from the public username directory search.
@@ -579,6 +630,9 @@ impl Relay {
                         Ok(ClientMessage::GetPresence { peer_id: watched }) => {
                             self.get_presence(&peer_id, &ip, &watched).await;
                         }
+                        Ok(ClientMessage::SetPrivacy { presence_visible }) => {
+                            self.set_privacy(&peer_id, &ip, presence_visible).await;
+                        }
                         Ok(ClientMessage::RegisterProfile {
                             username,
                             signature,
@@ -620,6 +674,24 @@ impl Relay {
                         Ok(ClientMessage::SendGroupMessage { group_id, envelope }) => {
                             self.send_group_message(&peer_id, &ip, &group_id, envelope)
                                 .await;
+                        }
+                        Ok(ClientMessage::PromoteMember {
+                            group_id,
+                            peer_id: target,
+                        }) => {
+                            self.promote_member(&peer_id, &ip, &group_id, &target).await;
+                        }
+                        Ok(ClientMessage::DemoteMember {
+                            group_id,
+                            peer_id: target,
+                        }) => {
+                            self.demote_member(&peer_id, &ip, &group_id, &target).await;
+                        }
+                        Ok(ClientMessage::RemoveMember {
+                            group_id,
+                            peer_id: target,
+                        }) => {
+                            self.remove_member(&peer_id, &ip, &group_id, &target).await;
                         }
                         // Re-registration or protocol violations: ignore for now.
                         Ok(_) => {}
@@ -1045,8 +1117,8 @@ impl Relay {
         }
     }
 
-    /// Reply with a group's public metadata and member roster. The roster is
-    /// only visible to current members.
+    /// Reply with a group's public metadata and member roster including each
+    /// member's role. The roster is only visible to current members.
     async fn get_group_info(&self, peer_id: &str, ip: &str, group_id: &str) {
         if !self.take_group_slot(peer_id, ip).await {
             return;
@@ -1078,7 +1150,13 @@ impl Relay {
             return;
         }
 
-        let members = self.inner.store.list_group_members(group_id);
+        let members = self
+            .inner
+            .store
+            .members_with_roles(group_id)
+            .into_iter()
+            .map(|(peer_id, role)| GroupMember { peer_id, role })
+            .collect();
         let _ = self
             .send(
                 peer_id,
@@ -1090,6 +1168,287 @@ impl Relay {
                 },
             )
             .await;
+    }
+
+    /// Promote `target` to a group admin (`promote_member`).
+    ///
+    /// Permissions:
+    /// - Only the group owner or an existing admin may promote. A regular
+    ///   member gets `not_admin`.
+    /// - Promoting a member makes them an admin; promoting an admin is a
+    ///   no-op. The owner is never demoted or re-roling: promoting the owner
+    ///   is a no-op.
+    /// - `target` must be a member of the group, else `not_a_member`.
+    async fn promote_member(&self, peer_id: &str, ip: &str, group_id: &str, target: &str) {
+        if !self.take_group_slot(peer_id, ip).await {
+            return;
+        }
+
+        if self.inner.store.get_group(group_id).is_none() {
+            let _ = self
+                .send(
+                    peer_id,
+                    ServerMessage::Error {
+                        code: "group_not_found".into(),
+                    },
+                )
+                .await;
+            return;
+        }
+        if !self.inner.store.is_group_member(group_id, peer_id) {
+            let _ = self
+                .send(
+                    peer_id,
+                    ServerMessage::Error {
+                        code: "not_a_member".into(),
+                    },
+                )
+                .await;
+            return;
+        }
+        let actor_role = self.inner.store.get_member_role(group_id, peer_id);
+        if !matches!(actor_role.as_deref(), Some("owner") | Some("admin")) {
+            let _ = self
+                .send(
+                    peer_id,
+                    ServerMessage::Error {
+                        code: "not_admin".into(),
+                    },
+                )
+                .await;
+            return;
+        }
+        if !self.inner.store.is_group_member(group_id, target) {
+            let _ = self
+                .send(
+                    peer_id,
+                    ServerMessage::Error {
+                        code: "not_a_member".into(),
+                    },
+                )
+                .await;
+            return;
+        }
+
+        // owner->admin is the only real promotion; an already-admin target is
+        // a no-op and the owner stays owner.
+        let target_role = self.inner.store.get_member_role(group_id, target);
+        if matches!(target_role.as_deref(), Some("owner") | Some("admin")) {
+            let _ = self
+                .send(
+                    peer_id,
+                    ServerMessage::GroupMemberPromoted {
+                        group_id: group_id.to_string(),
+                        peer_id: target.to_string(),
+                    },
+                )
+                .await;
+            return;
+        }
+
+        match self.inner.store.set_member_role(group_id, target, "admin") {
+            Ok(()) => {
+                let _ = self
+                    .send(
+                        peer_id,
+                        ServerMessage::GroupMemberPromoted {
+                            group_id: group_id.to_string(),
+                            peer_id: target.to_string(),
+                        },
+                    )
+                    .await;
+            }
+            Err(err) => {
+                tracing::error!(peer = %peer_id, group = %group_id, "failed to promote member: {err}");
+            }
+        }
+    }
+
+    /// Demote `target` from admin to a regular member (`demote_member`).
+    ///
+    /// Permissions:
+    /// - Only the group owner may demote. An admin or member gets `not_owner`.
+    /// - The owner cannot demote themselves (or any owner): demoting the owner
+    ///   yields `not_owner`.
+    /// - `target` must be a member of the group, else `not_a_member`.
+    async fn demote_member(&self, peer_id: &str, ip: &str, group_id: &str, target: &str) {
+        if !self.take_group_slot(peer_id, ip).await {
+            return;
+        }
+
+        if self.inner.store.get_group(group_id).is_none() {
+            let _ = self
+                .send(
+                    peer_id,
+                    ServerMessage::Error {
+                        code: "group_not_found".into(),
+                    },
+                )
+                .await;
+            return;
+        }
+        if !self.inner.store.is_group_member(group_id, peer_id) {
+            let _ = self
+                .send(
+                    peer_id,
+                    ServerMessage::Error {
+                        code: "not_a_member".into(),
+                    },
+                )
+                .await;
+            return;
+        }
+        let actor_role = self.inner.store.get_member_role(group_id, peer_id);
+        if actor_role.as_deref() != Some("owner") {
+            let _ = self
+                .send(
+                    peer_id,
+                    ServerMessage::Error {
+                        code: "not_owner".into(),
+                    },
+                )
+                .await;
+            return;
+        }
+        if !self.inner.store.is_group_member(group_id, target) {
+            let _ = self
+                .send(
+                    peer_id,
+                    ServerMessage::Error {
+                        code: "not_a_member".into(),
+                    },
+                )
+                .await;
+            return;
+        }
+        // The owner cannot be demoted (this also guards self-demotion: the
+        // only owner is the actor, and an owner is never an admin).
+        let target_role = self.inner.store.get_member_role(group_id, target);
+        if target_role.as_deref() == Some("owner") {
+            let _ = self
+                .send(
+                    peer_id,
+                    ServerMessage::Error {
+                        code: "not_owner".into(),
+                    },
+                )
+                .await;
+            return;
+        }
+
+        match self.inner.store.set_member_role(group_id, target, "member") {
+            Ok(()) => {
+                let _ = self
+                    .send(
+                        peer_id,
+                        ServerMessage::GroupMemberDemoted {
+                            group_id: group_id.to_string(),
+                            peer_id: target.to_string(),
+                        },
+                    )
+                    .await;
+            }
+            Err(err) => {
+                tracing::error!(peer = %peer_id, group = %group_id, "failed to demote member: {err}");
+            }
+        }
+    }
+
+    /// Remove `target` from a group's roster (`remove_member`).
+    ///
+    /// Permissions:
+    /// - Only the group owner may remove a member. An admin or member gets
+    ///   `not_owner`.
+    /// - The owner cannot remove themselves: that would leave the group with
+    ///   no owner, so it yields `not_owner`.
+    /// - `target` must be a member of the group, else `not_a_member`.
+    async fn remove_member(&self, peer_id: &str, ip: &str, group_id: &str, target: &str) {
+        if !self.take_group_slot(peer_id, ip).await {
+            return;
+        }
+
+        if self.inner.store.get_group(group_id).is_none() {
+            let _ = self
+                .send(
+                    peer_id,
+                    ServerMessage::Error {
+                        code: "group_not_found".into(),
+                    },
+                )
+                .await;
+            return;
+        }
+        if !self.inner.store.is_group_member(group_id, peer_id) {
+            let _ = self
+                .send(
+                    peer_id,
+                    ServerMessage::Error {
+                        code: "not_a_member".into(),
+                    },
+                )
+                .await;
+            return;
+        }
+        let actor_role = self.inner.store.get_member_role(group_id, peer_id);
+        if actor_role.as_deref() != Some("owner") {
+            let _ = self
+                .send(
+                    peer_id,
+                    ServerMessage::Error {
+                        code: "not_owner".into(),
+                    },
+                )
+                .await;
+            return;
+        }
+        if !self.inner.store.is_group_member(group_id, target) {
+            let _ = self
+                .send(
+                    peer_id,
+                    ServerMessage::Error {
+                        code: "not_a_member".into(),
+                    },
+                )
+                .await;
+            return;
+        }
+        // Admins may be removed, but the owner cannot be removed by anyone
+        // (including themselves).
+        if target == peer_id
+            || self
+                .inner
+                .store
+                .get_member_role(group_id, target)
+                .as_deref()
+                == Some("owner")
+        {
+            let _ = self
+                .send(
+                    peer_id,
+                    ServerMessage::Error {
+                        code: "not_owner".into(),
+                    },
+                )
+                .await;
+            return;
+        }
+
+        match self.inner.store.remove_group_member(group_id, target) {
+            Ok(()) => {
+                let _ = self
+                    .send(
+                        peer_id,
+                        ServerMessage::GroupMemberRemoved {
+                            group_id: group_id.to_string(),
+                            peer_id: target.to_string(),
+                        },
+                    )
+                    .await;
+            }
+            Err(err) => {
+                tracing::error!(peer = %peer_id, group = %group_id, "failed to remove member: {err}");
+            }
+        }
     }
 
     /// Fan out one client-encrypted envelope to every group member except the
@@ -1726,9 +2085,47 @@ impl Relay {
         });
     }
 
+    /// Persist the caller's presence-visibility preference and confirm with a
+    /// `privacy_updated` reply.
+    ///
+    /// When a peer hides its presence, every `get_presence` reply and every
+    /// `broadcast_presence` push for that peer reports `online: false` with
+    /// `last_seen: null`, so other peers cannot tell when the peer is online
+    /// or when it was last seen. The preference is rate limited under the
+    /// `presence:<ip>` bucket like the other presence operations.
+    async fn set_privacy(&self, peer_id: &str, ip: &str, presence_visible: bool) {
+        if !self.inner.limiter.try_take(&format!("presence:{ip}")) {
+            tracing::warn!(ip = %ip, "presence rate limit exceeded");
+            let _ = self
+                .send(
+                    peer_id,
+                    ServerMessage::Error {
+                        code: "rate_limited".into(),
+                    },
+                )
+                .await;
+            return;
+        }
+
+        match self
+            .inner
+            .store
+            .set_presence_visible(peer_id, presence_visible)
+        {
+            Ok(()) => {
+                let _ = self.send(peer_id, ServerMessage::PrivacyUpdated).await;
+            }
+            Err(err) => {
+                tracing::error!(peer = %peer_id, "failed to persist privacy setting: {err}");
+            }
+        }
+    }
+
     /// Answer a one-shot presence query for `target`: whether the peer is
     /// online right now, plus its stored last-seen timestamp when offline.
-    /// Unknown peers report `online: false` with `last_seen: null`.
+    /// Unknown peers report `online: false` with `last_seen: null`. A peer
+    /// that hides its presence is always reported as offline with no
+    /// last-seen, even while it is connected.
     async fn get_presence(&self, requester: &str, ip: &str, target: &str) {
         if !self.inner.limiter.try_take(&format!("presence:{ip}")) {
             tracing::warn!(ip = %ip, "presence rate limit exceeded");
@@ -1743,11 +2140,17 @@ impl Relay {
             return;
         }
 
-        let online = self.inner.online.read().await.contains_key(target);
-        let last_seen = if online {
-            None
+        let visible = self.inner.store.get_presence_visible(target);
+        let (online, last_seen) = if !visible {
+            (false, None)
         } else {
-            self.inner.store.get_last_seen(target)
+            let online = self.inner.online.read().await.contains_key(target);
+            let last_seen = if online {
+                None
+            } else {
+                self.inner.store.get_last_seen(target)
+            };
+            (online, last_seen)
         };
         let _ = self
             .send(
@@ -1767,11 +2170,17 @@ impl Relay {
     /// disconnected) are dropped in the same pass, so dead subscriptions
     /// cannot accumulate. The `presence_watchers` lock is held while sending;
     /// sends into unbounded channels never block, so this is safe.
+    ///
+    /// A peer that hides its presence is pushed as `online: false` with
+    /// `last_seen: null` even while it is connected.
     async fn broadcast_presence(&self, peer_id: &str, online: bool) {
-        let last_seen = if online {
-            None
+        let visible = self.inner.store.get_presence_visible(peer_id);
+        let (online, last_seen) = if !visible {
+            (false, None)
+        } else if online {
+            (true, None)
         } else {
-            self.inner.store.get_last_seen(peer_id)
+            (false, self.inner.store.get_last_seen(peer_id))
         };
         let text = serde_json::to_string(&ServerMessage::Presence {
             peer_id: peer_id.to_string(),
@@ -2387,6 +2796,129 @@ mod tests {
         );
     }
 
+    // -- Privacy (presence visibility) ----------------------------------------
+
+    #[tokio::test]
+    async fn set_privacy_persists_preference_and_replies() {
+        let store = Store::open_in_memory().unwrap();
+        let relay = Relay::with_store(store);
+        let peer_id = "peer-privacy".to_string();
+        let (out_tx, mut out_rx) = mpsc::unbounded_channel::<WsMessage>();
+        relay
+            .inner
+            .online
+            .write()
+            .await
+            .insert(peer_id.clone(), out_tx);
+
+        relay.set_privacy(&peer_id, "127.0.0.1", false).await;
+        assert!(!relay.inner.store.get_presence_visible(&peer_id));
+        let reply = read_reply(&mut out_rx);
+        assert_eq!(reply["type"].as_str(), Some("privacy_updated"));
+    }
+
+    #[tokio::test]
+    async fn set_privacy_is_rate_limited_per_ip() {
+        let store = Store::open_in_memory().unwrap();
+        let relay = Relay::with_limiter(store, 1.0, 0.0);
+        let peer_id = "peer-privacy".to_string();
+        let (out_tx, mut out_rx) = mpsc::unbounded_channel::<WsMessage>();
+        relay
+            .inner
+            .online
+            .write()
+            .await
+            .insert(peer_id.clone(), out_tx);
+
+        relay.set_privacy(&peer_id, "10.0.0.1", false).await;
+        assert_eq!(
+            read_reply(&mut out_rx)["type"].as_str(),
+            Some("privacy_updated")
+        );
+
+        relay.set_privacy(&peer_id, "10.0.0.1", true).await;
+        let reply = read_reply(&mut out_rx);
+        assert_eq!(reply["type"].as_str(), Some("error"));
+        assert_eq!(reply["code"].as_str(), Some("rate_limited"));
+        // The rejected flip must not overwrite the accepted one.
+        assert!(!relay.inner.store.get_presence_visible(&peer_id));
+    }
+
+    #[tokio::test]
+    async fn get_presence_hides_status_for_peer_that_hides_presence() {
+        let store = Store::open_in_memory().unwrap();
+        let relay = Relay::with_store(store);
+        let (out_tx, mut out_rx) = mpsc::unbounded_channel::<WsMessage>();
+        relay
+            .inner
+            .online
+            .write()
+            .await
+            .insert("requester".into(), out_tx);
+
+        // Bob is ONLINE but hides his presence: the report must say offline.
+        relay
+            .inner
+            .store
+            .set_presence_visible("bob", false)
+            .unwrap();
+        let (bob_tx, _bob_rx) = mpsc::unbounded_channel::<WsMessage>();
+        relay
+            .inner
+            .online
+            .write()
+            .await
+            .insert("bob".into(), bob_tx);
+        relay
+            .inner
+            .store
+            .set_last_seen("bob", 1_700_000_000)
+            .unwrap();
+
+        relay.get_presence("requester", "127.0.0.1", "bob").await;
+        let reply = read_reply(&mut out_rx);
+        assert_eq!(reply["type"].as_str(), Some("presence"));
+        assert_eq!(reply["online"].as_bool(), Some(false));
+        assert!(
+            reply["last_seen"].is_null(),
+            "a hidden peer must never leak its last_seen"
+        );
+    }
+
+    #[tokio::test]
+    async fn broadcast_presence_hides_status_for_peer_that_hides_presence() {
+        let store = Store::open_in_memory().unwrap();
+        let relay = Relay::with_store(store);
+        let watched = "bob".to_string();
+        let (watch_tx, mut watch_rx) = mpsc::unbounded_channel::<WsMessage>();
+        relay
+            .watch_presence("alice", "127.0.0.1", &watched, watch_tx)
+            .await;
+
+        relay
+            .inner
+            .store
+            .set_presence_visible(&watched, false)
+            .unwrap();
+        relay
+            .inner
+            .store
+            .set_last_seen(&watched, 1_700_000_000)
+            .unwrap();
+
+        // Online push: hidden peer is reported offline with no last_seen.
+        relay.broadcast_presence(&watched, true).await;
+        let reply = read_reply(&mut watch_rx);
+        assert_eq!(reply["online"].as_bool(), Some(false));
+        assert!(reply["last_seen"].is_null());
+
+        // Offline push: last_seen stays hidden too.
+        relay.broadcast_presence(&watched, false).await;
+        let reply = read_reply(&mut watch_rx);
+        assert_eq!(reply["online"].as_bool(), Some(false));
+        assert!(reply["last_seen"].is_null());
+    }
+
     // -- Usernames & profiles ------------------------------------------------
 
     /// Register an identity's keys in the store and wire an outbound channel
@@ -2926,9 +3458,16 @@ mod tests {
         let members = reply["members"]
             .as_array()
             .expect("members must be an array");
-        let ids: Vec<&str> = members.iter().filter_map(|m| m.as_str()).collect();
-        assert!(ids.contains(&alice.peer_id().as_str()));
-        assert!(ids.contains(&bob.peer_id().as_str()));
+        let member_ids: Vec<&str> = members
+            .iter()
+            .filter_map(|m| m["peer_id"].as_str())
+            .collect();
+        assert!(member_ids.contains(&alice.peer_id().as_str()));
+        assert!(member_ids.contains(&bob.peer_id().as_str()));
+        // Roles: the creator owns the group, the added member is a member.
+        let roles: Vec<&str> = members.iter().filter_map(|m| m["role"].as_str()).collect();
+        assert!(roles.contains(&"owner"));
+        assert!(roles.contains(&"member"));
 
         // Bob (a member) may also read the info.
         relay
@@ -3265,6 +3804,324 @@ mod tests {
             read_reply(&mut alice_rx)["type"].as_str(),
             Some("group_created")
         );
+    }
+
+    // -- Group roles (promote / demote / remove) ------------------------------
+
+    /// Build a group owned by `alice` with `bob` (member) and `carol` (member)
+    /// in it; returns the group id.
+    async fn role_group(
+        relay: &Relay,
+        alice_rx: &mut mpsc::UnboundedReceiver<WsMessage>,
+        alice: &Identity,
+        bob: &Identity,
+        carol: &Identity,
+    ) -> String {
+        relay
+            .create_group(&alice.peer_id(), "127.0.0.1", "Role Squad")
+            .await;
+        let group_id = read_reply(alice_rx)["group_id"]
+            .as_str()
+            .expect("group_id must be set")
+            .to_string();
+        relay
+            .add_group_member(&alice.peer_id(), "127.0.0.1", &group_id, &bob.peer_id())
+            .await;
+        read_reply(alice_rx);
+        relay
+            .add_group_member(&alice.peer_id(), "127.0.0.1", &group_id, &carol.peer_id())
+            .await;
+        read_reply(alice_rx);
+        group_id
+    }
+
+    #[tokio::test]
+    async fn group_info_lists_members_with_roles() {
+        let store = Store::open_in_memory().unwrap();
+        let relay = Relay::with_limiter(store, 100.0, 0.0);
+        let alice = Identity::new();
+        let bob = Identity::new();
+        let carol = Identity::new();
+        let mut alice_rx = online_peer(&relay, &alice).await;
+        online_peer(&relay, &bob).await;
+        online_peer(&relay, &carol).await;
+        let group_id = role_group(&relay, &mut alice_rx, &alice, &bob, &carol).await;
+
+        relay
+            .get_group_info(&alice.peer_id(), "127.0.0.1", &group_id)
+            .await;
+        let reply = read_reply(&mut alice_rx);
+        assert_eq!(reply["type"].as_str(), Some("group_info"));
+        let members = reply["members"]
+            .as_array()
+            .expect("members must be an array");
+        assert_eq!(members.len(), 3);
+        for member in members {
+            assert!(
+                member["peer_id"].is_string(),
+                "each member must carry a peer_id"
+            );
+            assert!(
+                matches!(member["role"].as_str(), Some("owner" | "admin" | "member")),
+                "each member must carry a role"
+            );
+        }
+        // The creator is the only owner.
+        let owner: Vec<&str> = members
+            .iter()
+            .filter(|m| m["role"].as_str() == Some("owner"))
+            .filter_map(|m| m["peer_id"].as_str())
+            .collect();
+        assert_eq!(owner, vec![alice.peer_id().as_str()]);
+    }
+
+    #[tokio::test]
+    async fn promote_member_makes_a_member_an_admin() {
+        let store = Store::open_in_memory().unwrap();
+        let relay = Relay::with_limiter(store, 100.0, 0.0);
+        let alice = Identity::new();
+        let bob = Identity::new();
+        let carol = Identity::new();
+        let mut alice_rx = online_peer(&relay, &alice).await;
+        let mut bob_rx = online_peer(&relay, &bob).await;
+        online_peer(&relay, &carol).await;
+        let group_id = role_group(&relay, &mut alice_rx, &alice, &bob, &carol).await;
+
+        // The owner promotes bob.
+        relay
+            .promote_member(&alice.peer_id(), "127.0.0.1", &group_id, &bob.peer_id())
+            .await;
+        let reply = read_reply(&mut alice_rx);
+        assert_eq!(reply["type"].as_str(), Some("group_member_promoted"));
+        assert_eq!(reply["peer_id"].as_str(), Some(bob.peer_id().as_str()));
+        assert_eq!(
+            relay
+                .inner
+                .store
+                .get_member_role(&group_id, &bob.peer_id())
+                .as_deref(),
+            Some("admin")
+        );
+
+        // A promoted admin can promote another member too.
+        relay
+            .promote_member(&bob.peer_id(), "127.0.0.1", &group_id, &carol.peer_id())
+            .await;
+        let reply = read_reply(&mut bob_rx);
+        assert_eq!(reply["type"].as_str(), Some("group_member_promoted"));
+        assert_eq!(
+            relay
+                .inner
+                .store
+                .get_member_role(&group_id, &carol.peer_id())
+                .as_deref(),
+            Some("admin")
+        );
+    }
+
+    #[tokio::test]
+    async fn promote_member_rejects_regular_member_actor() {
+        let store = Store::open_in_memory().unwrap();
+        let relay = Relay::with_limiter(store, 100.0, 0.0);
+        let alice = Identity::new();
+        let bob = Identity::new();
+        let carol = Identity::new();
+        let mut alice_rx = online_peer(&relay, &alice).await;
+        let mut bob_rx = online_peer(&relay, &bob).await;
+        online_peer(&relay, &carol).await;
+        let group_id = role_group(&relay, &mut alice_rx, &alice, &bob, &carol).await;
+
+        // Bob is a plain member: he cannot promote anyone.
+        relay
+            .promote_member(&bob.peer_id(), "127.0.0.1", &group_id, &carol.peer_id())
+            .await;
+        let reply = read_reply(&mut bob_rx);
+        assert_eq!(reply["type"].as_str(), Some("error"));
+        assert_eq!(reply["code"].as_str(), Some("not_admin"));
+        assert_eq!(
+            relay
+                .inner
+                .store
+                .get_member_role(&group_id, &carol.peer_id())
+                .as_deref(),
+            Some("member"),
+            "a rejected promotion must not touch the target's role"
+        );
+
+        // Promoting a non-member also fails.
+        let dave = Identity::new();
+        relay
+            .promote_member(&alice.peer_id(), "127.0.0.1", &group_id, &dave.peer_id())
+            .await;
+        let reply = read_reply(&mut alice_rx);
+        assert_eq!(reply["type"].as_str(), Some("error"));
+        assert_eq!(reply["code"].as_str(), Some("not_a_member"));
+    }
+
+    #[tokio::test]
+    async fn demote_member_requires_owner_and_lowers_admin() {
+        let store = Store::open_in_memory().unwrap();
+        let relay = Relay::with_limiter(store, 100.0, 0.0);
+        let alice = Identity::new();
+        let bob = Identity::new();
+        let carol = Identity::new();
+        let mut alice_rx = online_peer(&relay, &alice).await;
+        let mut bob_rx = online_peer(&relay, &bob).await;
+        online_peer(&relay, &carol).await;
+        let group_id = role_group(&relay, &mut alice_rx, &alice, &bob, &carol).await;
+        relay
+            .promote_member(&alice.peer_id(), "127.0.0.1", &group_id, &bob.peer_id())
+            .await;
+        read_reply(&mut alice_rx);
+
+        // The owner demotes bob back to a member.
+        relay
+            .demote_member(&alice.peer_id(), "127.0.0.1", &group_id, &bob.peer_id())
+            .await;
+        let reply = read_reply(&mut alice_rx);
+        assert_eq!(reply["type"].as_str(), Some("group_member_demoted"));
+        assert_eq!(reply["peer_id"].as_str(), Some(bob.peer_id().as_str()));
+        assert_eq!(
+            relay
+                .inner
+                .store
+                .get_member_role(&group_id, &bob.peer_id())
+                .as_deref(),
+            Some("member")
+        );
+
+        // An admin (bob is again a member here, so promote him first) cannot
+        // demote: demote is owner-only.
+        relay
+            .promote_member(&alice.peer_id(), "127.0.0.1", &group_id, &bob.peer_id())
+            .await;
+        read_reply(&mut alice_rx);
+        relay
+            .demote_member(&bob.peer_id(), "127.0.0.1", &group_id, &carol.peer_id())
+            .await;
+        let reply = read_reply(&mut bob_rx);
+        assert_eq!(reply["type"].as_str(), Some("error"));
+        assert_eq!(reply["code"].as_str(), Some("not_owner"));
+    }
+
+    #[tokio::test]
+    async fn owner_cannot_demote_themselves() {
+        let store = Store::open_in_memory().unwrap();
+        let relay = Relay::with_limiter(store, 100.0, 0.0);
+        let alice = Identity::new();
+        let bob = Identity::new();
+        let carol = Identity::new();
+        let mut alice_rx = online_peer(&relay, &alice).await;
+        online_peer(&relay, &bob).await;
+        online_peer(&relay, &carol).await;
+        let group_id = role_group(&relay, &mut alice_rx, &alice, &bob, &carol).await;
+
+        // The owner tries to demote themselves: the owner role is not an
+        // admin, so the demote must be rejected.
+        relay
+            .demote_member(&alice.peer_id(), "127.0.0.1", &group_id, &alice.peer_id())
+            .await;
+        let reply = read_reply(&mut alice_rx);
+        assert_eq!(reply["type"].as_str(), Some("error"));
+        assert_eq!(reply["code"].as_str(), Some("not_owner"));
+        assert_eq!(
+            relay
+                .inner
+                .store
+                .get_member_role(&group_id, &alice.peer_id())
+                .as_deref(),
+            Some("owner"),
+            "the owner's role must never change"
+        );
+    }
+
+    #[tokio::test]
+    async fn remove_member_requires_owner_and_removes_admins() {
+        let store = Store::open_in_memory().unwrap();
+        let relay = Relay::with_limiter(store, 100.0, 0.0);
+        let alice = Identity::new();
+        let bob = Identity::new();
+        let carol = Identity::new();
+        let mut alice_rx = online_peer(&relay, &alice).await;
+        let mut bob_rx = online_peer(&relay, &bob).await;
+        online_peer(&relay, &carol).await;
+        let group_id = role_group(&relay, &mut alice_rx, &alice, &bob, &carol).await;
+        relay
+            .promote_member(&alice.peer_id(), "127.0.0.1", &group_id, &bob.peer_id())
+            .await;
+        read_reply(&mut alice_rx);
+
+        // An admin cannot remove anyone: remove is owner-only.
+        relay
+            .remove_member(&bob.peer_id(), "127.0.0.1", &group_id, &carol.peer_id())
+            .await;
+        let reply = read_reply(&mut bob_rx);
+        assert_eq!(reply["type"].as_str(), Some("error"));
+        assert_eq!(reply["code"].as_str(), Some("not_owner"));
+
+        // The owner removes bob (an admin) from the roster.
+        relay
+            .remove_member(&alice.peer_id(), "127.0.0.1", &group_id, &bob.peer_id())
+            .await;
+        let reply = read_reply(&mut alice_rx);
+        assert_eq!(reply["type"].as_str(), Some("group_member_removed"));
+        assert_eq!(reply["peer_id"].as_str(), Some(bob.peer_id().as_str()));
+        assert!(!relay.inner.store.is_group_member(&group_id, &bob.peer_id()));
+    }
+
+    #[tokio::test]
+    async fn owner_cannot_remove_themselves() {
+        let store = Store::open_in_memory().unwrap();
+        let relay = Relay::with_limiter(store, 100.0, 0.0);
+        let alice = Identity::new();
+        let bob = Identity::new();
+        let carol = Identity::new();
+        let mut alice_rx = online_peer(&relay, &alice).await;
+        online_peer(&relay, &bob).await;
+        online_peer(&relay, &carol).await;
+        let group_id = role_group(&relay, &mut alice_rx, &alice, &bob, &carol).await;
+
+        relay
+            .remove_member(&alice.peer_id(), "127.0.0.1", &group_id, &alice.peer_id())
+            .await;
+        let reply = read_reply(&mut alice_rx);
+        assert_eq!(reply["type"].as_str(), Some("error"));
+        assert_eq!(reply["code"].as_str(), Some("not_owner"));
+        assert!(relay
+            .inner
+            .store
+            .is_group_member(&group_id, &alice.peer_id()));
+    }
+
+    #[tokio::test]
+    async fn role_operations_reject_unknown_groups() {
+        let store = Store::open_in_memory().unwrap();
+        let relay = Relay::with_limiter(store, 100.0, 0.0);
+        let alice = Identity::new();
+        let bob = Identity::new();
+        let mut alice_rx = online_peer(&relay, &alice).await;
+        online_peer(&relay, &bob).await;
+
+        relay
+            .promote_member(&alice.peer_id(), "127.0.0.1", "ghost", &bob.peer_id())
+            .await;
+        let reply = read_reply(&mut alice_rx);
+        assert_eq!(reply["type"].as_str(), Some("error"));
+        assert_eq!(reply["code"].as_str(), Some("group_not_found"));
+
+        relay
+            .demote_member(&alice.peer_id(), "127.0.0.1", "ghost", &bob.peer_id())
+            .await;
+        let reply = read_reply(&mut alice_rx);
+        assert_eq!(reply["type"].as_str(), Some("error"));
+        assert_eq!(reply["code"].as_str(), Some("group_not_found"));
+
+        relay
+            .remove_member(&alice.peer_id(), "127.0.0.1", "ghost", &bob.peer_id())
+            .await;
+        let reply = read_reply(&mut alice_rx);
+        assert_eq!(reply["type"].as_str(), Some("error"));
+        assert_eq!(reply["code"].as_str(), Some("group_not_found"));
     }
 
     /// Read the single text reply queued for a peer and parse it as JSON.

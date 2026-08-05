@@ -21,11 +21,15 @@ export function AddContactDialog({
   const [value, setValue] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [adding, setAdding] = useState(false);
+  // When true the dialog plays its fade-out before `onOpenChange(false)` is
+  // signalled, so the close feels as polished as the open.
+  const [closing, setClosing] = useState(false);
 
   useEffect(() => {
     const dialog = dialogRef.current;
     if (!dialog) return;
     if (open && !dialog.open) {
+      setClosing(false);
       dialog.showModal();
       inputRef.current?.focus();
     } else if (!open && dialog.open) {
@@ -33,11 +37,20 @@ export function AddContactDialog({
     }
   }, [open]);
 
+  const requestClose = () => {
+    if (closing) return;
+    setClosing(true);
+    window.setTimeout(() => {
+      setClosing(false);
+      setValue("");
+      setError(null);
+      onOpenChange(false);
+    }, 160);
+  };
+
   const close = () => {
     if (adding) return;
-    setValue("");
-    setError(null);
-    onOpenChange(false);
+    requestClose();
   };
 
   const submit = async () => {
@@ -50,8 +63,7 @@ export function AddContactDialog({
     setError(null);
     try {
       await onAdd(peerId);
-      setValue("");
-      onOpenChange(false);
+      requestClose();
     } catch (err) {
       setError(String(err).replace(/^Error:\s*/, ""));
     } finally {
@@ -62,7 +74,7 @@ export function AddContactDialog({
   return (
     <dialog
       ref={dialogRef}
-      className="wp-dialog"
+      className={cx("wp-dialog", closing && "wp-dialog-closing")}
       aria-labelledby="add-contact-title"
       onCancel={(e) => {
         e.preventDefault();
@@ -88,7 +100,7 @@ export function AddContactDialog({
             type="button"
             onClick={close}
             aria-label="Close dialog"
-            className="rounded-lg p-2 text-wp-dim transition hover:bg-wp-panel-3 hover:text-wp-text"
+            className="rounded-lg p-2 text-wp-dim transition hover:bg-wp-panel-3 hover:text-wp-text active:scale-90"
           >
             <X className="h-4 w-4" />
           </button>
@@ -130,7 +142,7 @@ export function AddContactDialog({
             type="submit"
             disabled={adding || !value.trim()}
             className={cx(
-              "inline-flex items-center justify-center gap-2 rounded-xl px-4 py-2.5 text-sm font-semibold transition",
+              "inline-flex items-center justify-center gap-2 rounded-xl px-4 py-2.5 text-sm font-semibold transition active:scale-[0.98]",
               "bg-wp-accent text-wp-accent-fg hover:bg-wp-accent-strong",
               "disabled:cursor-not-allowed disabled:opacity-50"
             )}
