@@ -84,6 +84,24 @@ pub fn unix_now() -> i64 {
         .unwrap_or(0)
 }
 
+/// A group's public metadata, as known to the relay.
+///
+/// SECURITY: only metadata lives here. The Megolm session key is SECRET and
+/// is never stored on the server — it is shared between members end-to-end
+/// over an encrypted Double Ratchet envelope. The relay is zero-knowledge by
+/// design.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Group {
+    /// Relay-assigned group identifier.
+    pub id: String,
+    /// Public display name of the group (1-64 characters).
+    pub name: String,
+    /// Peer ID of the peer that created the group.
+    pub owner_peer_id: String,
+    /// Unix-seconds timestamp of creation.
+    pub created_at: i64,
+}
+
 /// Handle to the shared SQLite store. Internally synchronized; a Relay owns
 /// exactly one Store.
 pub struct Store {
@@ -144,7 +162,21 @@ impl Store {
                 peer_id     TEXT PRIMARY KEY,
                 bundle_json TEXT NOT NULL,
                 updated_at  INTEGER NOT NULL
-            );",
+            );
+            CREATE TABLE IF NOT EXISTS groups (
+                id             TEXT PRIMARY KEY,
+                name           TEXT NOT NULL,
+                owner_peer_id  TEXT NOT NULL,
+                created_at     INTEGER NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS group_members (
+                group_id  TEXT NOT NULL,
+                peer_id   TEXT NOT NULL,
+                joined_at INTEGER NOT NULL,
+                PRIMARY KEY (group_id, peer_id)
+            );
+            CREATE INDEX IF NOT EXISTS idx_group_members_group_id
+                ON group_members (group_id);",
         )?;
 
         // Migration: databases created before the signed-hello binding lack
@@ -443,6 +475,102 @@ impl Store {
         )
         .optional()
         .unwrap_or(None)
+    }
+
+    // -- Groups ---------------------------------------------------------------
+
+    /// Create a group and register `owner` as its first member, in one
+    /// transaction. The owner creates the group and joins it as the owner.
+    pub fn create_group(
+        &self,
+        id: &str,
+        name: &str,
+        owner: &str,
+        created_at: i64,
+    ) -> SqlResult<()> {
+        let mut conn = self.conn.lock().unwrap();
+        let tx = conn.transaction()?;
+        tx.execute(
+            "INSERT INTO groups (id, name, owner_peer_id, created_at)
+             VALUES (?1, ?2, ?3, ?4)",
+            params![id, name, owner, created_at],
+        )?;
+        tx.execute(
+            "INSERT INTO group_members (group_id, peer_id, joined_at)
+             VALUES (?1, ?2, ?3)",
+            params![id, owner, created_at],
+        )?;
+        tx.commit()
+    }
+
+    /// The public metadata of a group, if it exists.
+    pub fn get_group(&self, group_id: &str) -> Option<Group> {
+        let conn = self.conn.lock().unwrap();
+        conn.query_row(
+            "SELECT id, name, owner_peer_id, created_at FROM groups WHERE id = ?1",
+            params![group_id],
+            |r| {
+                Ok(Group {
+                    id: r.get(0)?,
+                    name: r.get(1)?,
+                    owner_peer_id: r.get(2)?,
+                    created_at: r.get(3)?,
+                })
+            },
+        )
+        .optional()
+        .unwrap_or(None)
+    }
+
+    /// Add `peer_id` to a group's membership. Idempotent: adding an existing
+    /// member is a no-op.
+    pub fn add_group_member(&self, group_id: &str, peer_id: &str, joined_at: i64) -> SqlResult<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "INSERT OR IGNORE INTO group_members (group_id, peer_id, joined_at)
+             VALUES (?1, ?2, ?3)",
+            params![group_id, peer_id, joined_at],
+        )?;
+        Ok(())
+    }
+
+    /// Remove `peer_id` from a group. Removing a non-member is a no-op.
+    pub fn remove_group_member(&self, group_id: &str, peer_id: &str) -> SqlResult<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "DELETE FROM group_members WHERE group_id = ?1 AND peer_id = ?2",
+            params![group_id, peer_id],
+        )?;
+        Ok(())
+    }
+
+    /// Whether `peer_id` is currently a member of `group_id`.
+    pub fn is_group_member(&self, group_id: &str, peer_id: &str) -> bool {
+        let conn = self.conn.lock().unwrap();
+        conn.query_row(
+            "SELECT 1 FROM group_members WHERE group_id = ?1 AND peer_id = ?2",
+            params![group_id, peer_id],
+            |_| Ok(()),
+        )
+        .optional()
+        .unwrap_or(None)
+        .is_some()
+    }
+
+    /// Every member peer ID of a group, in join order (then peer ID) for
+    /// deterministic ordering.
+    pub fn list_group_members(&self, group_id: &str) -> Vec<String> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn
+            .prepare(
+                "SELECT peer_id FROM group_members WHERE group_id = ?1
+                 ORDER BY joined_at, peer_id",
+            )
+            .expect("valid statement");
+        stmt.query_map(params![group_id], |r| r.get(0))
+            .expect("query ok")
+            .filter_map(|r| r.ok())
+            .collect()
     }
 
     /// Append an offline envelope, enforcing the per-peer cap by evicting the
@@ -1090,6 +1218,120 @@ mod tests {
             .get_user_keys("peer-new")
             .expect("keys must be stored");
         assert_eq!(keys, ("curve-b".to_string(), "ed-b".to_string()));
+        std::fs::remove_file(&path).ok();
+    }
+
+    // -- Groups ---------------------------------------------------------------
+
+    #[test]
+    fn create_group_registers_owner_as_first_member() {
+        let store = Store::open_in_memory().unwrap();
+        let now = unix_now();
+        store
+            .create_group("g1", "Ghost Squad", "alice", now)
+            .unwrap();
+
+        let group = store.get_group("g1").expect("group must exist");
+        assert_eq!(group.id, "g1");
+        assert_eq!(group.name, "Ghost Squad");
+        assert_eq!(group.owner_peer_id, "alice");
+        assert_eq!(group.created_at, now);
+        assert!(
+            store.is_group_member("g1", "alice"),
+            "the owner must join as the first member"
+        );
+        assert_eq!(store.list_group_members("g1"), vec!["alice".to_string()]);
+    }
+
+    #[test]
+    fn get_group_returns_none_for_unknown_group() {
+        let store = Store::open_in_memory().unwrap();
+        assert_eq!(store.get_group("ghost"), None);
+    }
+
+    #[test]
+    fn add_group_member_is_idempotent_and_listed_in_join_order() {
+        let store = Store::open_in_memory().unwrap();
+        store.create_group("g1", "Squad", "alice", 100).unwrap();
+        store.add_group_member("g1", "bob", 200).unwrap();
+        store.add_group_member("g1", "carol", 300).unwrap();
+        // Re-adding bob must not duplicate him.
+        store.add_group_member("g1", "bob", 400).unwrap();
+
+        assert!(store.is_group_member("g1", "bob"));
+        assert!(store.is_group_member("g1", "carol"));
+        assert_eq!(
+            store.list_group_members("g1"),
+            vec!["alice".to_string(), "bob".to_string(), "carol".to_string()]
+        );
+    }
+
+    #[test]
+    fn is_group_member_is_false_for_outsiders() {
+        let store = Store::open_in_memory().unwrap();
+        store
+            .create_group("g1", "Squad", "alice", unix_now())
+            .unwrap();
+        assert!(!store.is_group_member("g1", "mallory"));
+        assert!(!store.is_group_member("ghost", "alice"));
+    }
+
+    #[test]
+    fn remove_group_member_updates_membership() {
+        let store = Store::open_in_memory().unwrap();
+        store.create_group("g1", "Squad", "alice", 100).unwrap();
+        store.add_group_member("g1", "bob", 200).unwrap();
+
+        store.remove_group_member("g1", "bob").unwrap();
+        assert!(!store.is_group_member("g1", "bob"));
+        assert_eq!(store.list_group_members("g1"), vec!["alice".to_string()]);
+
+        // Removing a non-member is a no-op.
+        store.remove_group_member("g1", "bob").unwrap();
+        store.remove_group_member("g1", "ghost").unwrap();
+        assert!(store.is_group_member("g1", "alice"));
+    }
+
+    #[test]
+    fn groups_are_isolated_by_group_id() {
+        let store = Store::open_in_memory().unwrap();
+        store.create_group("g1", "One", "alice", 100).unwrap();
+        store.create_group("g2", "Two", "bob", 200).unwrap();
+        store.add_group_member("g1", "carol", 300).unwrap();
+
+        assert_eq!(
+            store.list_group_members("g1"),
+            vec!["alice".to_string(), "carol".to_string()]
+        );
+        assert_eq!(store.list_group_members("g2"), vec!["bob".to_string()]);
+        assert!(!store.is_group_member("g2", "alice"));
+    }
+
+    #[test]
+    fn migration_creates_group_tables_on_legacy_databases() {
+        let path = std::env::temp_dir().join(format!(
+            "whisper-relay-group-migration-{}.db",
+            uuid::Uuid::new_v4()
+        ));
+        // Simulate a database created before the group feature.
+        {
+            let conn = Connection::open(&path).expect("open legacy db");
+            conn.execute_batch(
+                "CREATE TABLE users (
+                     peer_id    TEXT PRIMARY KEY,
+                     first_seen INTEGER NOT NULL
+                 );
+                 INSERT INTO users (peer_id, first_seen) VALUES ('peer-old', 1);",
+            )
+            .expect("create legacy schema");
+        }
+        let store = Store::open(&path).expect("migrated db must open");
+        store.create_group("g1", "Squad", "peer-old", 999).unwrap();
+        assert!(store.is_group_member("g1", "peer-old"));
+        assert_eq!(
+            store.get_group("g1").expect("group must exist").name,
+            "Squad"
+        );
         std::fs::remove_file(&path).ok();
     }
 }

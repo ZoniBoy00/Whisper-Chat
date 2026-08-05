@@ -4,13 +4,13 @@
 //! pumps end-to-end encrypted [`e2ee_core::Envelope`]s between peers. The relay
 //! never sees plaintext: every envelope payload is opaque ciphertext.
 //!
-//! The client keeps all session state in memory (SQLCipher persistence is a
-//! later phase). Identity and Double Ratchet sessions are stored in shared,
-//! thread-safe state so the WebSocket inbound task and the Tauri commands can
-//! both touch them.
+//! Message history, Double Ratchet sessions, contacts and settings are
+//! persisted in a keyed SQLite store (see [`crate::store`]) so they survive
+//! app restarts. Identity and sessions are stored in shared, thread-safe state
+//! so the WebSocket inbound task and the Tauri commands can both touch them.
 
 use std::collections::{HashMap, HashSet, VecDeque};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, RwLock, RwLockReadGuard, RwLockWriteGuard};
 
@@ -27,11 +27,16 @@ use e2ee_core::{
 };
 use vodozemac::olm::OlmMessage;
 
+use crate::store::{derive_db_key, ChatStore, ContactRow, StoreError};
+
 /// Default relay endpoint; override with the `WHISPER_RELAY_URL` env var.
 const DEFAULT_RELAY_URL: &str = "ws://127.0.0.1:8080/ws";
 
 /// How long to wait for a pre-key bundle after requesting one.
 const PREKEY_FETCH_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// How long to wait for a profile/username response after requesting one.
+const PROFILE_FETCH_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 
 /// How long to wait for a presence report after requesting one.
 const PRESENCE_FETCH_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
@@ -64,17 +69,16 @@ fn resolve_identity_path(app: &AppHandle) -> PathBuf {
         })
 }
 
-/// Resolve the profiles file path. `WHISPER_PROFILES_FILE` mirrors the
-/// identity override so side-by-side test instances keep separate names.
-pub fn resolve_profiles_path(app: &AppHandle) -> PathBuf {
-    std::env::var("WHISPER_PROFILES_FILE")
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| {
-            app.path()
-                .app_data_dir()
-                .map(|dir| dir.join("profiles.json"))
-                .unwrap_or_else(|_| PathBuf::from("profiles.json"))
-        })
+/// Resolve the chat-store database path for a peer ID.
+///
+/// The database is named after the peer ID so two identities (the dual-instance
+/// dev workflow) never share one file, and the encrypted file can only be
+/// opened with the matching identity key.
+pub fn resolve_store_path(app: &AppHandle, peer_id: &str) -> PathBuf {
+    app.path()
+        .app_data_dir()
+        .map(|dir| dir.join(format!("whisper-{peer_id}.db")))
+        .unwrap_or_else(|_| PathBuf::from(format!("whisper-{peer_id}.db")))
 }
 
 /// Errors surfaced to the UI when talking to the relay or the crypto core.
@@ -98,6 +102,12 @@ pub enum RelayError {
     /// The relay did not answer a pre-key fetch in time.
     #[error("timed out waiting for pre-keys")]
     PrekeyTimeout,
+    /// The relay did not answer a profile request in time.
+    #[error("timed out waiting for profile")]
+    ProfileTimeout,
+    /// The profile request was answered with an error or dropped.
+    #[error("profile request failed")]
+    ProfileRequestFailed,
     /// The pre-key request was answered with an error or dropped.
     #[error("pre-key request failed")]
     PrekeyFetchFailed,
@@ -134,6 +144,12 @@ pub enum RelayError {
     /// A filesystem failure (identity persistence).
     #[error("io error: {0}")]
     Io(#[from] std::io::Error),
+    /// A failure while reading or writing the SQLCipher chat store.
+    #[error("store error: {0}")]
+    Store(#[from] StoreError),
+    /// A chat-store operation was attempted before the store was opened.
+    #[error("chat store is not open")]
+    StoreNotOpen,
 }
 
 /// Messages the CLIENT sends to the relay (matches `server/src/relay.rs`).
@@ -172,6 +188,22 @@ enum ClientMessage {
     /// single `presence` message.
     #[serde(rename = "get_presence")]
     GetPresence { peer_id: String },
+    /// Register (or re-register) a signed username alias with an optional
+    /// avatar (base64, ≤2 MB). `signature` is an Ed25519 signature over
+    /// `username || 0x00 || curve25519_key` (see e2ee-core profile.rs).
+    #[serde(rename = "register_profile")]
+    RegisterProfile {
+        username: String,
+        signature: String,
+        display_name: Option<String>,
+        avatar: Option<String>,
+    },
+    /// Prefix-search registered usernames and peer IDs.
+    #[serde(rename = "search_users")]
+    SearchUsers { query: String, limit: Option<usize> },
+    /// Fetch one peer's public profile.
+    #[serde(rename = "get_profile")]
+    GetProfile { peer_id: String },
 }
 
 /// Messages the SERVER sends to the client (matches `server/src/relay.rs`).
@@ -199,6 +231,14 @@ enum ServerMessage {
     /// The caller's display name was updated.
     #[serde(rename = "profile_updated")]
     ProfileUpdated,
+    /// The caller's username was registered.
+    #[serde(rename = "profile_registered")]
+    ProfileRegistered { username: String },
+    /// Search results for a `search_users` request.
+    #[serde(rename = "users_search")]
+    UsersSearch { results: Vec<ProfileSearchResult> },
+    /// One peer's public profile (reply to `get_profile`).
+    Profile(PeerProfile),
     /// Presence report for `peer_id` (a `watch_presence` push or the reply to
     /// a `get_presence` request): whether the peer is online right now plus its
     /// last-seen unix-seconds timestamp when offline (`None` while online or
@@ -223,6 +263,32 @@ struct RelayEnvelope {
     recipient: String,
     payload: String,
     seq: u64,
+}
+
+/// One row of a username/UID search result (wire form).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProfileSearchResult {
+    #[serde(default)]
+    pub username: Option<String>,
+    pub peer_id: String,
+    #[serde(default)]
+    pub display_name: Option<String>,
+    #[serde(default)]
+    pub avatar_url: Option<String>,
+}
+
+/// A peer's public profile (wire form).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PeerProfile {
+    #[serde(default)]
+    pub username: Option<String>,
+    pub peer_id: String,
+    #[serde(default)]
+    pub display_name: Option<String>,
+    #[serde(default)]
+    pub avatar_url: Option<String>,
+    #[serde(default)]
+    pub curve25519_key: Option<String>,
 }
 
 /// A message in a shape the UI can render directly.
@@ -357,12 +423,10 @@ pub struct RelayClient {
 struct RelayInner {
     app: AppHandle,
     identity_path: PathBuf,
-    /// File where Double Ratchet sessions are persisted across restarts.
-    sessions_path: PathBuf,
-    /// File where the relay URL and UI theme are persisted.
-    settings_path: PathBuf,
-    /// File where display names (our own + contacts') are persisted.
-    profiles_path: PathBuf,
+    /// Keyed SQLite store for messages, sessions, contacts and settings.
+    /// Lazy: opened (and hydrated) once the identity is loaded in `connect`,
+    /// then kept for the rest of the process.
+    store: RwLock<Option<ChatStore>>,
     /// In-memory copy of the persisted settings.
     settings: RwLock<Settings>,
     /// In-memory copy of the persisted display names.
@@ -396,6 +460,12 @@ struct RelayInner {
     /// id so a delivery confirmation can flip the matching message to
     /// "delivered".
     pending_acks: Mutex<HashMap<u64, String>>,
+    /// In-flight `register_profile` requests, resolved in FIFO order.
+    pending_register: Mutex<VecDeque<oneshot::Sender<RegisterResponse>>>,
+    /// In-flight `search_users` requests, resolved in FIFO order.
+    pending_search: Mutex<VecDeque<oneshot::Sender<SearchResponse>>>,
+    /// In-flight `get_profile` requests, resolved in FIFO order.
+    pending_profile: Mutex<VecDeque<oneshot::Sender<ProfileResponse>>>,
     /// In-flight presence queries (peer_id + reply channel). Unlike pre-key
     /// fetches, replies echo the requested peer ID, so a pending request is
     /// resolved by matching the peer — a push for another peer can never
@@ -412,33 +482,28 @@ struct RelayInner {
 /// Result channel type for a pre-key fetch: the bundle plus the peer's public
 /// display name (`None` when they have not set one).
 type PrekeyResponse = Result<(PreKeyBundle, Option<String>), RelayError>;
-
 /// Result channel type for a presence fetch: the online flag plus the peer's
 /// last-seen timestamp when offline.
 type PresenceResponse = Result<PresenceInfo, RelayError>;
+
+/// Result channel type for a username registration.
+type RegisterResponse = Result<String, RelayError>;
+
+/// Result channel type for a user search.
+type SearchResponse = Result<Vec<ProfileSearchResult>, RelayError>;
+
+/// Result channel type for a profile fetch.
+type ProfileResponse = Result<Option<PeerProfile>, RelayError>;
 
 impl RelayClient {
     /// Build a client bound to `app`'s identity file in the app data dir.
     pub fn new(app: AppHandle) -> Self {
         let identity_path = resolve_identity_path(&app);
-        let sessions_path = app
-            .path()
-            .app_data_dir()
-            .map(|dir| dir.join("sessions.json"))
-            .unwrap_or_else(|_| PathBuf::from("sessions.json"));
-        let settings_path = app
-            .path()
-            .app_data_dir()
-            .map(|dir| dir.join("settings.json"))
-            .unwrap_or_else(|_| PathBuf::from("settings.json"));
-        let profiles_path = resolve_profiles_path(&app);
         Self {
             inner: Arc::new(RelayInner {
                 app,
                 identity_path,
-                sessions_path,
-                settings_path,
-                profiles_path,
+                store: RwLock::new(None),
                 settings: RwLock::new(Settings::default()),
                 profiles: RwLock::new(Profiles::default()),
                 identity: Mutex::new(None),
@@ -453,6 +518,9 @@ impl RelayClient {
                 pending_prekeys: Mutex::new(VecDeque::new()),
                 seen_envelopes: Mutex::new(HashSet::new()),
                 pending_acks: Mutex::new(HashMap::new()),
+                pending_register: Mutex::new(VecDeque::new()),
+                pending_search: Mutex::new(VecDeque::new()),
+                pending_profile: Mutex::new(VecDeque::new()),
                 pending_presence: Mutex::new(VecDeque::new()),
                 presence: RwLock::new(HashMap::new()),
                 typing_timeouts: Mutex::new(HashMap::new()),
@@ -475,26 +543,32 @@ impl RelayClient {
             return Ok(());
         }
 
-        // Restore previously persisted sessions so existing conversations
-        // keep working across restarts.
-        self.load_sessions()?;
-
-        let hello = {
+        // Load the identity from disk (once). Its contents also seed the
+        // SQLCipher key, so the store is opened from the same bytes.
+        let identity_json = std::fs::read_to_string(&self.inner.identity_path)?;
+        {
             let mut guard = mutex_guard(&self.inner.identity)?;
             if guard.is_none() {
-                let json = std::fs::read_to_string(&self.inner.identity_path)?;
-                let identity = Identity::from_json(&json)?;
+                let identity = Identity::from_json(&identity_json)?;
                 *guard = Some(identity);
             }
-            guard.as_ref().ok_or(RelayError::NoIdentity)?.signed_hello()
-        };
+        }
+        // Open the store (idempotent) and hydrate messages, sessions,
+        // contacts and settings from it so history survives restarts.
+        self.open_store(&identity_json)?;
 
-        let settings = self.load_settings()?;
-        let profiles = self.load_profiles()?;
-        let url = resolve_relay_url(
-            &settings,
-            std::env::var("WHISPER_RELAY_URL").ok().as_deref(),
-        );
+        let hello = mutex_guard(&self.inner.identity)?
+            .as_ref()
+            .ok_or(RelayError::NoIdentity)?
+            .signed_hello();
+
+        let url = {
+            let settings = read_guard(&self.inner.settings)?;
+            resolve_relay_url(
+                &settings,
+                std::env::var("WHISPER_RELAY_URL").ok().as_deref(),
+            )
+        };
         let (ws_stream, _) = tokio_tungstenite::connect_async(&url)
             .await
             .map_err(|err| RelayError::Connection(err.to_string()))?;
@@ -517,7 +591,7 @@ impl RelayClient {
             curve25519_key: hello.curve25519_key,
             ed25519_key: hello.ed25519_key,
             signature: hello.signature,
-            display_name: profiles.my_display_name.clone(),
+            display_name: read_guard(&self.inner.profiles)?.my_display_name.clone(),
         })?;
         out_tx
             .send(WsMessage::Text(hello_json))
@@ -576,24 +650,37 @@ impl RelayClient {
     /// freshly generated identity.
     pub fn reset(&self) -> Result<(), RelayError> {
         self.mark_disconnected();
+        // Resolve the store file from the current identity (loaded or still
+        // on disk) before any state is cleared.
+        let store_path = {
+            let peer_id = mutex_guard(&self.inner.identity)?
+                .as_ref()
+                .map(|identity| identity.peer_id())
+                .or_else(|| {
+                    std::fs::read_to_string(&self.inner.identity_path)
+                        .ok()
+                        .and_then(|json| Identity::from_json(&json).ok())
+                        .map(|identity| identity.peer_id())
+                });
+            peer_id.map(|peer_id| resolve_store_path(&self.inner.app, &peer_id))
+        };
         mutex_guard(&self.inner.identity)?.take();
         mutex_guard(&self.inner.sessions)?.clear();
-        // Drop the persisted sessions so a fresh identity starts clean.
-        if let Err(err) = std::fs::remove_file(&self.inner.sessions_path) {
-            if err.kind() != std::io::ErrorKind::NotFound {
-                return Err(err.into());
-            }
-        }
-        // A fresh identity means a fresh name and no learned contact names.
+        *write_guard(&self.inner.settings)? = Settings::default();
         *write_guard(&self.inner.profiles)? = Profiles::default();
-        if let Err(err) = std::fs::remove_file(&self.inner.profiles_path) {
-            if err.kind() != std::io::ErrorKind::NotFound {
-                return Err(err.into());
-            }
-        }
         write_guard(&self.inner.messages)?.clear();
         write_guard(&self.inner.contacts)?.clear();
         write_guard(&self.inner.presence)?.clear();
+        // Close the store and drop the database file so a fresh identity
+        // starts with a clean, empty history.
+        *write_guard(&self.inner.store)? = None;
+        if let Some(path) = store_path {
+            match std::fs::remove_file(&path) {
+                Ok(()) => {}
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                Err(e) => return Err(e.into()),
+            }
+        }
         if let Ok(mut seen) = self.inner.seen_envelopes.lock() {
             seen.clear();
         }
@@ -774,12 +861,18 @@ impl RelayClient {
 
         if let Err(err) = self.send_wire(&wire, seq) {
             // The envelope never left the client: drop the dangling ack
-            // mapping and roll back the optimistic record so a failed send
-            // does not surface as a sent message on the next refresh.
+            // mapping and roll back the optimistic record (in memory and in
+            // the store) so a failed send does not surface as a sent message
+            // on the next refresh or restart.
             let _ = mutex_guard(&self.inner.pending_acks)?.remove(&seq);
             if let Ok(mut messages) = write_guard(&self.inner.messages) {
                 if let Some(msgs) = messages.get_mut(peer_id) {
                     msgs.retain(|m| m.id != msg.id);
+                }
+            }
+            if let Ok(store) = self.store_guard() {
+                if let Some(store) = store.as_ref() {
+                    let _ = store.delete_message(&msg.id);
                 }
             }
             return Err(err);
@@ -799,7 +892,8 @@ impl RelayClient {
     /// their display names) and message history.
     pub fn get_chat_state(&self) -> Result<ChatState, RelayError> {
         let my_peer_id = self.my_peer_id()?;
-        let profiles = self.load_profiles()?;
+        self.ensure_store_open()?;
+        let profiles = read_guard(&self.inner.profiles)?.clone();
         let contacts = read_guard(&self.inner.contacts)?.clone();
         let messages = read_guard(&self.inner.messages)?.clone();
         let presence = read_guard(&self.inner.presence)?.clone();
@@ -845,6 +939,93 @@ impl RelayClient {
     // Inbound handling
     // ---------------------------------------------------------------------
 
+    /// Register (or re-register) the caller's signed username alias with the
+    /// relay, optionally attaching an avatar. Returns the registered username.
+    pub async fn register_profile(
+        &self,
+        username: &str,
+        display_name: Option<&str>,
+        avatar_b64: Option<&str>,
+    ) -> Result<String, RelayError> {
+        // The relay verifies an Ed25519 signature over
+        // `username || 0x00 || curve25519_key`, so sign it locally.
+        let signature = {
+            let guard = mutex_guard(&self.inner.identity)?;
+            let identity = guard.as_ref().ok_or(RelayError::NoIdentity)?;
+            let mut canonical = Vec::with_capacity(username.len() + 1 + 32);
+            canonical.extend_from_slice(username.as_bytes());
+            canonical.push(0);
+            canonical.extend_from_slice(identity.curve25519_key().as_bytes());
+            identity.sign(&canonical).to_base64()
+        };
+
+        let (tx, rx) = oneshot::channel();
+        mutex_guard(&self.inner.pending_register)?.push_back(tx);
+        let message = ClientMessage::RegisterProfile {
+            username: username.to_string(),
+            signature,
+            display_name: display_name.map(str::to_string),
+            avatar: avatar_b64.map(str::to_string),
+        };
+        if let Err(err) = self.send_json(&message) {
+            // The request never left, so drop the dangling waiter.
+            mutex_guard(&self.inner.pending_register)?.pop_back();
+            return Err(err);
+        }
+
+        tokio::time::timeout(PROFILE_FETCH_TIMEOUT, rx)
+            .await
+            .map_err(|_| RelayError::ProfileTimeout)?
+            .map_err(|_| RelayError::ProfileRequestFailed)?
+    }
+
+    /// Prefix-search registered usernames and peer IDs.
+    pub async fn search_users(
+        &self,
+        query: &str,
+        limit: Option<usize>,
+    ) -> Result<Vec<ProfileSearchResult>, RelayError> {
+        let (tx, rx) = oneshot::channel();
+        mutex_guard(&self.inner.pending_search)?.push_back(tx);
+        if let Err(err) = self.send_json(&ClientMessage::SearchUsers {
+            query: query.to_string(),
+            limit,
+        }) {
+            mutex_guard(&self.inner.pending_search)?.pop_back();
+            return Err(err);
+        }
+
+        tokio::time::timeout(PROFILE_FETCH_TIMEOUT, rx)
+            .await
+            .map_err(|_| RelayError::ProfileTimeout)?
+            .map_err(|_| RelayError::ProfileRequestFailed)?
+    }
+
+    /// Fetch one peer's public profile; `Ok(None)` when they have none.
+    pub async fn get_profile(&self, peer_id: &str) -> Result<Option<PeerProfile>, RelayError> {
+        let (tx, rx) = oneshot::channel();
+        mutex_guard(&self.inner.pending_profile)?.push_back(tx);
+        if let Err(err) = self.send_json(&ClientMessage::GetProfile {
+            peer_id: peer_id.to_string(),
+        }) {
+            mutex_guard(&self.inner.pending_profile)?.pop_back();
+            return Err(err);
+        }
+
+        tokio::time::timeout(PROFILE_FETCH_TIMEOUT, rx)
+            .await
+            .map_err(|_| RelayError::ProfileTimeout)?
+            .map_err(|_| RelayError::ProfileRequestFailed)?
+    }
+
+    /// Re-register the caller's profile with a new avatar image (base64,
+    /// ≤2 MB). The username must already be registered.
+    pub async fn set_avatar(&self, username: &str, avatar_b64: &str) -> Result<(), RelayError> {
+        self.register_profile(username, None, Some(avatar_b64))
+            .await
+            .map(|_| ())
+    }
+
     /// Dispatch a server message: route envelopes, resolve pre-key fetches.
     fn handle_text(&self, text: &str) -> Result<(), RelayError> {
         let message: ServerMessage = serde_json::from_str(text)?;
@@ -869,6 +1050,24 @@ impl RelayClient {
             ServerMessage::Acknowledged { seq } => self.handle_ack(seq),
             ServerMessage::PrekeysPublished => Ok(()),
             ServerMessage::ProfileUpdated => Ok(()),
+            ServerMessage::ProfileRegistered { username } => {
+                if let Some(tx) = mutex_guard(&self.inner.pending_register)?.pop_front() {
+                    let _ = tx.send(Ok(username));
+                }
+                Ok(())
+            }
+            ServerMessage::UsersSearch { results } => {
+                if let Some(tx) = mutex_guard(&self.inner.pending_search)?.pop_front() {
+                    let _ = tx.send(Ok(results));
+                }
+                Ok(())
+            }
+            ServerMessage::Profile(profile) => {
+                if let Some(tx) = mutex_guard(&self.inner.pending_profile)?.pop_front() {
+                    let _ = tx.send(Ok(Some(profile)));
+                }
+                Ok(())
+            }
             ServerMessage::Presence {
                 peer_id,
                 online,
@@ -886,9 +1085,16 @@ impl RelayClient {
                 self.handle_presence(&peer_id, online, last_seen)
             }
             ServerMessage::Error { code } => {
-                let mut pending = mutex_guard(&self.inner.pending_prekeys)?;
-                if let Some(tx) = pending.pop_front() {
-                    let _ = tx.send(Err(RelayError::Relay(code)));
+                let err = RelayError::Relay(code);
+                // Resolve the oldest outstanding request across every queue.
+                if let Some(tx) = mutex_guard(&self.inner.pending_prekeys)?.pop_front() {
+                    let _ = tx.send(Err(err));
+                } else if let Some(tx) = mutex_guard(&self.inner.pending_register)?.pop_front() {
+                    let _ = tx.send(Err(err));
+                } else if let Some(tx) = mutex_guard(&self.inner.pending_search)?.pop_front() {
+                    let _ = tx.send(Err(err));
+                } else if let Some(tx) = mutex_guard(&self.inner.pending_profile)?.pop_front() {
+                    let _ = tx.send(Err(err));
                 }
                 Ok(())
             }
@@ -927,7 +1133,9 @@ impl RelayClient {
     /// Record a peer's presence and notify the UI via a `presence` event.
     ///
     /// Called for both `watch_presence` pushes and `get_presence` replies, so
-    /// the cache and the event stream always reflect the same snapshot.
+    /// the cache and the event stream always reflect the same snapshot. An
+    /// offline report's `last_seen` is persisted on the contact row so the
+    /// timestamp survives restarts.
     fn handle_presence(
         &self,
         peer_id: &str,
@@ -936,6 +1144,19 @@ impl RelayClient {
     ) -> Result<(), RelayError> {
         write_guard(&self.inner.presence)?
             .insert(peer_id.to_string(), PresenceInfo { online, last_seen });
+        if !online {
+            if let Some(ts) = last_seen {
+                self.ensure_store_open()?;
+                let store_guard = self.store_guard()?;
+                let store = store_guard.as_ref().ok_or(RelayError::StoreNotOpen)?;
+                // Only touch contacts we already know; presence alone must not
+                // surface a stranger in the contact list.
+                if let Some(mut contact) = store.get_contact(peer_id)? {
+                    contact.last_seen = Some(ts);
+                    store.upsert_contact(&contact)?;
+                }
+            }
+        }
         let _ = self.inner.app.emit(
             "presence",
             PresenceEvent {
@@ -1027,32 +1248,140 @@ impl RelayClient {
             // Defensive: this client always sends receipts encrypted inside a
             // Message, so a bare receipt content is never expected here.
             EnvelopeContent::Receipt { .. } => Ok(None),
+            // Group messaging is not implemented on the desktop client yet, so
+            // a group envelope is dropped (the wire format reserves the
+            // variant in the shared e2ee-core crate).
+            EnvelopeContent::Group { .. } => Ok(None),
         }
     }
 
     // ---------------------------------------------------------------------
-    // Session persistence
+    // Chat store lifecycle
     // ---------------------------------------------------------------------
 
-    /// Restore persisted Double Ratchet sessions from `sessions.json`.
-    fn load_sessions(&self) -> Result<(), RelayError> {
-        let json = match std::fs::read_to_string(&self.inner.sessions_path) {
+    /// Open the SQLCipher store for the current identity and hydrate the
+    /// in-memory state from it. No-op when the store is already open. The
+    /// database is keyed deterministically from the identity file contents, so
+    /// it only opens on the machine holding that identity.
+    fn open_store(&self, identity_json: &str) -> Result<(), RelayError> {
+        {
+            let mut store = write_guard(&self.inner.store)?;
+            if store.is_some() {
+                return Ok(());
+            }
+            let peer_id = Identity::from_json(identity_json)?.peer_id();
+            let path = resolve_store_path(&self.inner.app, &peer_id);
+            let chat_store = ChatStore::open(&path, &derive_db_key(identity_json))?;
+            *store = Some(chat_store);
+        }
+        self.hydrate_from_store()
+    }
+
+    /// Ensure the store is open, lazily opening it from the identity file on
+    /// disk. Returns `Ok` with the store still closed when no identity exists
+    /// yet, so settings reads work both before and after onboarding.
+    fn ensure_store_open(&self) -> Result<(), RelayError> {
+        if read_guard(&self.inner.store)?.is_some() {
+            return Ok(());
+        }
+        let identity_json = match std::fs::read_to_string(&self.inner.identity_path) {
             Ok(json) => json,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
             Err(e) => return Err(e.into()),
         };
-        let stored: HashMap<String, String> = serde_json::from_str(&json)?;
-        let mut sessions = mutex_guard(&self.inner.sessions)?;
-        for (peer, session_json) in stored {
-            if let Ok(session) = ChatSession::from_json(&session_json) {
-                sessions.insert(peer, session);
+        self.open_store(&identity_json)
+    }
+
+    /// A read guard over the store slot, for callers to unwrap to `&ChatStore`.
+    fn store_guard(&self) -> Result<RwLockReadGuard<'_, Option<ChatStore>>, RelayError> {
+        read_guard(&self.inner.store)
+    }
+
+    /// Restore persisted sessions, contacts, messages, settings and presence
+    /// into the in-memory state. Runs once, right after the store is opened.
+    fn hydrate_from_store(&self) -> Result<(), RelayError> {
+        let (
+            stored_sessions,
+            stored_messages,
+            stored_contacts,
+            relay_url,
+            theme,
+            my_display_name,
+            next_msg_id,
+        ) = {
+            let store = self.store_guard()?;
+            let store = store.as_ref().ok_or(RelayError::StoreNotOpen)?;
+            (
+                store.load_sessions()?,
+                store.all_messages()?,
+                store.contacts()?,
+                store.get_setting("relay_url")?,
+                store.get_setting("theme")?,
+                store.get_setting("my_display_name")?,
+                store.get_setting("next_msg_id")?,
+            )
+        };
+
+        {
+            let mut sessions = mutex_guard(&self.inner.sessions)?;
+            for (peer, session_json) in stored_sessions {
+                if let Ok(session) = ChatSession::from_json(&session_json) {
+                    sessions.insert(peer, session);
+                }
+            }
+        }
+        *write_guard(&self.inner.messages)? = stored_messages;
+
+        // Contacts come back as rows: the ordered contact list, their learned
+        // display names, and the last-seen timestamps that seed the presence
+        // cache before any live push arrives.
+        let mut contact_names = HashMap::new();
+        let mut contacts = Vec::new();
+        let mut presence = HashMap::new();
+        for contact in stored_contacts {
+            if let Some(name) = contact.display_name.clone() {
+                contact_names.insert(contact.peer_id.clone(), name);
+            }
+            if let Some(last_seen) = contact.last_seen {
+                presence.insert(
+                    contact.peer_id.clone(),
+                    PresenceInfo {
+                        online: false,
+                        last_seen: Some(last_seen),
+                    },
+                );
+            }
+            contacts.push(contact.peer_id);
+        }
+        *write_guard(&self.inner.contacts)? = contacts;
+
+        let mut settings = read_guard(&self.inner.settings)?.clone();
+        settings.relay_url = relay_url.filter(|url| !url.is_empty());
+        settings.theme = theme.filter(|value| !value.is_empty());
+        *write_guard(&self.inner.settings)? = settings;
+
+        let mut profiles = read_guard(&self.inner.profiles)?.clone();
+        profiles.my_display_name = my_display_name.filter(|name| !name.is_empty());
+        profiles.contacts = contact_names;
+        *write_guard(&self.inner.profiles)? = profiles;
+
+        if !presence.is_empty() {
+            write_guard(&self.inner.presence)?.extend(presence);
+        }
+
+        // Resume the monotonic message-id counter so a restart never hands
+        // out an id that already owns a row in the store.
+        if let Some(value) = next_msg_id {
+            if let Ok(n) = value.parse::<u64>() {
+                self.inner.next_msg_id.store(n, Ordering::SeqCst);
             }
         }
         Ok(())
     }
 
-    /// Persist all current sessions to `sessions.json`.
+    /// Persist all current sessions to the store, replacing the previous map.
     fn save_sessions(&self) -> Result<(), RelayError> {
+        self.ensure_store_open()?;
         let mut stored = HashMap::new();
         {
             let sessions = mutex_guard(&self.inner.sessions)?;
@@ -1062,13 +1391,10 @@ impl RelayClient {
                 }
             }
         }
-        let json = serde_json::to_string(&stored)?;
-        if let Some(dir) = self.inner.sessions_path.parent() {
-            if !dir.as_os_str().is_empty() {
-                std::fs::create_dir_all(dir)?;
-            }
-        }
-        std::fs::write(&self.inner.sessions_path, json)?;
+        self.store_guard()?
+            .as_ref()
+            .ok_or(RelayError::StoreNotOpen)?
+            .replace_sessions(&stored)?;
         Ok(())
     }
 
@@ -1076,27 +1402,27 @@ impl RelayClient {
     // Settings persistence
     // ---------------------------------------------------------------------
 
-    /// Load the persisted settings from disk and cache them in memory. A
-    /// missing or unparseable file yields the defaults instead of an error.
-    fn load_settings(&self) -> Result<Settings, RelayError> {
-        let settings = read_settings_file(&self.inner.settings_path)?;
-        let mut guard = write_guard(&self.inner.settings)?;
-        *guard = settings.clone();
-        Ok(settings)
-    }
-
-    /// Return the currently persisted settings, reloaded from disk.
+    /// Return the persisted settings, hydrated from the store on first use.
     pub fn get_settings(&self) -> Result<Settings, RelayError> {
-        self.load_settings()?;
+        self.ensure_store_open()?;
         let settings = read_guard(&self.inner.settings)?.clone();
         Ok(settings)
     }
 
-    /// Persist `settings` to disk and cache them in memory.
+    /// Persist `settings` to the store and cache them in memory.
     fn save_settings(&self, settings: &Settings) -> Result<(), RelayError> {
-        write_settings_file(&self.inner.settings_path, settings)?;
-        let mut guard = write_guard(&self.inner.settings)?;
-        *guard = settings.clone();
+        self.ensure_store_open()?;
+        let store_guard = self.store_guard()?;
+        let store = store_guard.as_ref().ok_or(RelayError::StoreNotOpen)?;
+        match &settings.relay_url {
+            Some(url) if !url.is_empty() => store.set_setting("relay_url", url)?,
+            _ => store.delete_setting("relay_url")?,
+        }
+        match &settings.theme {
+            Some(theme) if !theme.is_empty() => store.set_setting("theme", theme)?,
+            _ => store.delete_setting("theme")?,
+        }
+        *write_guard(&self.inner.settings)? = settings.clone();
         Ok(())
     }
 
@@ -1104,7 +1430,7 @@ impl RelayClient {
     /// URL, the connection is dropped so the UI can reconnect to the new
     /// address.
     pub fn set_relay_url(&self, url: &str) -> Result<(), RelayError> {
-        let mut settings = self.load_settings()?;
+        let mut settings = self.get_settings()?;
         let changed = settings.relay_url.as_deref() != Some(url);
         settings.relay_url = Some(url.to_string());
         self.save_settings(&settings)?;
@@ -1116,7 +1442,7 @@ impl RelayClient {
 
     /// Persist a new UI theme preference.
     pub fn set_theme(&self, theme: &str) -> Result<(), RelayError> {
-        let mut settings = self.load_settings()?;
+        let mut settings = self.get_settings()?;
         settings.theme = Some(theme.to_string());
         self.save_settings(&settings)
     }
@@ -1124,6 +1450,19 @@ impl RelayClient {
     // ---------------------------------------------------------------------
     // Display names and receipts
     // ---------------------------------------------------------------------
+
+    /// Persist our own display name to the store and cache it in memory.
+    fn save_profiles(&self, profiles: &Profiles) -> Result<(), RelayError> {
+        self.ensure_store_open()?;
+        let store_guard = self.store_guard()?;
+        let store = store_guard.as_ref().ok_or(RelayError::StoreNotOpen)?;
+        match &profiles.my_display_name {
+            Some(name) if !name.is_empty() => store.set_setting("my_display_name", name)?,
+            _ => store.delete_setting("my_display_name")?,
+        }
+        *write_guard(&self.inner.profiles)? = profiles.clone();
+        Ok(())
+    }
 
     /// Persist our own public display name and, when connected, announce it to
     /// the relay so everyone who fetches our pre-keys sees it. An empty name
@@ -1136,7 +1475,8 @@ impl RelayClient {
         {
             return Err(RelayError::InvalidDisplayName);
         }
-        let mut profiles = self.load_profiles()?;
+        self.ensure_store_open()?;
+        let mut profiles = read_guard(&self.inner.profiles)?.clone();
         profiles.my_display_name = if name.is_empty() {
             None
         } else {
@@ -1192,11 +1532,20 @@ impl RelayClient {
     /// `contact-updated` event so the UI can update the contact list without a
     /// full state refresh.
     fn remember_contact_name(&self, peer_id: &str, name: &str) -> Result<(), RelayError> {
-        let mut profiles = self.load_profiles()?;
-        profiles
+        self.ensure_store_open()?;
+        self.store_guard()?
+            .as_ref()
+            .ok_or(RelayError::StoreNotOpen)?
+            .upsert_contact(&ContactRow {
+                peer_id: peer_id.to_string(),
+                display_name: Some(name.to_string()),
+                username: None,
+                avatar_url: None,
+                last_seen: None,
+            })?;
+        write_guard(&self.inner.profiles)?
             .contacts
             .insert(peer_id.to_string(), name.to_string());
-        self.save_profiles(&profiles)?;
         let _ = self.inner.app.emit(
             "contact-updated",
             ContactUpdatedEvent {
@@ -1221,6 +1570,9 @@ impl RelayClient {
                     let mut messages = write_guard(&self.inner.messages)?;
                     apply_read(&mut messages, sender)
                 };
+                for client_id in &flipped {
+                    self.persist_message_status(client_id, "read")?;
+                }
                 for client_id in flipped {
                     let _ = self.inner.app.emit(
                         "message-status",
@@ -1275,23 +1627,6 @@ impl RelayClient {
         }
     }
 
-    /// Load the persisted display names from disk and cache them in memory. A
-    /// missing or unparseable file yields the defaults instead of an error.
-    fn load_profiles(&self) -> Result<Profiles, RelayError> {
-        let profiles = read_profiles_file(&self.inner.profiles_path)?;
-        let mut guard = write_guard(&self.inner.profiles)?;
-        *guard = profiles.clone();
-        Ok(profiles)
-    }
-
-    /// Persist display names to disk and cache them in memory.
-    fn save_profiles(&self, profiles: &Profiles) -> Result<(), RelayError> {
-        write_profiles_file(&self.inner.profiles_path, profiles)?;
-        let mut guard = write_guard(&self.inner.profiles)?;
-        *guard = profiles.clone();
-        Ok(())
-    }
-
     // ---------------------------------------------------------------------
     // State recording
     // ---------------------------------------------------------------------
@@ -1313,6 +1648,10 @@ impl RelayClient {
             .entry(peer_id.to_string())
             .or_default()
             .push(message.clone());
+        // Persist the message (no client id on incoming) and the message-id
+        // counter so a restart never reuses an id that already owns a row.
+        self.persist_message(peer_id, &message, None)?;
+        self.persist_next_msg_id()?;
         Ok(message)
     }
 
@@ -1343,7 +1682,42 @@ impl RelayClient {
             .entry(peer_id.to_string())
             .or_default()
             .push(message.clone());
+        let stored_client_id = if client_id.is_empty() {
+            None
+        } else {
+            Some(client_id)
+        };
+        self.persist_message(peer_id, &message, stored_client_id)?;
+        self.persist_next_msg_id()?;
         Ok(message)
+    }
+
+    /// Persist one recorded message to the store. The store is opened lazily
+    /// here so a recording always lands on disk even if the connection died
+    /// before the first full connect.
+    fn persist_message(
+        &self,
+        peer_id: &str,
+        message: &UIMessage,
+        client_id: Option<&str>,
+    ) -> Result<(), RelayError> {
+        self.ensure_store_open()?;
+        self.store_guard()?
+            .as_ref()
+            .ok_or(RelayError::StoreNotOpen)?
+            .upsert_message(peer_id, message, client_id)?;
+        Ok(())
+    }
+
+    /// Persist the monotonic message-id counter so a restart never reuses an
+    /// id that already owns a row in the store.
+    fn persist_next_msg_id(&self) -> Result<(), RelayError> {
+        let value = self.inner.next_msg_id.load(Ordering::SeqCst).to_string();
+        self.store_guard()?
+            .as_ref()
+            .ok_or(RelayError::StoreNotOpen)?
+            .set_setting("next_msg_id", &value)?;
+        Ok(())
     }
 
     /// Flip the status of the message with `client_id` to "delivered" so a
@@ -1351,18 +1725,57 @@ impl RelayClient {
     /// was actually flipped: an ack that races in after an end-to-end read
     /// receipt must not downgrade the message back to "delivered".
     fn mark_delivered(&self, client_id: &str) -> Result<bool, RelayError> {
-        let mut messages = write_guard(&self.inner.messages)?;
-        Ok(apply_delivered(&mut messages, client_id))
+        let flipped = {
+            let mut messages = write_guard(&self.inner.messages)?;
+            apply_delivered(&mut messages, client_id)
+        };
+        if flipped {
+            self.persist_message_status(client_id, "delivered")?;
+        }
+        Ok(flipped)
+    }
+
+    /// Persist a message status flip (delivered ack or read receipt) so the
+    /// marker survives restarts.
+    fn persist_message_status(&self, client_id: &str, status: &str) -> Result<(), RelayError> {
+        let target = {
+            let messages = read_guard(&self.inner.messages)?;
+            messages.iter().find_map(|(peer, msgs)| {
+                msgs.iter()
+                    .find(|m| m.id == client_id)
+                    .map(|m| (peer.clone(), m.clone()))
+            })
+        };
+        if let Some((peer_id, mut message)) = target {
+            message.status = status.to_string();
+            self.persist_message(&peer_id, &message, Some(client_id))?;
+        }
+        Ok(())
     }
 
     /// Add `peer_id` to the contact list if it is not already there. For a new
     /// contact, the peer's public display name is fetched in the background so
     /// the receiving side of a conversation shows names too (not only the
-    /// initiator, who learns the name during `start_chat`).
+    /// initiator, who learns the name during `start_chat`). The new contact is
+    /// persisted so the contact list survives restarts.
     fn ensure_contact(&self, peer_id: &str) -> Result<(), RelayError> {
-        let mut contacts = write_guard(&self.inner.contacts)?;
-        if !contacts.iter().any(|known| known == peer_id) {
-            contacts.push(peer_id.to_string());
+        let is_new = {
+            let contacts = read_guard(&self.inner.contacts)?;
+            !contacts.iter().any(|known| known == peer_id)
+        };
+        if is_new {
+            write_guard(&self.inner.contacts)?.push(peer_id.to_string());
+            self.ensure_store_open()?;
+            self.store_guard()?
+                .as_ref()
+                .ok_or(RelayError::StoreNotOpen)?
+                .upsert_contact(&ContactRow {
+                    peer_id: peer_id.to_string(),
+                    display_name: None,
+                    username: None,
+                    avatar_url: None,
+                    last_seen: None,
+                })?;
             let client = self.clone();
             let peer = peer_id.to_string();
             tauri::async_runtime::spawn(async move {
@@ -1444,52 +1857,6 @@ fn now_millis() -> u64 {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|duration| duration.as_millis() as u64)
         .unwrap_or(0)
-}
-
-/// Read the settings file at `path`, returning defaults when it is missing or
-/// unparseable so a corrupt file can never block startup or reconnect.
-fn read_settings_file(path: &Path) -> Result<Settings, RelayError> {
-    let json = match std::fs::read_to_string(path) {
-        Ok(json) => json,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Settings::default()),
-        Err(e) => return Err(e.into()),
-    };
-    Ok(serde_json::from_str(&json).unwrap_or_default())
-}
-
-/// Write the settings file at `path`, creating the parent directory on demand.
-fn write_settings_file(path: &Path, settings: &Settings) -> Result<(), RelayError> {
-    if let Some(dir) = path.parent() {
-        if !dir.as_os_str().is_empty() {
-            std::fs::create_dir_all(dir)?;
-        }
-    }
-    let json = serde_json::to_string_pretty(settings)?;
-    std::fs::write(path, json)?;
-    Ok(())
-}
-
-/// Read the profiles file at `path`, returning defaults when it is missing or
-/// unparseable so a corrupt file can never block startup or reconnect.
-fn read_profiles_file(path: &Path) -> Result<Profiles, RelayError> {
-    let json = match std::fs::read_to_string(path) {
-        Ok(json) => json,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Profiles::default()),
-        Err(e) => return Err(e.into()),
-    };
-    Ok(serde_json::from_str(&json).unwrap_or_default())
-}
-
-/// Write the profiles file at `path`, creating the parent directory on demand.
-pub fn write_profiles_file(path: &Path, profiles: &Profiles) -> Result<(), RelayError> {
-    if let Some(dir) = path.parent() {
-        if !dir.as_os_str().is_empty() {
-            std::fs::create_dir_all(dir)?;
-        }
-    }
-    let json = serde_json::to_string_pretty(profiles)?;
-    std::fs::write(path, json)?;
-    Ok(())
 }
 
 /// Resolve the relay endpoint: settings first, then the `WHISPER_RELAY_URL`
@@ -1866,68 +2233,15 @@ mod tests {
     }
 
     // ---------------------------------------------------------------------
-    // Settings persistence
+    // Settings
     // ---------------------------------------------------------------------
-
-    /// Unique per-test settings file path; tests run in parallel threads so
-    /// they must never share a file.
-    static SETTINGS_TEST_COUNTER: AtomicU64 = AtomicU64::new(0);
-
-    fn temp_settings_path() -> PathBuf {
-        let n = SETTINGS_TEST_COUNTER.fetch_add(1, Ordering::SeqCst);
-        std::env::temp_dir().join(format!(
-            "whisper-settings-test-{}-{n}.json",
-            std::process::id()
-        ))
-    }
-
-    #[test]
-    fn settings_roundtrip_via_file_preserves_present_fields() {
-        let path = temp_settings_path();
-        write_settings_file(
-            &path,
-            &Settings {
-                relay_url: Some("ws://relay.example".into()),
-                theme: None,
-            },
-        )
-        .expect("write");
-
-        let loaded = read_settings_file(&path).expect("read");
-        assert_eq!(loaded.relay_url.as_deref(), Some("ws://relay.example"));
-        assert_eq!(loaded.theme, None);
-
-        let _ = std::fs::remove_file(&path);
-    }
-
-    #[test]
-    fn settings_missing_file_loads_as_defaults() {
-        let path = temp_settings_path();
-        let _ = std::fs::remove_file(&path);
-
-        let loaded = read_settings_file(&path).expect("missing file must not error");
-        assert_eq!(loaded.relay_url, None);
-        assert_eq!(loaded.theme, None);
-    }
 
     #[test]
     fn settings_parse_handles_missing_fields() {
         let settings: Settings =
-            serde_json::from_str(r#"{"theme":"dark"}"#).expect("partial file must parse");
+            serde_json::from_str(r#"{"theme":"dark"}"#).expect("partial settings must parse");
         assert_eq!(settings.relay_url, None);
         assert_eq!(settings.theme.as_deref(), Some("dark"));
-    }
-
-    #[test]
-    fn settings_corrupt_file_loads_as_defaults() {
-        let path = temp_settings_path();
-        std::fs::write(&path, b"not json").expect("write corrupt file");
-
-        let loaded = read_settings_file(&path).expect("corrupt file must not error");
-        assert_eq!(loaded.relay_url, None);
-        assert_eq!(loaded.theme, None);
-
-        let _ = std::fs::remove_file(&path);
     }
 
     #[test]

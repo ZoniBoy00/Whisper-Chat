@@ -21,13 +21,13 @@ export function MessageBubble({ message }: MessageBubbleProps) {
     >
       <div
         className={cx(
-          "max-w-[68%] rounded-2xl px-4 py-2 shadow-sm shadow-black/20",
+          "max-w-[68%] rounded-2xl px-4 py-2.5 shadow-sm shadow-black/20",
           outgoing
             ? "rounded-br-md bg-gradient-to-br from-wp-bubble-out-2 to-wp-bubble-out"
             : "rounded-bl-md bg-wp-bubble-in"
         )}
       >
-        <p className="whitespace-pre-wrap break-words text-sm leading-relaxed text-wp-text">
+        <p className="whitespace-pre-wrap break-words text-[15px] leading-relaxed text-wp-text">
           {message.text}
         </p>
         <div
@@ -38,13 +38,13 @@ export function MessageBubble({ message }: MessageBubbleProps) {
         >
           {outgoing ? (
             <StatusIcon
-              className="h-3 w-3"
+              className="h-3.5 w-3.5"
               strokeWidth={2.4}
               role="img"
               aria-label={read ? "Read" : delivered ? "Delivered" : "Sent"}
             />
           ) : null}
-          <span className="text-[10px] font-medium tabular-nums">
+          <span className="text-xs font-medium tabular-nums">
             {formatTime(message.timestamp)}
           </span>
         </div>

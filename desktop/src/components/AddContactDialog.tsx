@@ -78,7 +78,7 @@ export function AddContactDialog({
             >
               Start a new chat
             </h2>
-            <p className="mt-1 text-xs leading-relaxed text-wp-dim">
+            <p className="mt-1 text-sm leading-relaxed text-wp-dim">
               Paste a friend&apos;s Whisper ID. The session is established with
               their published pre-keys and every message is end-to-end
               encrypted.

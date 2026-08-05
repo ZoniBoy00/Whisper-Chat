@@ -5,11 +5,13 @@ import type {
   Message,
   MessageStatus,
   PresenceInfo,
+  ProfileInfo,
 } from "../types";
 import {
   connectRelay,
   getChatState,
   getPresence,
+  getProfile,
   getSettings,
   onChatMessage,
   onContactUpdated,
@@ -18,9 +20,11 @@ import {
   onRelayStatus,
   onTyping,
   publishPrekeys,
+  registerProfile,
   resetRelay,
   sendMessage,
   sendTyping,
+  setAvatar,
   setDisplayName as persistDisplayName,
   setRelayUrl as persistRelayUrl,
   setTheme as persistTheme,
@@ -48,6 +52,8 @@ interface MainViewProps {
 export function MainView({ peerId, onReset }: MainViewProps) {
   const [contacts, setContacts] = useState<ContactInfo[]>([]);
   const [myDisplayName, setMyDisplayName] = useState<string | null>(null);
+  // Our own public profile (username + avatar) fetched from the directory.
+  const [myProfile, setMyProfile] = useState<ProfileInfo | null>(null);
   const [messages, setMessages] = useState<Record<string, Message[]>>({});
   const [connected, setConnected] = useState(false);
   const [connecting, setConnecting] = useState(true);
@@ -88,6 +94,25 @@ export function MainView({ peerId, onReset }: MainViewProps) {
       // Transient failure; event listeners resync the next state change.
     }
   }, []);
+
+  // Fetch our own public profile (username + avatar) from the directory.
+  // Rejects with `no_profile` while unregistered, or when the backend command
+  // isn't wired up yet — both fall back to the unregistered UI.
+  const refreshOwnProfile = useCallback(async () => {
+    try {
+      const profile = await getProfile(peerId);
+      setMyProfile(profile);
+    } catch {
+      // `no_profile` (unregistered yet) or the command isn't wired on the
+      // backend — treat as unregistered. Also clears stale data after an
+      // identity reset, since MainView persists across peerId changes.
+      setMyProfile(null);
+    }
+  }, [peerId]);
+
+  useEffect(() => {
+    void refreshOwnProfile();
+  }, [refreshOwnProfile]);
 
   // Keep the DOM attribute in sync with the active theme. The stylesheet
   // defines a light variant under `[data-theme="light"]`; anything else
@@ -344,6 +369,24 @@ export function MainView({ peerId, onReset }: MainViewProps) {
     []
   );
 
+  const handleRegisterUsername = useCallback(
+    async (username: string) => {
+      await registerProfile(username);
+      // Re-fetch the profile so the UI picks up the new username.
+      await refreshOwnProfile();
+    },
+    [refreshOwnProfile]
+  );
+
+  const handleSetAvatar = useCallback(
+    async (avatarBase64: string) => {
+      await setAvatar(avatarBase64);
+      // Re-fetch the profile so the avatar_url (and preview) refresh.
+      await refreshOwnProfile();
+    },
+    [refreshOwnProfile]
+  );
+
   const handleAddContact = useCallback(
     async (peerIdToAdd: string) => {
       try {
@@ -354,7 +397,26 @@ export function MainView({ peerId, onReset }: MainViewProps) {
             : [...prev, { peer_id: peerIdToAdd, display_name: null }]
         );
         setActivePeerId(peerIdToAdd);
-        // Pull the freshly-fetched display name for the new contact.
+        // Best-effort enrichment: pull the peer's public profile (display
+        // name, username, avatar) so the contact renders fully right away.
+        try {
+          const profile = await getProfile(peerIdToAdd);
+          setContacts((prev) =>
+            prev.map((c) =>
+              c.peer_id === peerIdToAdd
+                ? {
+                    ...c,
+                    display_name: profile.display_name,
+                    username: profile.username,
+                    avatar_url: profile.avatar_url,
+                  }
+                : c
+            )
+          );
+        } catch {
+          // No registered profile (or lookup unavailable) — display name and
+          // presence still arrive via the usual events.
+        }
         void refresh();
       } catch (err) {
         throw new Error(String(err));
@@ -379,6 +441,8 @@ export function MainView({ peerId, onReset }: MainViewProps) {
             contact.display_name ?? shortPeerId(contact.peer_id),
           displayName: contact.display_name,
           peerId: contact.peer_id,
+          username: contact.username,
+          avatarUrl: contact.avatar_url,
           messages: messages[contact.peer_id] ?? [],
         }))
         .sort((a, b) => {
@@ -403,8 +467,10 @@ export function MainView({ peerId, onReset }: MainViewProps) {
         connected={connected}
         connecting={connecting}
         connectionError={connectionError}
+        relayUrl={relayUrl}
         onSelect={setActivePeerId}
         onAddContact={() => setAddDialogOpen(true)}
+        onStartChat={handleAddContact}
         onOpenSettings={() => setSettingsOpen(true)}
         onReconnect={() => void connect()}
         onReset={handleReset}
@@ -413,6 +479,7 @@ export function MainView({ peerId, onReset }: MainViewProps) {
         conversation={active}
         isTyping={active ? typing[active.peerId] ?? false : false}
         presence={active ? presence[active.peerId] ?? null : null}
+        relayUrl={relayUrl}
         onSend={(t) => void handleSend(t)}
         onTypingChange={handleTypingChange}
       />
@@ -426,11 +493,15 @@ export function MainView({ peerId, onReset }: MainViewProps) {
         onOpenChange={setSettingsOpen}
         peerId={peerId}
         myDisplayName={myDisplayName}
+        myUsername={myProfile?.username ?? null}
+        myAvatarUrl={myProfile?.avatar_url ?? null}
         theme={theme}
         onThemeChange={handleThemeChange}
         relayUrl={relayUrl}
         onSaveRelayUrl={handleRelayUrlSave}
         onSaveDisplayName={handleSaveDisplayName}
+        onRegisterUsername={handleRegisterUsername}
+        onSetAvatar={handleSetAvatar}
         onReset={handleReset}
       />
     </div>

@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import {
   Loader2,
   MessageCirclePlus,
@@ -9,9 +9,11 @@ import {
   SquarePen,
   Trash2,
   UserPlus,
+  Users,
 } from "lucide-react";
-import type { Conversation, PresenceInfo } from "../types";
-import { cx, formatTime, shortPeerId } from "../lib/format";
+import type { Conversation, PresenceInfo, ProfileInfo } from "../types";
+import { cx, formatTime, mediaUrl, shortPeerId } from "../lib/format";
+import { searchUsers } from "../lib/relay";
 import { Avatar } from "./Avatar";
 import { CopyButton } from "./CopyButton";
 
@@ -26,12 +28,21 @@ interface SidebarProps {
   connected: boolean;
   connecting: boolean;
   connectionError: string | null;
+  /** Relay endpoint; used to resolve `/media/{hash}` avatar paths. */
+  relayUrl: string;
   onSelect: (id: string) => void;
   onAddContact: () => void;
+  /** Start a chat directly with a peer (from a directory search result). */
+  onStartChat: (peerId: string) => Promise<void>;
   onOpenSettings: () => void;
   onReconnect: () => void;
   onReset: () => void;
 }
+
+/** Debounce for the directory search so keystrokes don't spam the backend. */
+const SEARCH_DEBOUNCE_MS = 250;
+/** Directory search activates once the user has typed this many characters. */
+const SEARCH_MIN_CHARS = 3;
 
 export function Sidebar({
   peerId,
@@ -42,8 +53,10 @@ export function Sidebar({
   connected,
   connecting,
   connectionError,
+  relayUrl,
   onSelect,
   onAddContact,
+  onStartChat,
   onOpenSettings,
   onReconnect,
   onReset,
@@ -51,12 +64,59 @@ export function Sidebar({
   const [menuOpen, setMenuOpen] = useState(false);
   const [confirming, setConfirming] = useState(false);
   const [query, setQuery] = useState("");
+  const [serverResults, setServerResults] = useState<ProfileInfo[] | null>(null);
+  const [serverSearching, setServerSearching] = useState(false);
+  const [serverSearchFailed, setServerSearchFailed] = useState(false);
+  const [searchAddError, setSearchAddError] = useState<string | null>(null);
 
   const trimmedQuery = query.trim().toLowerCase();
+
+  // Directory search (username/ID lookup) with debounce. If the backend
+  // command is not wired up yet, `search_users` rejects and we silently fall
+  // back to the local conversation filter below.
+  useEffect(() => {
+    const trimmed = query.trim().toLowerCase();
+    if (trimmed.length < SEARCH_MIN_CHARS) {
+      setServerResults(null);
+      setServerSearchFailed(false);
+      setServerSearching(false);
+      return;
+    }
+    setServerSearching(true);
+    setSearchAddError(null);
+    const handle = window.setTimeout(() => {
+      searchUsers(trimmed, 10)
+        .then((results) => {
+          if (query.trim().toLowerCase() === trimmed) {
+            setServerResults(results);
+            setServerSearchFailed(false);
+          }
+        })
+        .catch(() => {
+          if (query.trim().toLowerCase() === trimmed) {
+            setServerResults(null);
+            setServerSearchFailed(true);
+          }
+        })
+        .finally(() => {
+          if (query.trim().toLowerCase() === trimmed) {
+            setServerSearching(false);
+          }
+        });
+    }, SEARCH_DEBOUNCE_MS);
+    return () => window.clearTimeout(handle);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [query]);
+
   const filteredConversations = conversations.filter((conversation) =>
     conversation.peerId.toLowerCase().includes(trimmedQuery) ||
-    (conversation.displayName ?? "").toLowerCase().includes(trimmedQuery)
+    (conversation.displayName ?? "").toLowerCase().includes(trimmedQuery) ||
+    (conversation.username ?? "").toLowerCase().includes(trimmedQuery)
   );
+
+  /** The server-backed search is authoritative while it is active. */
+  const serverSearchActive =
+    trimmedQuery.length >= SEARCH_MIN_CHARS && !serverSearchFailed;
 
   const toggleMenu = () => {
     setMenuOpen((open) => !open);
@@ -70,6 +130,17 @@ export function Sidebar({
       onReset();
     } else {
       setConfirming(true);
+    }
+  };
+
+  const handlePickResult = async (result: ProfileInfo) => {
+    setSearchAddError(null);
+    try {
+      await onStartChat(result.peer_id);
+      setQuery("");
+      setServerResults(null);
+    } catch (err) {
+      setSearchAddError(String(err).replace(/^Error:\s*/, ""));
     }
   };
 
@@ -134,21 +205,33 @@ export function Sidebar({
       {/* Search */}
       <div className="px-4 pb-3">
         <label className="sr-only" htmlFor="search-conversations">
-          Search conversations
+          Search by name, @username or Whisper ID
         </label>
         <div className="flex items-center gap-2 rounded-xl bg-wp-panel-2 px-3 py-2">
-          <Search className="h-4 w-4 shrink-0 text-wp-faint" />
+          {serverSearching ? (
+            <Loader2 className="h-4 w-4 shrink-0 animate-spin text-wp-faint" />
+          ) : (
+            <Search className="h-4 w-4 shrink-0 text-wp-faint" />
+          )}
           <input
             id="search-conversations"
             type="search"
             value={query}
             onChange={(e) => setQuery(e.target.value)}
-            placeholder="Search by Whisper ID"
+            placeholder="Search by name, @username or ID"
             autoComplete="off"
             spellCheck={false}
             className="w-full bg-transparent text-sm text-wp-text placeholder-wp-faint outline-none"
           />
         </div>
+        {searchAddError ? (
+          <p
+            role="alert"
+            className="mt-2 text-xs leading-snug text-wp-danger"
+          >
+            {searchAddError}
+          </p>
+        ) : null}
       </div>
 
       {/* Section header */}
@@ -167,9 +250,66 @@ export function Sidebar({
         </button>
       </div>
 
-      {/* Conversation list */}
+      {/* Conversation list / directory results */}
       <div className="flex-1 overflow-y-auto px-2 pb-2">
-        {conversations.length === 0 ? (
+        {serverSearchActive ? (
+          serverResults === null ? (
+            <div className="flex h-full items-center justify-center">
+              <Loader2 className="h-5 w-5 animate-spin text-wp-faint" />
+            </div>
+          ) : serverResults.length === 0 ? (
+            <div className="flex h-full flex-col items-center justify-center gap-3 px-6 text-center">
+              <div className="rounded-full bg-wp-panel-2 p-3 text-wp-faint">
+                <SearchX className="h-5 w-5" />
+              </div>
+              <div>
+                <p className="text-sm font-medium text-wp-dim">
+                  No users found
+                </p>
+                <p className="mt-1 text-sm leading-relaxed text-wp-faint">
+                  No registered usernames or IDs match your search.
+                </p>
+              </div>
+            </div>
+          ) : (
+            <div>
+              <p className="flex items-center gap-1.5 px-3 pb-2 pt-1 text-xs font-semibold uppercase tracking-widest text-wp-faint">
+                <Users className="h-3.5 w-3.5" aria-hidden="true" />
+                Search results
+              </p>
+              {serverResults.map((result) => (
+                <button
+                  key={result.peer_id}
+                  type="button"
+                  onClick={() => void handlePickResult(result)}
+                  className="flex w-full items-center gap-3 rounded-xl px-3 py-3 text-left transition hover:bg-wp-panel-2"
+                >
+                  <Avatar
+                    name={result.display_name ?? result.username ?? undefined}
+                    size={44}
+                    src={result.avatar_url ? mediaUrl(relayUrl, result.avatar_url) : null}
+                  />
+                  <div className="min-w-0 flex-1">
+                    <div className="flex items-baseline gap-2">
+                      <p className="truncate text-sm font-medium text-wp-text">
+                        {result.display_name ?? "Whisper user"}
+                      </p>
+                      {result.username ? (
+                        <p className="truncate font-mono text-xs text-wp-faint">
+                          @{result.username}
+                        </p>
+                      ) : null}
+                    </div>
+                    <p className="truncate font-mono text-xs text-wp-dim">
+                      {shortPeerId(result.peer_id, 16)}
+                    </p>
+                  </div>
+                  <UserPlus className="h-4 w-4 shrink-0 text-wp-accent" aria-hidden="true" />
+                </button>
+              ))}
+            </div>
+          )
+        ) : conversations.length === 0 ? (
           <div className="flex h-full flex-col items-center justify-center gap-3 px-6 text-center">
             <div className="rounded-full bg-wp-panel-2 p-3 text-wp-faint">
               <MessageCirclePlus className="h-5 w-5" />
@@ -178,14 +318,14 @@ export function Sidebar({
               <p className="text-sm font-medium text-wp-dim">
                 No conversations yet
               </p>
-              <p className="mt-1 text-xs leading-relaxed text-wp-faint">
+              <p className="mt-1 text-sm leading-relaxed text-wp-faint">
                 Start a chat with a friend by their Whisper ID.
               </p>
             </div>
             <button
               type="button"
               onClick={onAddContact}
-              className="mt-1 inline-flex items-center gap-2 rounded-xl bg-wp-accent px-4 py-2 text-xs font-semibold text-wp-accent-fg transition hover:bg-wp-accent-strong"
+              className="mt-1 inline-flex items-center gap-2 rounded-xl bg-wp-accent px-4 py-2 text-sm font-semibold text-wp-accent-fg transition hover:bg-wp-accent-strong"
             >
               <UserPlus className="h-3.5 w-3.5" />
               New Chat
@@ -200,8 +340,8 @@ export function Sidebar({
               <p className="text-sm font-medium text-wp-dim">
                 No conversations found
               </p>
-              <p className="mt-1 text-xs leading-relaxed text-wp-faint">
-                No Whisper IDs match your search.
+              <p className="mt-1 text-sm leading-relaxed text-wp-faint">
+                No names or Whisper IDs match your search.
               </p>
             </div>
           </div>
@@ -212,6 +352,9 @@ export function Sidebar({
             const displayName =
               conversation.displayName ?? shortPeerId(conversation.peerId, 16);
             const online = presence[conversation.peerId]?.online === true;
+            const avatarSrc = conversation.avatarUrl
+              ? mediaUrl(relayUrl, conversation.avatarUrl)
+              : null;
             return (
               <button
                 key={conversation.id}
@@ -219,12 +362,12 @@ export function Sidebar({
                 onClick={() => onSelect(conversation.id)}
                 aria-current={active ? "true" : undefined}
                 className={cx(
-                  "flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-left transition",
+                  "flex w-full items-center gap-3 rounded-xl px-3 py-3 text-left transition",
                   active ? "bg-wp-panel-3" : "hover:bg-wp-panel-2"
                 )}
               >
                 <div className="relative shrink-0">
-                  <Avatar name={displayName} size={42} />
+                  <Avatar name={displayName} size={44} src={avatarSrc} />
                   {online ? (
                     <span
                       aria-hidden="true"
@@ -233,17 +376,24 @@ export function Sidebar({
                   ) : null}
                 </div>
                 <div className="min-w-0 flex-1">
-                  <div className="flex items-baseline justify-between gap-2">
-                    <p className="truncate text-sm font-medium text-wp-text">
-                      {displayName}
-                    </p>
+                  <div className="flex items-center justify-between gap-2">
+                    <div className="flex min-w-0 items-baseline gap-1.5">
+                      <p className="truncate text-sm font-medium text-wp-text">
+                        {displayName}
+                      </p>
+                      {conversation.username ? (
+                        <p className="truncate font-mono text-xs text-wp-faint">
+                          @{conversation.username}
+                        </p>
+                      ) : null}
+                    </div>
                     {last ? (
-                      <span className="shrink-0 text-[10px] tabular-nums text-wp-faint">
+                      <span className="shrink-0 text-xs tabular-nums text-wp-faint">
                         {formatTime(last.timestamp)}
                       </span>
                     ) : null}
                   </div>
-                  <p className="truncate text-xs text-wp-dim">
+                  <p className="truncate text-sm text-wp-dim">
                     {last
                       ? `${last.outgoing ? "You: " : ""}${last.text}`
                       : conversation.displayName
@@ -265,17 +415,17 @@ export function Sidebar({
               <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-wp-accent opacity-50" />
               <span className="relative inline-flex h-2.5 w-2.5 rounded-full bg-wp-accent" />
             </span>
-            <span className="text-xs font-semibold tracking-wide text-wp-dim">
+            <span className="text-sm font-semibold tracking-wide text-wp-dim">
               Connected
             </span>
-            <span className="text-[10px] text-wp-faint">
+            <span className="text-xs text-wp-faint">
               · end-to-end encrypted
             </span>
           </div>
         ) : connecting ? (
           <div className="flex items-center gap-2.5 text-wp-dim">
             <Loader2 className="h-4 w-4 animate-spin text-wp-faint" />
-            <span className="text-xs font-semibold tracking-wide">
+            <span className="text-sm font-semibold tracking-wide">
               Connecting…
             </span>
           </div>
@@ -283,7 +433,7 @@ export function Sidebar({
           <div className="flex items-center justify-between gap-2">
             <div className="flex items-center gap-2.5 text-wp-dim">
               <span className="h-2.5 w-2.5 rounded-full bg-wp-danger" />
-              <span className="text-xs font-semibold tracking-wide">
+              <span className="text-sm font-semibold tracking-wide">
                 Disconnected
               </span>
             </div>
@@ -299,7 +449,7 @@ export function Sidebar({
         {connectionError ? (
           <p
             role="alert"
-            className="mt-2 text-[11px] leading-snug text-wp-danger"
+            className="mt-2 text-xs leading-snug text-wp-danger"
           >
             {connectionError}
           </p>

@@ -9,6 +9,22 @@ export function shortPeerId(peerId: string, max = 12): string {
   return `${peerId.slice(0, Math.ceil(max / 2))}…${peerId.slice(-Math.floor(max / 2))}`;
 }
 
+/**
+ * Turn a server avatar path ("/media/{hash}") into an absolute URL by deriving
+ * the origin from the relay's ws:// endpoint. Already-absolute URLs pass
+ * through unchanged; returns null when no URL can be derived.
+ */
+export function mediaUrl(relayUrl: string, avatarPath: string): string | null {
+  if (/^https?:\/\//i.test(avatarPath)) return avatarPath;
+  try {
+    const parsed = new URL(relayUrl.replace(/^ws/i, "http"));
+    const path = avatarPath.startsWith("/") ? avatarPath : `/${avatarPath}`;
+    return `${parsed.origin}${path}`;
+  } catch {
+    return null;
+  }
+}
+
 /** Render a timestamp as a compact local clock time, e.g. "14:05". */
 export function formatTime(timestamp: number): string {
   return new Date(timestamp).toLocaleTimeString([], {

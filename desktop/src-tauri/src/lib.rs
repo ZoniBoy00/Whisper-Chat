@@ -8,8 +8,9 @@ use tauri::{Listener, Manager, State};
 use tokio::sync::Notify;
 
 mod relay;
+mod store;
 
-use relay::{ChatState, PresenceInfo, Profiles, RelayClient, Settings};
+use relay::{ChatState, PeerProfile, PresenceInfo, ProfileSearchResult, RelayClient, Settings};
 
 /// Resolve the on-disk location of the persisted identity.
 ///
@@ -48,7 +49,7 @@ fn get_identity(app: tauri::AppHandle) -> Result<IdentityInfo, String> {
 /// its peer ID. Existing identities are overwritten on purpose — the caller
 /// only reaches this command when no identity is present. An optional
 /// `display_name` (the onboarding "What should people call you?" answer) is
-/// stored next to the identity so the first connect advertises it.
+/// stored in the SQLCipher store so the first connect advertises it.
 #[tauri::command]
 fn generate_identity(
     app: tauri::AppHandle,
@@ -62,17 +63,15 @@ fn generate_identity(
     if let Some(dir) = path.parent() {
         fs::create_dir_all(dir).map_err(|e| e.to_string())?;
     }
-    fs::write(path, json).map_err(|e| e.to_string())?;
+    fs::write(&path, json).map_err(|e| e.to_string())?;
 
     if let Some(name) = display_name {
         let name = name.trim();
         if !name.is_empty() {
-            let profiles = Profiles {
-                my_display_name: Some(name.to_string()),
-                ..Profiles::default()
-            };
-            relay::write_profiles_file(&relay::resolve_profiles_path(&app), &profiles)
-                .map_err(|e| e.to_string())?;
+            // Best-effort: a database failure (e.g. a missing directory)
+            // must never block identity creation. The name can be set later
+            // through `set_display_name`.
+            let _ = persist_onboarding_name(&app, &path, &peer_id, name);
         }
     }
 
@@ -80,6 +79,22 @@ fn generate_identity(
         peer_id,
         exists: true,
     })
+}
+
+/// Store the onboarding display name in the identity-keyed database.
+fn persist_onboarding_name(
+    app: &tauri::AppHandle,
+    identity_file: &PathBuf,
+    peer_id: &str,
+    name: &str,
+) -> Result<(), String> {
+    let json = fs::read_to_string(identity_file).map_err(|e| e.to_string())?;
+    let key_hex = store::derive_db_key(&json);
+    let db_path = relay::resolve_store_path(app, peer_id);
+    let chat_store = store::ChatStore::open(&db_path, &key_hex).map_err(|e| e.to_string())?;
+    chat_store
+        .set_setting("my_display_name", name)
+        .map_err(|e| e.to_string())
 }
 
 /// Delete the persisted identity file, returning it to the onboarding state.
@@ -111,6 +126,56 @@ async fn connect_relay(state: State<'_, RelayClient>) -> Result<(), String> {
 #[tauri::command]
 async fn publish_prekeys(state: State<'_, RelayClient>) -> Result<(), String> {
     state.publish_prekeys().await.map_err(|e| e.to_string())
+}
+
+/// Register (or re-register) the signed username alias, optionally with an
+/// avatar (base64 image, ≤2 MB). Returns the registered username.
+#[tauri::command]
+async fn register_profile(
+    state: State<'_, RelayClient>,
+    username: String,
+    display_name: Option<String>,
+    avatar: Option<String>,
+) -> Result<String, String> {
+    state
+        .register_profile(&username, display_name.as_deref(), avatar.as_deref())
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// Prefix-search registered usernames and peer IDs.
+#[tauri::command]
+async fn search_users(
+    state: State<'_, RelayClient>,
+    query: String,
+    limit: Option<usize>,
+) -> Result<Vec<ProfileSearchResult>, String> {
+    state
+        .search_users(&query, limit)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// Fetch one peer's public profile; `null` when they have none registered.
+#[tauri::command]
+async fn get_profile(
+    state: State<'_, RelayClient>,
+    peer_id: String,
+) -> Result<Option<PeerProfile>, String> {
+    state.get_profile(&peer_id).await.map_err(|e| e.to_string())
+}
+
+/// Re-register the profile with a new avatar image (base64, ≤2 MB).
+#[tauri::command]
+async fn set_avatar(
+    state: State<'_, RelayClient>,
+    username: String,
+    avatar: String,
+) -> Result<(), String> {
+    state
+        .set_avatar(&username, &avatar)
+        .await
+        .map_err(|e| e.to_string())
 }
 
 /// Establish an encrypted session with a peer and send the first message.
@@ -281,6 +346,10 @@ pub fn run() {
             set_display_name,
             send_typing,
             get_presence,
+            register_profile,
+            search_users,
+            get_profile,
+            set_avatar,
             watch_presence
         ])
         .run(tauri::generate_context!())

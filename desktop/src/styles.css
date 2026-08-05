@@ -61,6 +61,9 @@ body,
 
 body {
   margin: 0;
+  /* Base UI scale (16px) — components scale up from here via the Tailwind
+     `fontSize` tokens (`xs` = 13px, `sm` = 15px). */
+  font-size: 16px;
   background-color: rgb(var(--wp-bg));
   color: rgb(var(--wp-text));
   font-family:

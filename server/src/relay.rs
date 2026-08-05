@@ -13,6 +13,10 @@
 //! - Peers publish their public X3DH pre-key bundle (PreKeyBundle) so other
 //!   peers can start encrypted sessions. Bundles are verified (Ed25519
 //!   signature) and bound to the publishing peer before being stored.
+//! - Groups are metadata only: the relay stores the group roster and fans
+//!   `send_group_message` envelopes out to every member. The Megolm session
+//!   key is SECRET and is never seen or stored by the relay — it travels
+//!   end-to-end between members inside Double Ratchet envelopes.
 //! - Envelope throughput and pre-key traffic are rate limited per source IP
 //!   (token buckets).
 
@@ -42,6 +46,9 @@ const HELLO_TIMEOUT_SECS: u64 = 10;
 
 /// Maximum length of a public display name, in Unicode characters.
 const MAX_DISPLAY_NAME_CHARS: usize = 64;
+
+/// Maximum length of a group name, in Unicode characters.
+const MAX_GROUP_NAME_CHARS: usize = 64;
 
 /// Maximum size of an uploaded avatar blob, in bytes (2 MiB). The check runs
 /// on the decoded blob so a client cannot smuggle more data than advertised.
@@ -153,6 +160,30 @@ enum ClientMessage {
     /// Fetch another peer's public profile by its peer ID.
     #[serde(rename = "get_profile")]
     GetProfile { peer_id: String },
+    /// Create a group: the authenticated peer becomes the owner and first
+    /// member. The Megolm session key is NOT exchanged here — it is shared to
+    /// members later over an end-to-end encrypted envelope.
+    #[serde(rename = "create_group")]
+    CreateGroup { name: String },
+    /// Add `peer_id` to a group's roster. Only the owner or an existing
+    /// member may add members.
+    #[serde(rename = "add_group_member")]
+    AddGroupMember { group_id: String, peer_id: String },
+    /// Remove the caller from a group's roster.
+    #[serde(rename = "leave_group")]
+    LeaveGroup { group_id: String },
+    /// Request the public metadata and member roster of a group. Membership
+    /// is required to see the roster.
+    #[serde(rename = "get_group_info")]
+    GetGroupInfo { group_id: String },
+    /// Send one (already client-encrypted) envelope to every member of a
+    /// group except the sender. The relay rewrites `recipient` per member and
+    /// routes the opaque payload as usual.
+    #[serde(rename = "send_group_message")]
+    SendGroupMessage {
+        group_id: String,
+        envelope: Envelope,
+    },
 }
 
 /// Messages the SERVER sends to the client.
@@ -204,6 +235,30 @@ enum ServerMessage {
         display_name: Option<String>,
         avatar_url: Option<String>,
         curve25519_key: Option<String>,
+    },
+    /// Confirmation that a group was created (`create_group` reply). The
+    /// creator is the first entry in `members`.
+    #[serde(rename = "group_created")]
+    GroupCreated {
+        group_id: String,
+        name: String,
+        members: Vec<String>,
+    },
+    /// Confirmation that a member was added to a group (`add_group_member`
+    /// reply).
+    #[serde(rename = "group_member_added")]
+    GroupMemberAdded { group_id: String, peer_id: String },
+    /// Confirmation that the caller left a group (`leave_group` reply).
+    #[serde(rename = "group_member_left")]
+    GroupMemberLeft { group_id: String, peer_id: String },
+    /// The public metadata + member roster of a group (`get_group_info`
+    /// reply).
+    #[serde(rename = "group_info")]
+    GroupInfo {
+        group_id: String,
+        name: String,
+        owner_peer_id: String,
+        members: Vec<String>,
     },
     /// Protocol error.
     Error { code: String },
@@ -546,6 +601,26 @@ impl Relay {
                         Ok(ClientMessage::GetProfile { peer_id: target }) => {
                             self.get_profile(&peer_id, &ip, &target).await;
                         }
+                        Ok(ClientMessage::CreateGroup { name }) => {
+                            self.create_group(&peer_id, &ip, &name).await;
+                        }
+                        Ok(ClientMessage::AddGroupMember {
+                            group_id,
+                            peer_id: target,
+                        }) => {
+                            self.add_group_member(&peer_id, &ip, &group_id, &target)
+                                .await;
+                        }
+                        Ok(ClientMessage::LeaveGroup { group_id }) => {
+                            self.leave_group(&peer_id, &ip, &group_id).await;
+                        }
+                        Ok(ClientMessage::GetGroupInfo { group_id }) => {
+                            self.get_group_info(&peer_id, &ip, &group_id).await;
+                        }
+                        Ok(ClientMessage::SendGroupMessage { group_id, envelope }) => {
+                            self.send_group_message(&peer_id, &ip, &group_id, envelope)
+                                .await;
+                        }
                         // Re-registration or protocol violations: ignore for now.
                         Ok(_) => {}
                         Err(_) => {
@@ -708,6 +783,14 @@ impl Relay {
             && !name.chars().any(char::is_control)
     }
 
+    /// Whether `name` is acceptable as a group name: 1-64 Unicode characters
+    /// and free of control characters.
+    fn is_valid_group_name(name: &str) -> bool {
+        !name.is_empty()
+            && name.chars().count() <= MAX_GROUP_NAME_CHARS
+            && !name.chars().any(char::is_control)
+    }
+
     /// Route an envelope to its recipient, or persist it for offline delivery.
     /// Envelope sends are rate limited per source IP.
     async fn route(&self, envelope: Envelope, sender_peer: &str, ip: &str) {
@@ -750,11 +833,24 @@ impl Relay {
             return;
         }
 
-        // Grab the seq and recipient before `envelope` may be moved into the
-        // offline store.
         let seq = envelope.seq;
 
-        // Deliver live if possible...
+        // Deliver live if possible, otherwise persist the ciphertext blob in
+        // SQLite. The per-peer cap and 7-day TTL keep the database bounded.
+        self.deliver_one(&envelope).await;
+
+        // Delivery confirmation to the sender: the relay accepted the blob.
+        // This is NOT a read receipt — read receipts are end-to-end and
+        // travel as regular encrypted envelopes between clients.
+        let _ = self
+            .send(sender_peer, ServerMessage::Acknowledged { seq })
+            .await;
+    }
+
+    /// Deliver a single envelope to its recipient: live to an online socket,
+    /// otherwise into the SQLite offline queue. Never rate limits and never
+    /// acks — shared by 1:1 routing and group fan-out.
+    async fn deliver_one(&self, envelope: &Envelope) {
         let delivered = {
             let online = self.inner.online.read().await;
             match online.get(&envelope.recipient) {
@@ -777,17 +873,303 @@ impl Relay {
         if delivered {
             tracing::trace!(recipient = %envelope.recipient, "envelope delivered live");
         } else {
-            // ...otherwise persist the ciphertext blob in SQLite. The per-peer
-            // cap and 7-day TTL keep the database bounded.
-            let _ = self.inner.store.enqueue(&envelope, unix_now());
+            let _ = self.inner.store.enqueue(envelope, unix_now());
             tracing::trace!(recipient = %envelope.recipient, "envelope queued offline");
         }
+    }
 
-        // Delivery confirmation to the sender: the relay accepted the blob.
-        // This is NOT a read receipt — read receipts are end-to-end and
-        // travel as regular encrypted envelopes between clients.
+    /// Consume one token from the per-IP group bucket. On exhaustion, send a
+    /// `rate_limited` error to `peer_id` and return `false`.
+    async fn take_group_slot(&self, peer_id: &str, ip: &str) -> bool {
+        if self.inner.limiter.try_take(&format!("group:{ip}")) {
+            true
+        } else {
+            tracing::warn!(ip = %ip, "group rate limit exceeded");
+            let _ = self
+                .send(
+                    peer_id,
+                    ServerMessage::Error {
+                        code: "rate_limited".into(),
+                    },
+                )
+                .await;
+            false
+        }
+    }
+
+    /// Create a group: generate a unique group ID, persist the public metadata
+    /// and register the caller as the owner/first member.
+    ///
+    /// The Megolm session key is deliberately NOT part of this flow. It is
+    /// secret and is shared to members end-to-end over an encrypted envelope
+    /// by the desktop client; the relay never sees it.
+    async fn create_group(&self, peer_id: &str, ip: &str, name: &str) {
+        if !self.take_group_slot(peer_id, ip).await {
+            return;
+        }
+
+        if !Self::is_valid_group_name(name) {
+            tracing::warn!(peer = %peer_id, "rejecting invalid group name");
+            let _ = self
+                .send(
+                    peer_id,
+                    ServerMessage::Error {
+                        code: "invalid_group_name".into(),
+                    },
+                )
+                .await;
+            return;
+        }
+
+        let group_id = uuid::Uuid::new_v4().to_string();
+        match self
+            .inner
+            .store
+            .create_group(&group_id, name, peer_id, unix_now())
+        {
+            Ok(()) => {
+                let members = self.inner.store.list_group_members(&group_id);
+                let _ = self
+                    .send(
+                        peer_id,
+                        ServerMessage::GroupCreated {
+                            group_id,
+                            name: name.to_string(),
+                            members,
+                        },
+                    )
+                    .await;
+            }
+            Err(err) => {
+                tracing::error!(peer = %peer_id, "failed to persist group: {err}");
+            }
+        }
+    }
+
+    /// Add `target` to a group's roster. Only the owner or an existing member
+    /// may add members.
+    async fn add_group_member(&self, peer_id: &str, ip: &str, group_id: &str, target: &str) {
+        if !self.take_group_slot(peer_id, ip).await {
+            return;
+        }
+
+        if self.inner.store.get_group(group_id).is_none() {
+            let _ = self
+                .send(
+                    peer_id,
+                    ServerMessage::Error {
+                        code: "group_not_found".into(),
+                    },
+                )
+                .await;
+            return;
+        }
+        if !self.inner.store.is_group_member(group_id, peer_id) {
+            let _ = self
+                .send(
+                    peer_id,
+                    ServerMessage::Error {
+                        code: "not_a_member".into(),
+                    },
+                )
+                .await;
+            return;
+        }
+
+        match self
+            .inner
+            .store
+            .add_group_member(group_id, target, unix_now())
+        {
+            Ok(()) => {
+                let _ = self
+                    .send(
+                        peer_id,
+                        ServerMessage::GroupMemberAdded {
+                            group_id: group_id.to_string(),
+                            peer_id: target.to_string(),
+                        },
+                    )
+                    .await;
+            }
+            Err(err) => {
+                tracing::error!(peer = %peer_id, group = %group_id, "failed to add member: {err}");
+            }
+        }
+    }
+
+    /// Remove the caller from a group's roster.
+    async fn leave_group(&self, peer_id: &str, ip: &str, group_id: &str) {
+        if !self.take_group_slot(peer_id, ip).await {
+            return;
+        }
+
+        if self.inner.store.get_group(group_id).is_none() {
+            let _ = self
+                .send(
+                    peer_id,
+                    ServerMessage::Error {
+                        code: "group_not_found".into(),
+                    },
+                )
+                .await;
+            return;
+        }
+        if !self.inner.store.is_group_member(group_id, peer_id) {
+            let _ = self
+                .send(
+                    peer_id,
+                    ServerMessage::Error {
+                        code: "not_a_member".into(),
+                    },
+                )
+                .await;
+            return;
+        }
+
+        match self.inner.store.remove_group_member(group_id, peer_id) {
+            Ok(()) => {
+                let _ = self
+                    .send(
+                        peer_id,
+                        ServerMessage::GroupMemberLeft {
+                            group_id: group_id.to_string(),
+                            peer_id: peer_id.to_string(),
+                        },
+                    )
+                    .await;
+            }
+            Err(err) => {
+                tracing::error!(peer = %peer_id, group = %group_id, "failed to remove member: {err}");
+            }
+        }
+    }
+
+    /// Reply with a group's public metadata and member roster. The roster is
+    /// only visible to current members.
+    async fn get_group_info(&self, peer_id: &str, ip: &str, group_id: &str) {
+        if !self.take_group_slot(peer_id, ip).await {
+            return;
+        }
+
+        let group = match self.inner.store.get_group(group_id) {
+            Some(group) => group,
+            None => {
+                let _ = self
+                    .send(
+                        peer_id,
+                        ServerMessage::Error {
+                            code: "group_not_found".into(),
+                        },
+                    )
+                    .await;
+                return;
+            }
+        };
+        if !self.inner.store.is_group_member(group_id, peer_id) {
+            let _ = self
+                .send(
+                    peer_id,
+                    ServerMessage::Error {
+                        code: "not_a_member".into(),
+                    },
+                )
+                .await;
+            return;
+        }
+
+        let members = self.inner.store.list_group_members(group_id);
         let _ = self
-            .send(sender_peer, ServerMessage::Acknowledged { seq })
+            .send(
+                peer_id,
+                ServerMessage::GroupInfo {
+                    group_id: group.id,
+                    name: group.name,
+                    owner_peer_id: group.owner_peer_id,
+                    members,
+                },
+            )
+            .await;
+    }
+
+    /// Fan out one client-encrypted envelope to every group member except the
+    /// sender.
+    ///
+    /// The relay rewrites `recipient` per member and reuses the standard
+    /// live/offline delivery path, so the ciphertext stays opaque and members
+    /// who are offline get the copy on their next fetch. Group sends draw from
+    /// the per-IP `group:<ip>` rate bucket.
+    async fn send_group_message(
+        &self,
+        peer_id: &str,
+        ip: &str,
+        group_id: &str,
+        envelope: Envelope,
+    ) {
+        if !self.take_group_slot(peer_id, ip).await {
+            return;
+        }
+
+        if self.inner.store.get_group(group_id).is_none() {
+            let _ = self
+                .send(
+                    peer_id,
+                    ServerMessage::Error {
+                        code: "group_not_found".into(),
+                    },
+                )
+                .await;
+            return;
+        }
+        if !self.inner.store.is_group_member(group_id, peer_id) {
+            let _ = self
+                .send(
+                    peer_id,
+                    ServerMessage::Error {
+                        code: "not_a_member".into(),
+                    },
+                )
+                .await;
+            return;
+        }
+
+        // Spoofing guard and size cap mirror the 1:1 routing path.
+        if envelope.sender != peer_id {
+            tracing::warn!(
+                claimed = %envelope.sender,
+                authenticated = %peer_id,
+                "group envelope sender does not match the authenticated peer"
+            );
+            let _ = self
+                .send(
+                    peer_id,
+                    ServerMessage::Error {
+                        code: "sender_mismatch".into(),
+                    },
+                )
+                .await;
+            return;
+        }
+        if !envelope.within_limits() {
+            tracing::warn!(sender = %envelope.sender, group = %group_id, "dropping oversized group envelope");
+            return;
+        }
+
+        let seq = envelope.seq;
+        let members = self.inner.store.list_group_members(group_id);
+        for member in &members {
+            if member == peer_id {
+                continue;
+            }
+            let mut copy = envelope.clone();
+            copy.recipient = member.clone();
+            self.deliver_one(&copy).await;
+        }
+
+        // Single delivery confirmation to the sender; the fan-out copies share
+        // the same client `seq`.
+        let _ = self
+            .send(peer_id, ServerMessage::Acknowledged { seq })
             .await;
     }
 
@@ -2450,6 +2832,439 @@ mod tests {
         let reply = read_reply(&mut rx);
         assert_eq!(reply["type"].as_str(), Some("error"));
         assert_eq!(reply["code"].as_str(), Some("no_profile"));
+    }
+
+    // -- Groups ------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn create_group_replies_with_owner_membership() {
+        let store = Store::open_in_memory().unwrap();
+        let relay = Relay::with_limiter(store, 100.0, 0.0);
+        let alice = Identity::new();
+        let mut alice_rx = online_peer(&relay, &alice).await;
+
+        relay
+            .create_group(&alice.peer_id(), "127.0.0.1", "Ghost Squad")
+            .await;
+        let reply = read_reply(&mut alice_rx);
+        assert_eq!(reply["type"].as_str(), Some("group_created"));
+        let group_id = reply["group_id"]
+            .as_str()
+            .expect("group_id must be set")
+            .to_string();
+        assert_eq!(reply["name"].as_str(), Some("Ghost Squad"));
+        let members = reply["members"]
+            .as_array()
+            .expect("members must be an array");
+        assert_eq!(members.len(), 1);
+        assert_eq!(members[0].as_str(), Some(alice.peer_id().as_str()));
+        assert!(
+            relay
+                .inner
+                .store
+                .is_group_member(&group_id, &alice.peer_id()),
+            "the owner must be a member"
+        );
+    }
+
+    #[tokio::test]
+    async fn create_group_rejects_invalid_name() {
+        let store = Store::open_in_memory().unwrap();
+        let relay = Relay::with_limiter(store, 100.0, 0.0);
+        let alice = Identity::new();
+        let mut alice_rx = online_peer(&relay, &alice).await;
+
+        relay.create_group(&alice.peer_id(), "127.0.0.1", "").await;
+        let reply = read_reply(&mut alice_rx);
+        assert_eq!(reply["type"].as_str(), Some("error"));
+        assert_eq!(reply["code"].as_str(), Some("invalid_group_name"));
+
+        let too_long = "x".repeat(MAX_GROUP_NAME_CHARS + 1);
+        relay
+            .create_group(&alice.peer_id(), "127.0.0.1", &too_long)
+            .await;
+        let reply = read_reply(&mut alice_rx);
+        assert_eq!(reply["type"].as_str(), Some("error"));
+        assert_eq!(reply["code"].as_str(), Some("invalid_group_name"));
+    }
+
+    #[tokio::test]
+    async fn add_group_member_and_get_group_info_roundtrip() {
+        let store = Store::open_in_memory().unwrap();
+        let relay = Relay::with_limiter(store, 100.0, 0.0);
+        let alice = Identity::new();
+        let bob = Identity::new();
+        let mut alice_rx = online_peer(&relay, &alice).await;
+        let mut bob_rx = online_peer(&relay, &bob).await;
+
+        relay
+            .create_group(&alice.peer_id(), "127.0.0.1", "Squad")
+            .await;
+        let group_id = read_reply(&mut alice_rx)["group_id"]
+            .as_str()
+            .expect("group_id must be set")
+            .to_string();
+
+        relay
+            .add_group_member(&alice.peer_id(), "127.0.0.1", &group_id, &bob.peer_id())
+            .await;
+        let reply = read_reply(&mut alice_rx);
+        assert_eq!(reply["type"].as_str(), Some("group_member_added"));
+        assert_eq!(reply["group_id"].as_str(), Some(group_id.as_str()));
+        assert_eq!(reply["peer_id"].as_str(), Some(bob.peer_id().as_str()));
+
+        relay
+            .get_group_info(&alice.peer_id(), "127.0.0.1", &group_id)
+            .await;
+        let reply = read_reply(&mut alice_rx);
+        assert_eq!(reply["type"].as_str(), Some("group_info"));
+        assert_eq!(reply["name"].as_str(), Some("Squad"));
+        assert_eq!(
+            reply["owner_peer_id"].as_str(),
+            Some(alice.peer_id().as_str())
+        );
+        let members = reply["members"]
+            .as_array()
+            .expect("members must be an array");
+        let ids: Vec<&str> = members.iter().filter_map(|m| m.as_str()).collect();
+        assert!(ids.contains(&alice.peer_id().as_str()));
+        assert!(ids.contains(&bob.peer_id().as_str()));
+
+        // Bob (a member) may also read the info.
+        relay
+            .get_group_info(&bob.peer_id(), "127.0.0.1", &group_id)
+            .await;
+        let reply = read_reply(&mut bob_rx);
+        assert_eq!(reply["type"].as_str(), Some("group_info"));
+    }
+
+    #[tokio::test]
+    async fn add_group_member_rejects_non_member_and_unknown_group() {
+        let store = Store::open_in_memory().unwrap();
+        let relay = Relay::with_limiter(store, 100.0, 0.0);
+        let alice = Identity::new();
+        let bob = Identity::new();
+        let carol = Identity::new();
+        let mut alice_rx = online_peer(&relay, &alice).await;
+        let mut carol_rx = online_peer(&relay, &carol).await;
+
+        relay
+            .create_group(&alice.peer_id(), "127.0.0.1", "Squad")
+            .await;
+        let group_id = read_reply(&mut alice_rx)["group_id"]
+            .as_str()
+            .expect("group_id must be set")
+            .to_string();
+
+        // Carol is not a member and cannot add anyone.
+        relay
+            .add_group_member(&carol.peer_id(), "127.0.0.1", &group_id, &bob.peer_id())
+            .await;
+        let reply = read_reply(&mut carol_rx);
+        assert_eq!(reply["type"].as_str(), Some("error"));
+        assert_eq!(reply["code"].as_str(), Some("not_a_member"));
+
+        // An unknown group id.
+        relay
+            .add_group_member(&alice.peer_id(), "127.0.0.1", "ghost", &bob.peer_id())
+            .await;
+        let reply = read_reply(&mut alice_rx);
+        assert_eq!(reply["type"].as_str(), Some("error"));
+        assert_eq!(reply["code"].as_str(), Some("group_not_found"));
+    }
+
+    #[tokio::test]
+    async fn send_group_message_fans_out_to_members_except_sender() {
+        let store = Store::open_in_memory().unwrap();
+        let relay = Relay::with_limiter(store, 100.0, 0.0);
+        let alice = Identity::new();
+        let bob = Identity::new();
+        let carol = Identity::new();
+        let mut alice_rx = online_peer(&relay, &alice).await;
+        let mut bob_rx = online_peer(&relay, &bob).await;
+        let mut carol_rx = online_peer(&relay, &carol).await;
+
+        relay
+            .create_group(&alice.peer_id(), "127.0.0.1", "Squad")
+            .await;
+        let group_id = read_reply(&mut alice_rx)["group_id"]
+            .as_str()
+            .expect("group_id must be set")
+            .to_string();
+        relay
+            .add_group_member(&alice.peer_id(), "127.0.0.1", &group_id, &bob.peer_id())
+            .await;
+        read_reply(&mut alice_rx);
+        relay
+            .add_group_member(&alice.peer_id(), "127.0.0.1", &group_id, &carol.peer_id())
+            .await;
+        read_reply(&mut alice_rx);
+
+        relay
+            .send_group_message(
+                &alice.peer_id(),
+                "127.0.0.1",
+                &group_id,
+                env(&alice.peer_id(), "ignored", 42),
+            )
+            .await;
+
+        // Alice gets a single ack (and no envelope copy for herself).
+        let reply = read_reply(&mut alice_rx);
+        assert_eq!(reply["type"].as_str(), Some("ack"));
+        assert_eq!(reply["seq"].as_u64(), Some(42));
+        assert!(
+            alice_rx.try_recv().is_err(),
+            "the sender must not receive its own group copy"
+        );
+
+        // Bob and carol each get a copy with the recipient rewritten.
+        let bob_msg = read_reply(&mut bob_rx);
+        assert_eq!(bob_msg["type"].as_str(), Some("envelope"));
+        assert_eq!(
+            bob_msg["envelope"]["recipient"].as_str(),
+            Some(bob.peer_id().as_str())
+        );
+        assert_eq!(
+            bob_msg["envelope"]["sender"].as_str(),
+            Some(alice.peer_id().as_str())
+        );
+        let carol_msg = read_reply(&mut carol_rx);
+        assert_eq!(carol_msg["type"].as_str(), Some("envelope"));
+        assert_eq!(
+            carol_msg["envelope"]["recipient"].as_str(),
+            Some(carol.peer_id().as_str())
+        );
+    }
+
+    #[tokio::test]
+    async fn send_group_message_queues_for_offline_members() {
+        let store = Store::open_in_memory().unwrap();
+        let relay = Relay::with_limiter(store, 100.0, 0.0);
+        let alice = Identity::new();
+        let bob = Identity::new(); // registered in the store but never online
+        relay
+            .inner
+            .store
+            .register_user_with_keys(
+                &bob.peer_id(),
+                &bob.curve25519_key().to_base64(),
+                &bob.ed25519_key().to_base64(),
+                unix_now(),
+            )
+            .unwrap();
+        let mut alice_rx = online_peer(&relay, &alice).await;
+
+        relay
+            .create_group(&alice.peer_id(), "127.0.0.1", "Squad")
+            .await;
+        let group_id = read_reply(&mut alice_rx)["group_id"]
+            .as_str()
+            .expect("group_id must be set")
+            .to_string();
+        relay
+            .add_group_member(&alice.peer_id(), "127.0.0.1", &group_id, &bob.peer_id())
+            .await;
+        read_reply(&mut alice_rx);
+
+        relay
+            .send_group_message(
+                &alice.peer_id(),
+                "127.0.0.1",
+                &group_id,
+                env(&alice.peer_id(), "any", 7),
+            )
+            .await;
+        assert_eq!(read_reply(&mut alice_rx)["type"].as_str(), Some("ack"));
+
+        // Bob is offline, so his copy lands in the SQLite queue for him.
+        assert_eq!(relay.inner.store.count_for(&bob.peer_id()), 1);
+        let queued = relay.inner.store.list_for(&bob.peer_id(), unix_now());
+        assert_eq!(queued.len(), 1);
+        assert_eq!(queued[0].recipient, bob.peer_id());
+        assert_eq!(queued[0].sender, alice.peer_id());
+    }
+
+    #[tokio::test]
+    async fn send_group_message_rejects_non_member() {
+        let store = Store::open_in_memory().unwrap();
+        let relay = Relay::with_limiter(store, 100.0, 0.0);
+        let alice = Identity::new();
+        let carol = Identity::new();
+        let mut alice_rx = online_peer(&relay, &alice).await;
+        let mut carol_rx = online_peer(&relay, &carol).await;
+
+        relay
+            .create_group(&alice.peer_id(), "127.0.0.1", "Squad")
+            .await;
+        let group_id = read_reply(&mut alice_rx)["group_id"]
+            .as_str()
+            .expect("group_id must be set")
+            .to_string();
+
+        relay
+            .send_group_message(
+                &carol.peer_id(),
+                "127.0.0.1",
+                &group_id,
+                env(&carol.peer_id(), "x", 1),
+            )
+            .await;
+        let reply = read_reply(&mut carol_rx);
+        assert_eq!(reply["type"].as_str(), Some("error"));
+        assert_eq!(reply["code"].as_str(), Some("not_a_member"));
+
+        // Unknown group.
+        relay
+            .send_group_message(
+                &alice.peer_id(),
+                "127.0.0.1",
+                "ghost",
+                env(&alice.peer_id(), "x", 2),
+            )
+            .await;
+        let reply = read_reply(&mut alice_rx);
+        assert_eq!(reply["type"].as_str(), Some("error"));
+        assert_eq!(reply["code"].as_str(), Some("group_not_found"));
+    }
+
+    #[tokio::test]
+    async fn send_group_message_rejects_spoofed_sender() {
+        let store = Store::open_in_memory().unwrap();
+        let relay = Relay::with_limiter(store, 100.0, 0.0);
+        let alice = Identity::new();
+        let bob = Identity::new();
+        let mut alice_rx = online_peer(&relay, &alice).await;
+        let mut bob_rx = online_peer(&relay, &bob).await;
+
+        relay
+            .create_group(&alice.peer_id(), "127.0.0.1", "Squad")
+            .await;
+        let group_id = read_reply(&mut alice_rx)["group_id"]
+            .as_str()
+            .expect("group_id must be set")
+            .to_string();
+        relay
+            .add_group_member(&alice.peer_id(), "127.0.0.1", &group_id, &bob.peer_id())
+            .await;
+        read_reply(&mut alice_rx);
+
+        // Alice claims to be Bob inside a group envelope.
+        relay
+            .send_group_message(
+                &alice.peer_id(),
+                "127.0.0.1",
+                &group_id,
+                env(&bob.peer_id(), "spoofed", 99),
+            )
+            .await;
+        let reply = read_reply(&mut alice_rx);
+        assert_eq!(reply["type"].as_str(), Some("error"));
+        assert_eq!(reply["code"].as_str(), Some("sender_mismatch"));
+        assert!(
+            bob_rx.try_recv().is_err(),
+            "a spoofed group envelope must not be delivered"
+        );
+    }
+
+    #[tokio::test]
+    async fn leave_group_removes_member_and_revokes_send() {
+        let store = Store::open_in_memory().unwrap();
+        let relay = Relay::with_limiter(store, 100.0, 0.0);
+        let alice = Identity::new();
+        let bob = Identity::new();
+        let mut alice_rx = online_peer(&relay, &alice).await;
+        let mut bob_rx = online_peer(&relay, &bob).await;
+
+        relay
+            .create_group(&alice.peer_id(), "127.0.0.1", "Squad")
+            .await;
+        let group_id = read_reply(&mut alice_rx)["group_id"]
+            .as_str()
+            .expect("group_id must be set")
+            .to_string();
+        relay
+            .add_group_member(&alice.peer_id(), "127.0.0.1", &group_id, &bob.peer_id())
+            .await;
+        read_reply(&mut alice_rx);
+
+        relay
+            .leave_group(&bob.peer_id(), "127.0.0.1", &group_id)
+            .await;
+        let reply = read_reply(&mut bob_rx);
+        assert_eq!(reply["type"].as_str(), Some("group_member_left"));
+        assert_eq!(reply["group_id"].as_str(), Some(group_id.as_str()));
+        assert!(!relay.inner.store.is_group_member(&group_id, &bob.peer_id()));
+
+        // Bob can no longer send to the group.
+        relay
+            .send_group_message(
+                &bob.peer_id(),
+                "127.0.0.1",
+                &group_id,
+                env(&bob.peer_id(), "x", 1),
+            )
+            .await;
+        let reply = read_reply(&mut bob_rx);
+        assert_eq!(reply["type"].as_str(), Some("error"));
+        assert_eq!(reply["code"].as_str(), Some("not_a_member"));
+    }
+
+    #[tokio::test]
+    async fn get_group_info_requires_membership() {
+        let store = Store::open_in_memory().unwrap();
+        let relay = Relay::with_limiter(store, 100.0, 0.0);
+        let alice = Identity::new();
+        let carol = Identity::new();
+        let mut alice_rx = online_peer(&relay, &alice).await;
+        let mut carol_rx = online_peer(&relay, &carol).await;
+
+        relay
+            .create_group(&alice.peer_id(), "127.0.0.1", "Squad")
+            .await;
+        let group_id = read_reply(&mut alice_rx)["group_id"]
+            .as_str()
+            .expect("group_id must be set")
+            .to_string();
+
+        relay
+            .get_group_info(&carol.peer_id(), "127.0.0.1", &group_id)
+            .await;
+        let reply = read_reply(&mut carol_rx);
+        assert_eq!(reply["type"].as_str(), Some("error"));
+        assert_eq!(reply["code"].as_str(), Some("not_a_member"));
+    }
+
+    #[tokio::test]
+    async fn group_operations_are_rate_limited_per_ip() {
+        let store = Store::open_in_memory().unwrap();
+        let relay = Relay::with_limiter(store, 1.0, 0.0);
+        let alice = Identity::new();
+        let mut alice_rx = online_peer(&relay, &alice).await;
+
+        relay
+            .create_group(&alice.peer_id(), "10.0.0.1", "First")
+            .await;
+        assert_eq!(
+            read_reply(&mut alice_rx)["type"].as_str(),
+            Some("group_created")
+        );
+
+        relay
+            .create_group(&alice.peer_id(), "10.0.0.1", "Second")
+            .await;
+        let reply = read_reply(&mut alice_rx);
+        assert_eq!(reply["type"].as_str(), Some("error"));
+        assert_eq!(reply["code"].as_str(), Some("rate_limited"));
+
+        // A different IP has its own group bucket.
+        relay
+            .create_group(&alice.peer_id(), "10.0.0.2", "Third")
+            .await;
+        assert_eq!(
+            read_reply(&mut alice_rx)["type"].as_str(),
+            Some("group_created")
+        );
     }
 
     /// Read the single text reply queued for a peer and parse it as JSON.

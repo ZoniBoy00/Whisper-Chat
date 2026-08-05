@@ -19,14 +19,17 @@
 //! - [`prekey`]: authenticated [`PreKeyBundle`]s used for the X3DH handshake.
 //! - [`profile`]: signed username bindings and profile helpers.
 //! - [`session`]: Double Ratchet sessions on top of the X3DH handshake.
+//! - [`group`]: Megolm group sessions for end-to-end encrypted group chat.
 //! - [`wire`]: versioned, serde-compatible protocol types used by the relay.
 
+pub mod group;
 pub mod identity;
 pub mod prekey;
 pub mod profile;
 pub mod session;
 pub mod wire;
 
+pub use group::{GroupError, InboundGroup, OutboundGroup};
 pub use identity::{HelloError, Identity, IdentityError, SignedHello};
 pub use prekey::{PreKeyBundle, PreKeyBundleError};
 pub use profile::{
