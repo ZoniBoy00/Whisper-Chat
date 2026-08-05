@@ -57,10 +57,26 @@ fn generate_identity(app: tauri::AppHandle) -> Result<IdentityInfo, String> {
     })
 }
 
+/// Delete the persisted identity file, returning it to the onboarding state.
+/// Missing files are treated as success so the command is idempotent.
+#[tauri::command]
+fn delete_identity(app: tauri::AppHandle) -> Result<(), String> {
+    let path = identity_path(&app)?;
+    match fs::remove_file(&path) {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(e.to_string()),
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
-        .invoke_handler(tauri::generate_handler![get_identity, generate_identity])
+        .invoke_handler(tauri::generate_handler![
+            get_identity,
+            generate_identity,
+            delete_identity
+        ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }

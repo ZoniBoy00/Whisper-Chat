@@ -11,8 +11,8 @@ export interface IdentityInfo {
 
 function FullScreenLoader() {
   return (
-    <div className="flex h-screen items-center justify-center bg-[#0a0e14]">
-      <Loader2 className="h-6 w-6 animate-spin text-slate-500" />
+    <div className="flex h-screen items-center justify-center bg-wp-bg">
+      <Loader2 className="h-6 w-6 animate-spin text-wp-faint" />
     </div>
   );
 }
@@ -39,19 +39,28 @@ export default function App() {
     void loadIdentity();
   }, [loadIdentity]);
 
+  const handleReset = useCallback(async () => {
+    try {
+      await invoke("delete_identity");
+    } catch {
+      // Ignore delete failures — reloading will just keep the current view.
+    }
+    await loadIdentity();
+  }, [loadIdentity]);
+
   if (loading) {
     return <FullScreenLoader />;
   }
 
   if (error) {
     return (
-      <div className="flex h-screen flex-col items-center justify-center gap-4 bg-[#0a0e14] text-slate-300">
+      <div className="flex h-screen flex-col items-center justify-center gap-4 bg-wp-bg text-wp-dim">
         <p className="text-sm">Could not load your identity.</p>
-        <p className="max-w-md truncate text-xs text-slate-500">{error}</p>
+        <p className="max-w-md truncate text-xs text-wp-faint">{error}</p>
         <button
           type="button"
           onClick={() => void loadIdentity()}
-          className="rounded-lg bg-violet-600 px-4 py-2 text-sm font-medium text-white transition hover:bg-violet-500"
+          className="rounded-xl bg-wp-accent px-4 py-2 text-sm font-semibold text-wp-deep transition hover:bg-wp-accent-strong"
         >
           Retry
         </button>
@@ -63,5 +72,5 @@ export default function App() {
     return <Onboarding onCreated={(peerId) => setIdentity({ peer_id: peerId, exists: true })} />;
   }
 
-  return <MainView peerId={identity.peer_id} />;
+  return <MainView peerId={identity.peer_id} onReset={() => void handleReset()} />;
 }

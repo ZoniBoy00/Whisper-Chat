@@ -4,6 +4,24 @@
 
 :root {
   color-scheme: dark;
+
+  /* Whisper dark theme — Signal-inspired palette. Colors are stored as RGB
+     triplets so Tailwind can apply arbitrary alpha via <alpha-value>. */
+  --wp-bg: 17 20 23; /* #111417 — app background */
+  --wp-bg-deep: 11 14 16; /* #0b0e10 — deepest surfaces */
+  --wp-panel: 26 31 36; /* #1a1f24 — sidebars / panels */
+  --wp-panel-2: 31 37 43; /* #1f252b — raised surfaces / hover */
+  --wp-panel-3: 40 47 54; /* #282f36 — inputs / borders hover */
+  --wp-line: 255 255 255; /* borders — used with low alpha */
+  --wp-text: 233 237 242; /* #e9edf2 — primary text */
+  --wp-text-dim: 139 148 158; /* #8b949e — secondary text */
+  --wp-text-faint: 104 112 122; /* #68707a — muted text */
+  --wp-accent: 20 184 166; /* #14b8a6 — Whisper teal accent */
+  --wp-accent-strong: 13 148 136; /* #0d9488 — accent hover */
+  --wp-bubble-out: 15 87 79; /* #0f574f — own message bubble */
+  --wp-bubble-out-2: 18 104 94; /* #12685e — own bubble gradient end */
+  --wp-bubble-in: 38 44 51; /* #262c33 — incoming bubble */
+  --wp-danger: 248 113 113; /* #f87171 — destructive actions */
 }
 
 html,
@@ -14,8 +32,8 @@ body,
 
 body {
   margin: 0;
-  background-color: #0a0e14;
-  color: #e5e9f0;
+  background-color: rgb(var(--wp-bg));
+  color: rgb(var(--wp-text));
   font-family:
     "Inter",
     system-ui,
@@ -25,4 +43,57 @@ body {
     sans-serif;
   -webkit-font-smoothing: antialiased;
   overflow: hidden;
+}
+
+/* Slim, unobtrusive scrollbars for the sidebar and message list. */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: rgb(var(--wp-panel-3)) transparent;
+}
+*::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+*::-webkit-scrollbar-thumb {
+  background: rgb(var(--wp-panel-3));
+  border-radius: 999px;
+}
+*::-webkit-scrollbar-thumb:hover {
+  background: rgb(var(--wp-text-faint));
+}
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::selection {
+  background: rgba(var(--wp-accent), 0.3);
+}
+
+/* Subtle entrance animation used by the onboarding view. */
+@keyframes fade-in-up {
+  from {
+    opacity: 0;
+    transform: translateY(14px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+.animate-fade-in-up {
+  animation: fade-in-up 0.45s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+@keyframes pop-in {
+  from {
+    opacity: 0;
+    transform: scale(0.96);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+.animate-pop-in {
+  animation: pop-in 0.2s ease-out both;
 }
