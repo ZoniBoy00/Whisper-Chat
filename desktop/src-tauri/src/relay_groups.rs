@@ -184,19 +184,19 @@ impl RelayClient {
     /// Fetch a group's public metadata and member roster from the relay.
     pub async fn get_group_info(&self, group_id: &str) -> Result<GroupInfo, RelayError> {
         let (tx, rx) = oneshot::channel();
-        mutex_guard(&self.inner.pending_group_info)?.push_back(tx);
+        mutex_guard(&self.inner.pending_group_info)?.push_back((group_id.to_string(), tx));
         if let Err(err) = self.send_json(&ClientMessage::GetGroupInfo {
             group_id: group_id.to_string(),
         }) {
-            mutex_guard(&self.inner.pending_group_info)?.pop_back();
+            mutex_guard(&self.inner.pending_group_info)?.retain(|(gid, _)| gid != group_id);
             return Err(err);
         }
 
         let info = match tokio::time::timeout(PREKEY_FETCH_TIMEOUT, rx).await {
             Err(_) => {
-                // The reply never arrived. Drop the waiter so a late reply can
-                // never misalign the FIFO pending queue for later requests.
-                mutex_guard(&self.inner.pending_group_info)?.pop_front();
+                // The reply never arrived. Drop this group's waiter so a late
+                // reply can never misroute a later request for another group.
+                mutex_guard(&self.inner.pending_group_info)?.retain(|(gid, _)| gid != group_id);
                 return Err(RelayError::GroupTimeout);
             }
             Ok(inner) => inner.map_err(|_| RelayError::GroupRequestFailed)??,
@@ -965,15 +965,21 @@ impl RelayClient {
                 outbound: None,
             });
         }
-        if let Some(tx) = mutex_guard(&self.inner.pending_group_info)?.pop_front() {
-            let _ = tx.send(Ok(GroupInfo {
-                group_id,
-                name,
-                owner_peer_id,
-                avatar_url,
-                members,
-                my_role,
-            }));
+        // Resolve the matching request by group ID (concurrent lookups may be
+        // answered out of order, so FIFO would misroute them).
+        {
+            let mut pending = mutex_guard(&self.inner.pending_group_info)?;
+            if let Some(pos) = pending.iter().position(|(gid, _)| gid == &group_id) {
+                let (_, tx) = pending.remove(pos).expect("position must be in bounds");
+                let _ = tx.send(Ok(GroupInfo {
+                    group_id,
+                    name,
+                    owner_peer_id,
+                    avatar_url,
+                    members,
+                    my_role,
+                }));
+            }
         }
         Ok(())
     }

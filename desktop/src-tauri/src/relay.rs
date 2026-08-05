@@ -965,8 +965,11 @@ struct RelayInner {
     pending_group_created: Mutex<VecDeque<oneshot::Sender<GroupCreatedResponse>>>,
     /// In-flight `add_group_member` requests, resolved in FIFO order.
     pending_group_member_added: Mutex<VecDeque<oneshot::Sender<GroupMemberAddedResponse>>>,
-    /// In-flight `get_group_info` requests, resolved in FIFO order.
-    pending_group_info: Mutex<VecDeque<oneshot::Sender<GroupInfoResponse>>>,
+    /// In-flight `get_group_info` requests keyed by group ID. The relay may
+    /// answer concurrent requests out of order, so a plain FIFO queue would
+    /// misroute replies (one request timing out while another receives the
+    /// group_info) — resolve by matching the group ID instead.
+    pending_group_info: Mutex<VecDeque<(String, oneshot::Sender<GroupInfoResponse>)>>,
     /// In-flight promote/demote/remove/leave confirmations, resolved in FIFO
     /// order (the relay answers each request in turn).
     pending_group_op: Mutex<VecDeque<oneshot::Sender<GroupOpResponse>>>,
@@ -1701,7 +1704,9 @@ impl RelayClient {
                     mutex_guard(&self.inner.pending_group_member_added)?.pop_front()
                 {
                     let _ = tx.send(Err(err));
-                } else if let Some(tx) = mutex_guard(&self.inner.pending_group_info)?.pop_front() {
+                } else if let Some((_, tx)) =
+                    mutex_guard(&self.inner.pending_group_info)?.pop_front()
+                {
                     let _ = tx.send(Err(err));
                 } else if let Some(tx) = mutex_guard(&self.inner.pending_group_op)?.pop_front() {
                     let _ = tx.send(Err(err));
