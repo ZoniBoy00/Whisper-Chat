@@ -274,8 +274,8 @@ tester → reviewer → report → approval → push.
 
 **✅ Done (2026-08-05):**
 - [x] Phase 0: workspace, CI, AGENTS.md, .gitignore
-- [x] Phase 1: `e2ee-core` (vodozemac) — 23/23 tests
-- [x] Phase 2: relay + SQLite + fetch_since + rate limit + signed hello (spoofing protection) — 25/25 tests, smoke 19/19
+- [x] Phase 1: `e2ee-core` (vodozemac) — 48/48 tests
+- [x] Phase 2: relay + SQLite + fetch_since + rate limit + signed hello (spoofing protection) — 108/108 tests, smoke 67/67
 - [x] Code hardening: release profiles, systemd template, .env.example
 - [x] Rename `ghost-relay` → `whisper-relay` (crate, `WHISPER_*` env vars, deploy unit)
 
