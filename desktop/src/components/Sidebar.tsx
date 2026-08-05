@@ -13,6 +13,7 @@ import {
 } from "lucide-react";
 import type { Conversation, PresenceInfo, ProfileInfo } from "../types";
 import { cx, formatTime, mediaUrl, shortPeerId } from "../lib/format";
+import { conversationPreview } from "../lib/chatList";
 import { searchUsers } from "../lib/relay";
 import { Avatar } from "./Avatar";
 import { CopyButton } from "./CopyButton";
@@ -438,13 +439,7 @@ export function Sidebar({
                     ) : null}
                   </div>
                   <p className="truncate text-sm text-wp-dim">
-                    {last
-                      ? `${last.outgoing ? "You: " : ""}${last.text}`
-                      : isGroup
-                        ? `${conversation.memberCount ?? 0} members`
-                        : conversation.displayName
-                          ? shortPeerId(conversation.peerId)
-                          : ""}
+                    {conversationPreview(conversation)}
                   </p>
                 </div>
               </button>
