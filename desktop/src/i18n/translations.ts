@@ -105,6 +105,11 @@ export const translations = {
     "sidebar.connecting": "Connecting\u2026",
     "sidebar.disconnected": "Disconnected",
     "sidebar.reconnect": "Reconnect",
+    "sidebar.tab_chats": "Chats",
+    "sidebar.tab_contacts": "Contacts",
+    "sidebar.no_contacts": "No contacts yet",
+    "sidebar.no_contacts_hint":
+      "Add someone by their Whisper ID to start chatting.",
 
     // ---- Chat surface ----------------------------------------------------
     "chat.select_conversation": "Select a conversation",
@@ -484,6 +489,11 @@ export const translations = {
     "sidebar.connecting": "Yhdistetään…",
     "sidebar.disconnected": "Ei yhteyttä",
     "sidebar.reconnect": "Yhdistä",
+    "sidebar.tab_chats": "Keskustelut",
+    "sidebar.tab_contacts": "Kaverit",
+    "sidebar.no_contacts": "Ei kavereita vielä",
+    "sidebar.no_contacts_hint":
+      "Lisää joku Whisper-tunnuksella aloittaaksesi keskustelun.",
 
     // ---- Chat surface ----------------------------------------------------
     "chat.select_conversation": "Valitse keskustelu",

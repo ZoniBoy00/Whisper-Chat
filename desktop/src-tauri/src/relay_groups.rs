@@ -371,6 +371,9 @@ impl RelayClient {
             groups.remove(group_id);
         }
         if let Ok(mut inbound) = mutex_guard(&self.inner.inbound_groups) {
+            // Multi-sender inbound sessions live in a nested map keyed by
+            // (group_id, sender): dropping the outer key removes every
+            // sender's session for this group at once.
             inbound.remove(group_id);
         }
         if let Ok(mut contacts) = write_guard(&self.inner.contacts) {
@@ -433,7 +436,19 @@ impl RelayClient {
     async fn refresh_group_roster_and_outbound(&self, group_id: &str) -> Result<(), RelayError> {
         // The roster refresh populates `my_role`, which `needs_outbound_session`
         // depends on to decide whether this identity may establish.
-        self.get_group_info(group_id).await?;
+        match self.get_group_info(group_id).await {
+            Ok(_) => {}
+            Err(RelayError::Relay(code)) if code == "not_a_member" || code == "group_not_found" => {
+                // We are no longer a member of this group (left it, or were
+                // removed while offline). Drop the stale local entry so a
+                // re-hydrated legacy group does not linger in the chat list —
+                // this also cleans up groups that predate the fix where
+                // `forget_group` did not wipe the persisted inbound sessions.
+                self.forget_group(group_id);
+                return Ok(());
+            }
+            Err(err) => return Err(err),
+        }
         if self.needs_outbound_session(group_id)? {
             let group_name = read_guard(&self.inner.groups)?
                 .get(group_id)
