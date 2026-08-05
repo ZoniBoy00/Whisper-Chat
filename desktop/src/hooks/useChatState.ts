@@ -139,6 +139,9 @@ export interface ChatStateApi {
   /** Transfer group ownership to `peerId`, then resync the roster and our own
    *  role so the UI reflects the new owner immediately. */
   transferOwnership: (groupId: string, peerId: string) => Promise<void>;
+  /** Wipe every message and unread badge from the React state after a
+   *  `clear_chat_history` backend call. */
+  clearHistory: () => void;
 }
 
 /** Owns the chat state (contacts, messages, groups, connection, presence,
@@ -572,6 +575,14 @@ export function useChatState({
     [refresh]
   );
 
+  /** Clear every message and unread badge locally after the backend has wiped
+   *  the store. Contacts, groups, presence and the active conversation stay —
+   *  only the decrypted history disappears. */
+  const clearHistory = useCallback(() => {
+    setMessages({});
+    setUnread({});
+  }, []);
+
   return {
     contacts,
     myDisplayName,
@@ -598,5 +609,6 @@ export function useChatState({
     deleteMessage,
     leaveGroup,
     transferOwnership,
+    clearHistory,
   };
 }

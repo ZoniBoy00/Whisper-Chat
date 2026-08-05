@@ -41,6 +41,8 @@ interface ChatViewProps {
   relayUrl: string;
   onSend: (text: string) => void;
   onTypingChange: (isTyping: boolean) => void;
+  /** Whether Enter sends a message in the composer (off: Enter = new line). */
+  enterToSend: boolean;
   /** Opens the contact's profile dialog (WhatsApp/Signal style). */
   onOpenProfile: () => void;
   /** Opens the group info panel (WhatsApp/Signal style). Only set for groups. */
@@ -70,6 +72,7 @@ export function ChatView({
   relayUrl,
   onSend,
   onTypingChange,
+  enterToSend,
   onOpenProfile,
   onOpenGroupInfo,
   onDeleteMessage,
@@ -525,7 +528,11 @@ export function ChatView({
         />
       ) : null}
 
-      <Composer onSend={onSend} onTypingChange={onTypingChange} />
+      <Composer
+        onSend={onSend}
+        onTypingChange={onTypingChange}
+        enterToSend={enterToSend}
+      />
     </main>
   );
 }

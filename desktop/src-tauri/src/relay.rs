@@ -638,6 +638,22 @@ pub struct Settings {
     /// to English when unset.
     #[serde(default)]
     pub language: Option<String>,
+    /// Whether closing the window hides it to the system tray instead of
+    /// quitting the app (WhatsApp-style background chat).
+    #[serde(default)]
+    pub minimize_to_tray: bool,
+    /// Whether Enter sends a message in the composer. When off, Enter inserts a
+    /// new line and Ctrl+Enter sends.
+    #[serde(default = "default_true")]
+    pub enter_to_send: bool,
+    /// Message bubble font scale ("small", "normal", "large"); the UI owns the
+    /// valid values. `None`/empty means the default "normal" scale.
+    #[serde(default)]
+    pub message_font_scale: Option<String>,
+    /// Whether the app registers itself to launch at system startup (mirrors
+    /// the OS-level autostart registration so the toggle restores on restart).
+    #[serde(default)]
+    pub autostart: bool,
 }
 
 /// Serde default for the opt-out boolean preferences above.
@@ -657,6 +673,10 @@ impl Default for Settings {
             notification_preview: true,
             notification_sound: true,
             language: None,
+            minimize_to_tray: false,
+            enter_to_send: true,
+            message_font_scale: None,
+            autostart: false,
         }
     }
 }
@@ -679,6 +699,14 @@ pub struct SettingsPatch {
     pub notification_sound: Option<bool>,
     #[serde(default)]
     pub language: Option<String>,
+    #[serde(default)]
+    pub minimize_to_tray: Option<bool>,
+    #[serde(default)]
+    pub enter_to_send: Option<bool>,
+    #[serde(default)]
+    pub message_font_scale: Option<String>,
+    #[serde(default)]
+    pub autostart: Option<bool>,
 }
 
 /// Thread-safe handle to the relay client, managed as Tauri state.
@@ -1642,6 +1670,10 @@ impl RelayClient {
             notification_preview,
             notification_sound,
             language,
+            minimize_to_tray,
+            enter_to_send,
+            message_font_scale,
+            autostart,
             stored_group_outbound,
             stored_group_inbound,
         ) = {
@@ -1664,6 +1696,10 @@ impl RelayClient {
                 store.get_setting("notification_preview")?,
                 store.get_setting("notification_sound")?,
                 store.get_setting("language")?,
+                store.get_setting("minimize_to_tray")?,
+                store.get_setting("enter_to_send")?,
+                store.get_setting("message_font_scale")?,
+                store.get_setting("autostart")?,
                 store.load_group_outbound()?,
                 store.load_group_inbound()?,
             )
@@ -1755,6 +1791,10 @@ impl RelayClient {
         settings.notification_preview = setting_bool(notification_preview, true);
         settings.notification_sound = setting_bool(notification_sound, true);
         settings.language = language.filter(|value| !value.is_empty());
+        settings.minimize_to_tray = setting_bool(minimize_to_tray, false);
+        settings.enter_to_send = setting_bool(enter_to_send, true);
+        settings.message_font_scale = message_font_scale.filter(|value| !value.is_empty());
+        settings.autostart = setting_bool(autostart, false);
         *write_guard(&self.inner.settings)? = settings;
 
         let mut profiles = read_guard(&self.inner.profiles)?.clone();
@@ -1860,6 +1900,45 @@ impl RelayClient {
         let store = store_guard.as_ref().ok_or(RelayError::StoreNotOpen)?;
         store.delete_contact(peer_id)?;
         store.delete_messages_for(peer_id)?;
+        Ok(())
+    }
+
+    /// Wipe the entire message history on THIS device: every decrypted message
+    /// in memory and every row in the encrypted store. Contacts, sessions,
+    /// groups and settings are deliberately kept — only the conversation
+    /// history (and thus nothing else) disappears.
+    pub fn clear_chat_history(&self) -> Result<(), RelayError> {
+        self.ensure_store_open()?;
+        write_guard(&self.inner.messages)?.clear();
+        let store_guard = self.store_guard()?;
+        let store = store_guard.as_ref().ok_or(RelayError::StoreNotOpen)?;
+        store.clear_messages()?;
+        Ok(())
+    }
+
+    /// Drop the cached identity and every piece of state derived from it so the
+    /// NEXT `connect` reloads the identity file from disk. Used after an
+    /// `import_identity` so a freshly restored identity takes effect without a
+    /// full process restart — the webview reloads afterwards and re-runs the
+    /// whole startup. In-memory settings/profile data are not wiped here; the
+    /// next `connect` re-hydrates them from the restored identity's store,
+    /// which is keyed to the new peer ID (like `reset`, but without deleting
+    /// the old database file — the old history simply becomes unreachable).
+    pub fn reload_identity(&self) -> Result<(), RelayError> {
+        self.inner.auto_reconnect.store(false, Ordering::SeqCst);
+        self.mark_disconnected();
+        mutex_guard(&self.inner.identity)?.take();
+        mutex_guard(&self.inner.sessions)?.clear();
+        mutex_guard(&self.inner.inbound_groups)?.clear();
+        write_guard(&self.inner.groups)?.clear();
+        write_guard(&self.inner.messages)?.clear();
+        write_guard(&self.inner.contacts)?.clear();
+        write_guard(&self.inner.presence)?.clear();
+        *write_guard(&self.inner.store)? = None;
+        if let Ok(mut seen) = self.inner.seen_envelopes.lock() {
+            seen.clear();
+        }
+        self.inner.profile_synced.store(false, Ordering::SeqCst);
         Ok(())
     }
 

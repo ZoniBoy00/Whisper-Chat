@@ -91,6 +91,10 @@ export interface SettingsPatch {
   notification_preview?: boolean;
   notification_sound?: boolean;
   language?: string;
+  minimize_to_tray?: boolean;
+  enter_to_send?: boolean;
+  message_font_scale?: string;
+  autostart?: boolean;
 }
 
 /** Persist a partial update of boolean preferences. */
@@ -108,6 +112,36 @@ export function removeContact(peerId: string): Promise<void> {
  *  untouched. */
 export function deleteMessage(peerId: string, messageId: string): Promise<void> {
   return invoke("delete_message", { peerId, messageId });
+}
+
+/** Wipe the entire message history on this device. Contacts, sessions, groups
+ *  and settings are kept — only the message history is cleared. */
+export function clearChatHistory(): Promise<void> {
+  return invoke("clear_chat_history");
+}
+
+/** Open a native save dialog and copy the identity file to the chosen
+ *  location. Resolves with the destination path on success. */
+export function exportIdentity(): Promise<string> {
+  return invoke("export_identity");
+}
+
+/** Open a native pick dialog, validate and import an identity file over the
+ *  current one. The frontend must then call `reloadIdentity` and reload the
+ *  webview for the restored identity to take effect. */
+export function importIdentity(): Promise<string> {
+  return invoke("import_identity");
+}
+
+/** Drop the cached identity so the next connect reloads it from disk. */
+export function reloadIdentity(): Promise<void> {
+  return invoke("reload_identity");
+}
+
+/** Enable or disable launching Whisper at system startup (OS-level). The
+ *  preference itself is persisted through `updateSettings`. */
+export function setAutostart(enabled: boolean): Promise<void> {
+  return invoke("set_autostart", { enabled });
 }
 
 /** Persist our own display name and announce it to the relay. */

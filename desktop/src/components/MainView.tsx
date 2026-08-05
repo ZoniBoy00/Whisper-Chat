@@ -1,14 +1,19 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import type { Theme } from "../types";
 import {
+  clearChatHistory,
   createGroup,
   demoteMember,
+  exportIdentity,
   getGroupInfo,
   getSettings,
+  importIdentity,
   promoteMember,
   registerProfile,
+  reloadIdentity,
   removeMember,
   resetRelay,
+  setAutostart,
   setAvatar,
   setPrivacy,
   setTheme as persistTheme,
@@ -47,6 +52,12 @@ export function MainView({ peerId, onReset }: MainViewProps) {
   const [notificationsEnabled, setNotificationsEnabled] = useState(true);
   const [notificationPreview, setNotificationPreview] = useState(true);
   const [notificationSound, setNotificationSound] = useState(true);
+  // Behavioral preferences (General tab): minimize-to-tray, autostart,
+  // Enter-to-send and the message font scale.
+  const [minimizeToTray, setMinimizeToTray] = useState(false);
+  const [enterToSend, setEnterToSend] = useState(true);
+  const [messageFontScale, setMessageFontScale] = useState("normal");
+  const [autostart, setAutostartState] = useState(false);
   // Dialog open state for the various overlay panels.
   const [addDialogOpen, setAddDialogOpen] = useState(false);
   const [newGroupOpen, setNewGroupOpen] = useState(false);
@@ -82,6 +93,12 @@ export function MainView({ peerId, onReset }: MainViewProps) {
     document.documentElement.dataset.theme = theme;
   }, [theme]);
 
+  // Message bubble font scale is applied the same way: a data attribute on the
+  // <html> element that `styles.css` uses to resize `.wp-msg`.
+  useEffect(() => {
+    document.documentElement.dataset.messageScale = messageFontScale;
+  }, [messageFontScale]);
+
   // Load persisted settings (relay URL + theme) once on mount so the UI
   // reflects the user's saved choices immediately.
   useEffect(() => {
@@ -100,6 +117,13 @@ export function MainView({ peerId, onReset }: MainViewProps) {
         setNotificationsEnabled(settings.notifications_enabled ?? true);
         setNotificationPreview(settings.notification_preview ?? true);
         setNotificationSound(settings.notification_sound ?? true);
+        if (settings.minimize_to_tray != null) setMinimizeToTray(settings.minimize_to_tray);
+        setEnterToSend(settings.enter_to_send ?? true);
+        const scale = settings.message_font_scale;
+        if (scale === "small" || scale === "normal" || scale === "large") {
+          setMessageFontScale(scale);
+        }
+        if (settings.autostart != null) setAutostartState(settings.autostart);
       } catch {
         // Settings are best-effort; the defaults (dark, default relay) apply.
       }
@@ -209,6 +233,86 @@ export function MainView({ peerId, onReset }: MainViewProps) {
     setNotificationSound(value);
     void updateSettings({ notification_sound: value }).catch(() => {});
   }, []);
+
+  const handleMinimizeToTrayChange = useCallback((value: boolean) => {
+    setMinimizeToTray(value);
+    void updateSettings({ minimize_to_tray: value }).catch(() => {});
+  }, []);
+
+  const handleEnterToSendChange = useCallback((value: boolean) => {
+    setEnterToSend(value);
+    void updateSettings({ enter_to_send: value }).catch(() => {});
+  }, []);
+
+  const handleMessageFontScaleChange = useCallback((value: string) => {
+    setMessageFontScale(value);
+    void updateSettings({ message_font_scale: value }).catch(() => {});
+  }, []);
+
+  /** Autostart registers the app in the OS. On failure the toggle (and the
+   *  persisted preference) is reverted so the UI never claims a registration
+   *  that is not really in place. */
+  const handleAutostartChange = useCallback(
+    (value: boolean) => {
+      setAutostartState(value);
+      void setAutostart(value)
+        .then(() => {
+          void updateSettings({ autostart: value }).catch(() => {});
+          toast(
+            value ? t("toast.autostart_enabled") : t("toast.autostart_disabled"),
+            "success"
+          );
+        })
+        .catch((err) => {
+          setAutostartState(!value);
+          void updateSettings({ autostart: !value }).catch(() => {});
+          const message = String(err).replace(/^Error:\s*/, "");
+          toast(message, "error");
+        });
+    },
+    [toast, t]
+  );
+
+  /** Backup the identity file through a native save dialog. */
+  const handleExportIdentity = useCallback(async () => {
+    try {
+      await exportIdentity();
+      toast(t("toast.identity_exported"), "success");
+    } catch (err) {
+      const message = String(err).replace(/^Error:\s*/, "");
+      toast(message, "error");
+    }
+  }, [toast, t]);
+
+  /** Import a previously backed-up identity file. After the file is in place
+   *  the cached identity is dropped and the webview reloads, so the restored
+   *  identity takes effect without a full app restart. */
+  const handleImportIdentity = useCallback(async () => {
+    try {
+      await importIdentity();
+      await reloadIdentity();
+      toast(t("toast.identity_imported"), "success");
+      toast(t("toast.identity_import_restart"), "info");
+      // Give the toasts a moment to render before the reload clears them.
+      window.setTimeout(() => window.location.reload(), 1500);
+    } catch (err) {
+      const message = String(err).replace(/^Error:\s*/, "");
+      toast(message, "error");
+    }
+  }, [toast, t]);
+
+  /** Clear the whole message history on this device, then drop every message
+   *  and unread badge from the React state so the UI updates instantly. */
+  const handleClearHistory = useCallback(async () => {
+    try {
+      await clearChatHistory();
+      chat.clearHistory();
+      toast(t("toast.history_cleared"), "success");
+    } catch (err) {
+      const message = String(err).replace(/^Error:\s*/, "");
+      toast(message, "error");
+    }
+  }, [chat.clearHistory, toast, t]);
 
   // Profile dialog wiring: opening focuses the active conversation's peer;
   // "Message" just closes the dialog (the chat is already open).
@@ -373,6 +477,7 @@ export function MainView({ peerId, onReset }: MainViewProps) {
         onOpenProfile={handleOpenProfileFor}
         onOpenGroupInfo={handleOpenGroupInfoFor}
         onRemoveContact={handleRemoveContact}
+        onLeaveGroup={handleLeaveGroup}
         pinnedIds={pinnedIds}
         onTogglePin={handleTogglePin}
         unread={chat.unread}
@@ -384,6 +489,7 @@ export function MainView({ peerId, onReset }: MainViewProps) {
         relayUrl={relayUrl}
         onSend={handleSend}
         onTypingChange={handleTypingChange}
+        enterToSend={enterToSend}
         onOpenProfile={handleOpenProfile}
         onOpenGroupInfo={
           active?.isGroup ? () => setGroupInfoGroupId(active.peerId) : undefined
@@ -454,6 +560,17 @@ export function MainView({ peerId, onReset }: MainViewProps) {
         onNotificationPreviewChange={handleNotificationPreviewChange}
         notificationSound={notificationSound}
         onNotificationSoundChange={handleNotificationSoundChange}
+        autostart={autostart}
+        onAutostartChange={handleAutostartChange}
+        minimizeToTray={minimizeToTray}
+        onMinimizeToTrayChange={handleMinimizeToTrayChange}
+        enterToSend={enterToSend}
+        onEnterToSendChange={handleEnterToSendChange}
+        messageFontScale={messageFontScale}
+        onMessageFontScaleChange={handleMessageFontScaleChange}
+        onExportIdentity={handleExportIdentity}
+        onImportIdentity={handleImportIdentity}
+        onClearHistory={handleClearHistory}
       />
     </div>
   );

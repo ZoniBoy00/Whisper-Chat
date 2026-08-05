@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import {
   Copy,
   Loader2,
+  LogOut,
   MessageCircle,
   MessageCirclePlus,
   MoreVertical,
@@ -61,6 +62,8 @@ interface SidebarProps {
   onOpenGroupInfo: (groupId: string) => void;
   /** Remove a 1:1 contact locally (context menu). */
   onRemoveContact: (peerId: string) => void;
+  /** Leave a group (context menu, all members). */
+  onLeaveGroup: (groupId: string) => void | Promise<void>;
   /** IDs of conversations pinned to the top (client-side). */
   pinnedIds: string[];
   /** Toggle whether a conversation is pinned. */
@@ -104,6 +107,7 @@ export function Sidebar({
   onOpenProfile,
   onOpenGroupInfo,
   onRemoveContact,
+  onLeaveGroup,
   pinnedIds,
   onTogglePin,
   unread,
@@ -579,6 +583,14 @@ export function Sidebar({
                 danger: true,
                 icon: <UserX className="h-4 w-4" />,
                 onSelect: () => onRemoveContact(conversation.peerId),
+              });
+            } else {
+              items.push({
+                id: "leave-group",
+                label: t("groupInfo.leave_group"),
+                danger: true,
+                icon: <LogOut className="h-4 w-4" />,
+                onSelect: () => void onLeaveGroup(conversation.peerId),
               });
             }
             return items;

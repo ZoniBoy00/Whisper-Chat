@@ -45,6 +45,23 @@ interface SettingsDialogProps {
   /** Plays a short chime for incoming messages. */
   notificationSound: boolean;
   onNotificationSoundChange: (value: boolean) => void;
+  /** Whether the app registers itself to launch at system startup. */
+  autostart: boolean;
+  onAutostartChange: (value: boolean) => void;
+  /** Whether closing the window hides to the system tray instead of quitting. */
+  minimizeToTray: boolean;
+  onMinimizeToTrayChange: (value: boolean) => void;
+  /** Whether Enter sends a message (off: Enter = new line, Ctrl+Enter sends). */
+  enterToSend: boolean;
+  onEnterToSendChange: (value: boolean) => void;
+  /** Message bubble font scale: "small" | "normal" | "large". */
+  messageFontScale: string;
+  onMessageFontScaleChange: (value: string) => void;
+  /** Identity backup/restore through a native file dialog. */
+  onExportIdentity: () => Promise<void>;
+  onImportIdentity: () => Promise<void>;
+  /** Wipe the whole message history on this device. */
+  onClearHistory: () => Promise<void>;
 }
 
 /** The dialog frame around the settings tabs: native `<dialog>` handling
@@ -77,6 +94,17 @@ export function SettingsDialog({
   onNotificationPreviewChange,
   notificationSound,
   onNotificationSoundChange,
+  autostart,
+  onAutostartChange,
+  minimizeToTray,
+  onMinimizeToTrayChange,
+  enterToSend,
+  onEnterToSendChange,
+  messageFontScale,
+  onMessageFontScaleChange,
+  onExportIdentity,
+  onImportIdentity,
+  onClearHistory,
 }: SettingsDialogProps) {
   const { t } = useI18n();
   const dialogRef = useRef<HTMLDialogElement>(null);
@@ -156,6 +184,16 @@ export function SettingsDialog({
                 onSetAvatar={onSetAvatar}
                 onReset={onReset}
                 onBusyChange={handleBusyChange}
+                autostart={autostart}
+                onAutostartChange={onAutostartChange}
+                minimizeToTray={minimizeToTray}
+                onMinimizeToTrayChange={onMinimizeToTrayChange}
+                enterToSend={enterToSend}
+                onEnterToSendChange={onEnterToSendChange}
+                messageFontScale={messageFontScale}
+                onMessageFontScaleChange={onMessageFontScaleChange}
+                onExportIdentity={onExportIdentity}
+                onImportIdentity={onImportIdentity}
               />
               <PrivacyTab
                 active={activeTab === "privacy"}
@@ -165,6 +203,7 @@ export function SettingsDialog({
                 onReadReceiptsChange={onReadReceiptsChange}
                 typingIndicator={typingIndicator}
                 onTypingIndicatorChange={onTypingIndicatorChange}
+                onClearHistory={onClearHistory}
               />
               <NotificationsTab
                 active={activeTab === "notifications"}

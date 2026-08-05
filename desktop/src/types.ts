@@ -161,6 +161,16 @@ export interface AppSettings {
   notification_sound?: boolean;
   /** The UI language ("en" or "fi"). */
   language?: string;
+  /** Whether closing the window hides it to the system tray instead of
+   *  quitting (WhatsApp-style background chat). */
+  minimize_to_tray?: boolean;
+  /** Whether Enter sends a message. When off, Enter inserts a new line and
+   *  Ctrl+Enter sends. */
+  enter_to_send?: boolean;
+  /** Message bubble font scale: "small", "normal" or "large". */
+  message_font_scale?: string;
+  /** Whether the app registers itself to launch at system startup. */
+  autostart?: boolean;
 }
 
 /** One captured client log line, returned by the `get_client_logs` command. */

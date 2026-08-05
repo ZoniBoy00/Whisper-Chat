@@ -392,6 +392,20 @@ dialog.wp-dialog::backdrop {
   -webkit-user-select: text;
 }
 
+/* Message bubble font scaling. The `data-message-scale` attribute on the
+   <html> element is driven by the "Message font size" setting; the default
+   (no attribute or "normal") keeps the base 15px, "small" and "large" nudge
+   the bubble text. The timestamp row stays at its own fixed size. */
+.wp-msg {
+  font-size: 15px;
+}
+[data-message-scale="small"] .wp-msg {
+  font-size: 13px;
+}
+[data-message-scale="large"] .wp-msg {
+  font-size: 17px;
+}
+
 /* In-chat message search: every match is tinted with the accent color; the
    active result (current position in the ↑/↓ navigation) pops fully. */
 mark.chat-mark {

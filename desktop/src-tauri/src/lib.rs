@@ -5,17 +5,20 @@ use std::time::Duration;
 
 use serde::Serialize;
 use tauri::{Listener, Manager, State};
+use tauri_plugin_autostart::ManagerExt;
 use tokio::sync::Notify;
 
 mod log_buffer;
 mod relay;
 mod store;
+mod tray;
 
 use log_buffer::{init_tracing, LogBuffer, LogEntry};
 use relay::{
     ChatState, GroupInfo, PeerProfile, PresenceInfo, ProfileSearchResult, RelayClient, Settings,
     SettingsPatch,
 };
+use tray::setup_tray;
 
 /// Resolve the on-disk location of the persisted identity.
 ///
@@ -283,6 +286,83 @@ async fn delete_message(
         .map_err(|e| e.to_string())
 }
 
+/// Wipe the entire message history on this device (every conversation). The
+/// contacts, sessions, groups and settings are kept — only the decrypted
+/// message history is cleared, in memory and in the encrypted store.
+#[tauri::command]
+async fn clear_chat_history(state: State<'_, RelayClient>) -> Result<(), String> {
+    state.clear_chat_history().map_err(|e| e.to_string())
+}
+
+/// Open a native save dialog and copy the persisted identity file to the
+/// chosen location, so the user can back it up off-device. Resolves with the
+/// destination path on success. Fails when no identity exists yet or when the
+/// dialog is cancelled.
+#[tauri::command]
+async fn export_identity(app: tauri::AppHandle) -> Result<String, String> {
+    use tauri_plugin_dialog::DialogExt;
+    let source = identity_path(&app)?;
+    if !source.exists() {
+        return Err("no local identity to back up".to_string());
+    }
+    let target = app
+        .dialog()
+        .file()
+        .add_filter("Whisper identity", &["json"])
+        .set_file_name("whisper-identity.json")
+        .blocking_save_file()
+        .ok_or_else(|| "identity export cancelled".to_string())?;
+    let target = target.into_path().map_err(|e| e.to_string())?;
+    fs::copy(&source, &target).map_err(|e| e.to_string())?;
+    Ok(target.display().to_string())
+}
+
+/// Open a native pick dialog, validate the selected file as a Whisper identity
+/// and copy it over the persisted identity file. The frontend then drops the
+/// cached identity (`reload_identity`) and reloads the webview so the restored
+/// identity takes effect — a full app restart is not required.
+#[tauri::command]
+async fn import_identity(app: tauri::AppHandle) -> Result<String, String> {
+    use tauri_plugin_dialog::DialogExt;
+    let picked = app
+        .dialog()
+        .file()
+        .add_filter("Whisper identity", &["json"])
+        .blocking_pick_file()
+        .ok_or_else(|| "identity import cancelled".to_string())?;
+    let source = picked.into_path().map_err(|e| e.to_string())?;
+    let json = fs::read_to_string(&source).map_err(|e| e.to_string())?;
+    // Validate the JSON parses as a real identity before touching the file on
+    // disk, so a corrupt or foreign file can never brick the app.
+    e2ee_core::Identity::from_json(&json).map_err(|e| e.to_string())?;
+    let target = identity_path(&app)?;
+    if let Some(dir) = target.parent() {
+        fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+    }
+    fs::write(&target, json).map_err(|e| e.to_string())?;
+    Ok(target.display().to_string())
+}
+
+/// Drop the cached identity so the next `connect` reloads it from disk. Called
+/// after a successful `import_identity`, before the webview reloads.
+#[tauri::command]
+async fn reload_identity(state: State<'_, RelayClient>) -> Result<(), String> {
+    state.reload_identity().map_err(|e| e.to_string())
+}
+
+/// Enable or disable launching Whisper at system startup (the OS-level
+/// autostart registration). The preference itself is persisted separately
+/// through `update_settings`.
+#[tauri::command]
+async fn set_autostart(app: tauri::AppHandle, enabled: bool) -> Result<(), String> {
+    let manager = app.autolaunch();
+    if enabled {
+        manager.enable().map_err(|e| e.to_string())
+    } else {
+        manager.disable().map_err(|e| e.to_string())
+    }
+}
+
 /// Return the most recent client log lines from the in-process ring buffer.
 /// `limit` caps the number of lines; the newest lines are returned.
 #[tauri::command]
@@ -485,12 +565,43 @@ pub fn run() {
         // reliable inside the Tauri webview, so the plugin talks to the OS
         // directly).
         .plugin(tauri_plugin_notification::init())
+        // Native save/pick dialogs for the identity backup/restore feature
+        // (called from Rust commands, not the webview).
+        .plugin(tauri_plugin_dialog::init())
+        // OS-level "launch at startup" registration, wired to the autostart
+        // setting in the General tab.
+        .plugin(tauri_plugin_autostart::init(
+            tauri_plugin_autostart::MacosLauncher::LaunchAgent,
+            None,
+        ))
         // Re-injected on every page load so a navigation (or a window that was
         // still booting when the setup hook ran) can never bring the browser
         // menu back.
         .on_page_load(|webview, payload| {
             if payload.event() == tauri::webview::PageLoadEvent::Finished {
                 let _ = webview.eval(SUPPRESS_CONTEXT_MENU_SCRIPT);
+            }
+        })
+        // "Minimize to tray on close": when the setting is on, closing the main
+        // window hides it (the app keeps running in the tray) instead of
+        // quitting. When off, the close is allowed to proceed normally. Only
+        // the main window is affected — the splash handoff calls `close()` on
+        // the splash window and must never be swallowed.
+        .on_window_event(|window, event| {
+            if window.label() != "main" {
+                return;
+            }
+            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                let minimize_to_tray = window
+                    .app_handle()
+                    .try_state::<RelayClient>()
+                    .and_then(|client| client.get_settings().ok())
+                    .map(|settings| settings.minimize_to_tray)
+                    .unwrap_or(false);
+                if minimize_to_tray {
+                    api.prevent_close();
+                    let _ = window.hide();
+                }
             }
         })
         .setup(|app| {
@@ -502,6 +613,8 @@ pub fn run() {
             app.manage(log_buffer);
 
             app.manage(RelayClient::new(app.handle().clone()));
+
+            setup_tray(app.handle())?;
 
             setup_splash_screen(app)?;
 
@@ -518,6 +631,7 @@ pub fn run() {
             get_chat_state,
             disconnect_relay,
             reset_relay,
+            reload_identity,
             get_settings,
             set_relay_url,
             set_theme,
@@ -525,6 +639,7 @@ pub fn run() {
             update_settings,
             remove_contact,
             delete_message,
+            clear_chat_history,
             set_display_name,
             send_typing,
             get_presence,
@@ -541,7 +656,10 @@ pub fn run() {
             transfer_ownership,
             leave_group,
             get_client_logs,
-            append_client_log
+            append_client_log,
+            export_identity,
+            import_identity,
+            set_autostart
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
