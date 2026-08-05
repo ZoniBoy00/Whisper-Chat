@@ -1,8 +1,13 @@
+/** Delivery state of an outgoing message. */
+export type MessageStatus = "sent" | "delivered";
+
 export interface Message {
   id: string;
   text: string;
   outgoing: boolean;
   timestamp: number;
+  /** Outgoing only: "sent" by default, "delivered" once the relay acks. */
+  status?: MessageStatus;
 }
 
 export interface Conversation {
@@ -29,4 +34,16 @@ export interface ChatMessageEvent {
 /** Payload of the `relay-status` event emitted on connect/disconnect. */
 export interface RelayStatusEvent {
   connected: boolean;
+}
+
+/** Payload of the `message-status` event emitted on a delivery ack. */
+export interface MessageStatusEvent {
+  client_id: string;
+  status: MessageStatus;
+}
+
+/** Settings snapshot returned by the `get_settings` command. */
+export interface AppSettings {
+  relay_url?: string;
+  theme?: "dark" | "light";
 }

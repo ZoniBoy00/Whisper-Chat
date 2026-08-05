@@ -22,6 +22,7 @@ export default {
           faint: "rgb(var(--wp-text-faint) / <alpha-value>)",
           accent: "rgb(var(--wp-accent) / <alpha-value>)",
           "accent-strong": "rgb(var(--wp-accent-strong) / <alpha-value>)",
+          "accent-fg": "rgb(var(--wp-accent-fg) / <alpha-value>)",
           "bubble-out": "rgb(var(--wp-bubble-out) / <alpha-value>)",
           "bubble-out-2": "rgb(var(--wp-bubble-out-2) / <alpha-value>)",
           "bubble-in": "rgb(var(--wp-bubble-in) / <alpha-value>)",

@@ -85,7 +85,7 @@ export function Onboarding({ onCreated }: OnboardingProps) {
             type="button"
             onClick={() => void createIdentity()}
             disabled={creating}
-            className="inline-flex items-center justify-center gap-2 rounded-xl bg-wp-accent px-6 py-3.5 text-sm font-semibold text-wp-deep shadow-lg shadow-wp-accent/25 transition hover:bg-wp-accent-strong disabled:cursor-not-allowed disabled:opacity-60"
+            className="inline-flex items-center justify-center gap-2 rounded-xl bg-wp-accent px-6 py-3.5 text-sm font-semibold text-wp-accent-fg shadow-lg shadow-wp-accent/25 transition hover:bg-wp-accent-strong disabled:cursor-not-allowed disabled:opacity-60"
           >
             {creating ? (
               <Loader2 className="h-4 w-4 animate-spin" />

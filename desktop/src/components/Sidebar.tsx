@@ -4,6 +4,8 @@ import {
   MessageCirclePlus,
   MoreVertical,
   Search,
+  SearchX,
+  Settings,
   SquarePen,
   Trash2,
   UserPlus,
@@ -22,6 +24,7 @@ interface SidebarProps {
   connectionError: string | null;
   onSelect: (id: string) => void;
   onAddContact: () => void;
+  onOpenSettings: () => void;
   onReconnect: () => void;
   onReset: () => void;
 }
@@ -35,11 +38,18 @@ export function Sidebar({
   connectionError,
   onSelect,
   onAddContact,
+  onOpenSettings,
   onReconnect,
   onReset,
 }: SidebarProps) {
   const [menuOpen, setMenuOpen] = useState(false);
   const [confirming, setConfirming] = useState(false);
+  const [query, setQuery] = useState("");
+
+  const trimmedQuery = query.trim().toLowerCase();
+  const filteredConversations = conversations.filter((conversation) =>
+    conversation.peerId.toLowerCase().includes(trimmedQuery)
+  );
 
   const toggleMenu = () => {
     setMenuOpen((open) => !open);
@@ -68,6 +78,15 @@ export function Sidebar({
           <p className="truncate font-mono text-xs text-wp-dim">{peerId}</p>
         </div>
         <CopyButton value={peerId} />
+        <button
+          type="button"
+          onClick={onOpenSettings}
+          title="Settings"
+          aria-label="Settings"
+          className="rounded-lg p-1.5 text-wp-dim transition hover:bg-wp-panel-2 hover:text-wp-text"
+        >
+          <Settings className="h-4 w-4" />
+        </button>
         <div className="relative">
           <button
             type="button"
@@ -114,8 +133,12 @@ export function Sidebar({
           <Search className="h-4 w-4 shrink-0 text-wp-faint" />
           <input
             id="search-conversations"
-            type="text"
-            placeholder="Search conversations"
+            type="search"
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            placeholder="Search by Whisper ID"
+            autoComplete="off"
+            spellCheck={false}
             className="w-full bg-transparent text-sm text-wp-text placeholder-wp-faint outline-none"
           />
         </div>
@@ -155,14 +178,28 @@ export function Sidebar({
             <button
               type="button"
               onClick={onAddContact}
-              className="mt-1 inline-flex items-center gap-2 rounded-xl bg-wp-accent px-4 py-2 text-xs font-semibold text-wp-deep transition hover:bg-wp-accent-strong"
+              className="mt-1 inline-flex items-center gap-2 rounded-xl bg-wp-accent px-4 py-2 text-xs font-semibold text-wp-accent-fg transition hover:bg-wp-accent-strong"
             >
               <UserPlus className="h-3.5 w-3.5" />
               New Chat
             </button>
           </div>
+        ) : filteredConversations.length === 0 ? (
+          <div className="flex h-full flex-col items-center justify-center gap-3 px-6 text-center">
+            <div className="rounded-full bg-wp-panel-2 p-3 text-wp-faint">
+              <SearchX className="h-5 w-5" />
+            </div>
+            <div>
+              <p className="text-sm font-medium text-wp-dim">
+                No conversations found
+              </p>
+              <p className="mt-1 text-xs leading-relaxed text-wp-faint">
+                No Whisper IDs match your search.
+              </p>
+            </div>
+          </div>
         ) : (
-          conversations.map((conversation) => {
+          filteredConversations.map((conversation) => {
             const last = conversation.messages[conversation.messages.length - 1];
             const active = conversation.id === activeId;
             return (

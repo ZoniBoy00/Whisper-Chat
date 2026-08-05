@@ -1,4 +1,4 @@
-import { CheckCheck } from "lucide-react";
+import { Check, CheckCheck } from "lucide-react";
 import type { Message } from "../types";
 import { cx, formatTime } from "../lib/format";
 
@@ -8,6 +8,8 @@ interface MessageBubbleProps {
 
 export function MessageBubble({ message }: MessageBubbleProps) {
   const { outgoing } = message;
+  const delivered = outgoing && message.status === "delivered";
+  const StatusIcon = delivered ? CheckCheck : Check;
 
   return (
     <div
@@ -30,7 +32,14 @@ export function MessageBubble({ message }: MessageBubbleProps) {
             outgoing ? "text-wp-accent" : "text-wp-faint"
           )}
         >
-          {outgoing ? <CheckCheck className="h-3 w-3" strokeWidth={2.4} /> : null}
+          {outgoing ? (
+            <StatusIcon
+              className="h-3 w-3"
+              strokeWidth={2.4}
+              role="img"
+              aria-label={delivered ? "Delivered" : "Sent"}
+            />
+          ) : null}
           <span className="text-[10px] font-medium tabular-nums">
             {formatTime(message.timestamp)}
           </span>
