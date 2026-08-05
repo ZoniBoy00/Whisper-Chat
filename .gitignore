@@ -17,6 +17,11 @@ desktop/src-tauri/gen/
 # Server runtime data (never commit ciphertext DBs)
 server/data/
 
+# Local second-instance test files (WHISPER_IDENTITY_FILE / PROFILES override)
+identity2.json
+profiles2.json
+sessions2.json
+
 # Local agent skills & tooling (not part of the project source)
 .agents/
 skills-lock.json
