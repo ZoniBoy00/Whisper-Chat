@@ -504,6 +504,37 @@ async fn leave_group(state: State<'_, RelayClient>, group_id: String) -> Result<
         .map_err(|e| e.to_string())
 }
 
+/// Add a peer to a group's roster after creation (owner or admin only). On
+/// success every existing member shares its own Megolm session key to the new
+/// member over a 1:1 encrypted channel.
+#[tauri::command]
+async fn add_group_member(
+    state: State<'_, RelayClient>,
+    group_id: String,
+    peer_id: String,
+) -> Result<(), String> {
+    state
+        .add_group_member(&group_id, &peer_id)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// Set a group's avatar image (base64, ≤2 MB; raw base64 without the
+/// `data:image/...;base64,` prefix). The relay stores the blob content
+/// addressed and exposes it as `avatar_url` in the group metadata. Owner or
+/// admin only.
+#[tauri::command]
+async fn set_group_avatar(
+    state: State<'_, RelayClient>,
+    group_id: String,
+    avatar: String,
+) -> Result<(), String> {
+    state
+        .set_group_avatar(&group_id, &avatar)
+        .await
+        .map_err(|e| e.to_string())
+}
+
 /// Suppresses the WebView2 default right-click menu (Reload/Inspect/Copy/...)
 /// on every window. Tauri 2.11 has no `Webview::on_menu` / `prevent_default`
 /// API — `on_menu_event` only reports native app-menu clicks — so the supported
@@ -650,11 +681,13 @@ pub fn run() {
             watch_presence,
             create_group,
             get_group_info,
+            add_group_member,
             promote_member,
             demote_member,
             remove_member,
             transfer_ownership,
             leave_group,
+            set_group_avatar,
             get_client_logs,
             append_client_log,
             export_identity,

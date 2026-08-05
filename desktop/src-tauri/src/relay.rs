@@ -291,6 +291,11 @@ enum ClientMessage {
     /// becomes an admin; `peer_id` takes over the owner role.
     #[serde(rename = "transfer_ownership")]
     TransferOwnership { group_id: String, peer_id: String },
+    /// Set a group's avatar image (base64, ≤2 MB). The relay stores the blob
+    /// content-addressed and exposes it as `avatar_url` in group metadata.
+    /// Only the owner or an admin may change the avatar.
+    #[serde(rename = "set_group_avatar")]
+    SetGroupAvatar { group_id: String, avatar: String },
 }
 
 /// Messages the SERVER sends to the client (matches `server/src/relay.rs`).
@@ -354,12 +359,17 @@ enum ServerMessage {
     #[serde(rename = "group_member_left")]
     GroupMemberLeft { group_id: String, peer_id: String },
     /// The public metadata + member roster of a group (`get_group_info` reply).
-    /// `members` carries each member's role (owner/admin/member).
+    /// `members` carries each member's role (owner/admin/member). `avatar_url`
+    /// is the public path of the group avatar blob (`/media/{hash}`), `null`
+    /// when the group has none; it defaults to `None` so replies from older
+    /// relays still parse.
     #[serde(rename = "group_info")]
     GroupInfo {
         group_id: String,
         name: String,
         owner_peer_id: String,
+        #[serde(default)]
+        avatar_url: Option<String>,
         members: Vec<GroupMember>,
     },
     /// Confirmation that `peer_id` was promoted to admin (`promote_member`
@@ -381,6 +391,10 @@ enum ServerMessage {
         group_id: String,
         new_owner_peer_id: String,
     },
+    /// Confirmation that a group's avatar was updated (`set_group_avatar`
+    /// reply).
+    #[serde(rename = "group_avatar_set")]
+    GroupAvatarSet { group_id: String },
     /// A protocol error code.
     Error { code: String },
 }
@@ -436,14 +450,24 @@ pub struct GroupMember {
 /// A group's public metadata as reported to the UI: the name, the owner and
 /// every member with its role. `my_role` is this identity's own role in the
 /// group (`None` while unknown), which drives the permission-gated controls in
-/// the group info panel.
+/// the group info panel. `avatar_url` is the public path of the group avatar
+/// blob (`/media/{hash}`), `None` when the group has none.
 #[derive(Debug, Clone, Serialize)]
 pub struct GroupInfo {
     pub group_id: String,
     pub name: String,
     pub owner_peer_id: String,
+    pub avatar_url: Option<String>,
     pub members: Vec<GroupMember>,
     pub my_role: Option<String>,
+}
+
+/// Payload of the `group-removed` event emitted when the relay pushes a
+/// `group_member_removed` for our own peer ID (the owner removed us from a
+/// group). The UI drops the group and shows a toast.
+#[derive(Debug, Clone, Serialize)]
+pub struct GroupRemovedEvent {
+    pub group_id: String,
 }
 
 /// A message in a shape the UI can render directly.
@@ -1301,6 +1325,7 @@ impl RelayClient {
                     .find(|m| m.role == "owner")
                     .map(|m| m.peer_id.clone())
                     .unwrap_or_default(),
+                avatar_url: group.avatar_url.clone(),
                 members: group.members.clone(),
                 my_role: group.my_role.clone(),
             })
@@ -1414,8 +1439,9 @@ impl RelayClient {
                 group_id,
                 name,
                 owner_peer_id,
+                avatar_url,
                 members,
-            } => self.handle_group_info(group_id, name, owner_peer_id, members),
+            } => self.handle_group_info(group_id, name, owner_peer_id, avatar_url, members),
             ServerMessage::GroupMemberPromoted { group_id, peer_id } => {
                 self.handle_group_member_promoted(&group_id, &peer_id)
             }
@@ -1429,6 +1455,7 @@ impl RelayClient {
                 group_id,
                 new_owner_peer_id,
             } => self.handle_ownership_transferred(&group_id, &new_owner_peer_id),
+            ServerMessage::GroupAvatarSet { group_id } => self.handle_group_avatar_set(&group_id),
             ServerMessage::Error { code } => {
                 let err = RelayError::Relay(code);
                 // Resolve the oldest outstanding request across every queue.
@@ -1729,6 +1756,7 @@ impl RelayClient {
                             name,
                             members: Vec::new(),
                             my_role: Some("owner".to_string()),
+                            avatar_url: None,
                             outbound: Some(outbound),
                         },
                     );
@@ -1748,6 +1776,7 @@ impl RelayClient {
                         name,
                         members: Vec::new(),
                         my_role: None,
+                        avatar_url: None,
                         outbound: None,
                     });
                 }

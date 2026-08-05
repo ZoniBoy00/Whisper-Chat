@@ -21,6 +21,7 @@ import {
   getProfile,
   onChatMessage,
   onContactUpdated,
+  onGroupRemoved,
   onMessageStatus,
   onPresence,
   onReconnecting,
@@ -37,6 +38,7 @@ import {
 } from "../lib/relay";
 import { shortPeerId } from "../lib/format";
 import { playNotificationSound } from "../lib/sound";
+import { useToast } from "./useToast";
 
 /** Whether the OS-level notification permission has been granted. */
 let notificationPermission = false;
@@ -110,6 +112,9 @@ interface UseChatStateParams {
 export interface ChatStateApi {
   contacts: ContactInfo[];
   myDisplayName: string | null;
+  /** Our own avatar path ("/media/{hash}") from the persisted chat-state
+   *  snapshot; null when unset. Reliable without a live relay round-trip. */
+  myAvatarUrl: string | null;
   messages: Record<string, Message[]>;
   groups: GroupInfo[];
   connected: boolean;
@@ -153,8 +158,10 @@ export function useChatState({
   notificationSound,
   t,
 }: UseChatStateParams): ChatStateApi {
+  const { toast } = useToast();
   const [contacts, setContacts] = useState<ContactInfo[]>([]);
   const [myDisplayName, setMyDisplayName] = useState<string | null>(null);
+  const [myAvatarUrl, setMyAvatarUrl] = useState<string | null>(null);
   const [messages, setMessages] = useState<Record<string, Message[]>>({});
   const [groups, setGroups] = useState<GroupInfo[]>([]);
   const [connected, setConnected] = useState(false);
@@ -216,6 +223,7 @@ export function useChatState({
       setGroups(state.groups);
       setConnected(state.connected);
       setMyDisplayName(state.my_display_name);
+      setMyAvatarUrl(state.my_avatar_url);
       setPresence(state.presence);
     } catch {
       // Transient failure; event listeners resync the next state change.
@@ -380,6 +388,31 @@ export function useChatState({
           );
         })
       );
+      const groupRemovedUnlisten = await register(() =>
+        onGroupRemoved(({ group_id }) => {
+          if (disposed) return;
+          // The owner removed us from a group: drop it from every local list
+          // and close the conversation if it was open. This is an online-only
+          // push in the MVP — an offline member learns about the removal on
+          // its next connect, when the relay stops listing it as a member.
+          setContacts((prev) => prev.filter((c) => c.peer_id !== group_id));
+          setGroups((prev) => prev.filter((g) => g.group_id !== group_id));
+          setMessages((prev) => {
+            if (!(group_id in prev)) return prev;
+            const next = { ...prev };
+            delete next[group_id];
+            return next;
+          });
+          setUnread((counts) => {
+            if (!(group_id in counts)) return counts;
+            const next = { ...counts };
+            delete next[group_id];
+            return next;
+          });
+          setActivePeerId((prev) => (prev === group_id ? null : prev));
+          toast(t("toast.group_removed"), "error");
+        })
+      );
       if (
         disposed ||
         !chatUnlisten ||
@@ -388,7 +421,8 @@ export function useChatState({
         !messageStatusUnlisten ||
         !typingUnlisten ||
         !contactUpdatedUnlisten ||
-        !presenceUnlisten
+        !presenceUnlisten ||
+        !groupRemovedUnlisten
       ) {
         return;
       }
@@ -586,6 +620,7 @@ export function useChatState({
   return {
     contacts,
     myDisplayName,
+    myAvatarUrl,
     messages,
     groups,
     connected,

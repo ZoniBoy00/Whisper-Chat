@@ -49,6 +49,8 @@ export interface GroupInfo {
   members: GroupMember[];
   /** Our own role in the group; null while unknown. */
   my_role: GroupRole | null;
+  /** Server avatar path ("/media/{hash}"); null when the group has no photo. */
+  avatar_url?: string | null;
 }
 
 /** A known conversation peer plus the public profile data they advertise. */
@@ -141,6 +143,12 @@ export interface PresenceEvent {
   peer_id: string;
   online: boolean;
   last_seen: number | null;
+}
+
+/** Payload of the `group-removed` event emitted when the owner removes us from
+ *  a group (online push). */
+export interface GroupRemovedEvent {
+  group_id: string;
 }
 
 /** Settings snapshot returned by the `get_settings` command. */

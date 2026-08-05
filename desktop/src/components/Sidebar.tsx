@@ -468,7 +468,7 @@ export function Sidebar({
                   <Avatar
                     name={displayName}
                     size={44}
-                    src={isGroup ? null : avatarSrc}
+                    src={avatarSrc}
                     variant={isGroup ? "group" : "peer"}
                   />
                   {online && !isGroup ? (

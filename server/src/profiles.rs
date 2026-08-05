@@ -391,8 +391,8 @@ impl Relay {
 
     /// Decode a base64 avatar blob and enforce the size bound. Returns `Err`
     /// when the input is not valid base64, empty or larger than
-    /// [`MAX_AVATAR_BYTES`].
-    fn decode_avatar(raw: &str) -> Result<Vec<u8>, ()> {
+    /// [`MAX_AVATAR_BYTES`]. Shared by profile and group avatars.
+    pub(crate) fn decode_avatar(raw: &str) -> Result<Vec<u8>, ()> {
         let bytes = STANDARD.decode(raw).map_err(|_| ())?;
         if bytes.is_empty() || bytes.len() > MAX_AVATAR_BYTES {
             return Err(());
@@ -402,8 +402,8 @@ impl Relay {
 
     /// Write an avatar blob to `media/<sha256>.bin` and return the hex SHA-256
     /// used as its storage key. Content-addressed: identical blobs share one
-    /// file, so re-uploads are idempotent.
-    fn store_avatar(media_dir: &Path, bytes: &[u8]) -> Result<String, ()> {
+    /// file, so re-uploads are idempotent. Shared by profile and group avatars.
+    pub(crate) fn store_avatar(media_dir: &Path, bytes: &[u8]) -> Result<String, ()> {
         let digest = Sha256::digest(bytes);
         let hash = Self::hex_encode(&digest);
         let path = media_dir.join(format!("{hash}.bin"));
@@ -421,7 +421,7 @@ impl Relay {
     }
 
     /// Lowercase hex encoding of a byte slice (SHA-256 digests, peer IDs).
-    fn hex_encode(bytes: &[u8]) -> String {
+    pub(crate) fn hex_encode(bytes: &[u8]) -> String {
         const HEX: &[u8; 16] = b"0123456789abcdef";
         let mut out = String::with_capacity(bytes.len() * 2);
         for byte in bytes {

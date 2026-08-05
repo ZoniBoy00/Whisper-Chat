@@ -6,6 +6,7 @@ import type {
   ChatState,
   ContactUpdatedEvent,
   GroupInfo,
+  GroupRemovedEvent,
   LogEntry,
   MessageStatusEvent,
   PresenceEvent,
@@ -222,6 +223,26 @@ export function getGroupInfo(groupId: string): Promise<GroupInfo> {
   return invoke("get_group_info", { groupId });
 }
 
+/** Add a peer to a group's roster after creation (owner or admin only). Every
+ *  existing member shares its own Megolm session key to the new member over a
+ *  1:1 encrypted channel. */
+export function addGroupMember(groupId: string, peerId: string): Promise<void> {
+  return invoke("add_group_member", { groupId, peerId });
+}
+
+/**
+ * Set a group's avatar image. `avatarBase64` is raw base64 WITHOUT the
+ * `data:image/...;base64,` prefix — the backend stores the bytes under
+ * /media/{hash} and the group's avatar_url starts pointing there. Owner or
+ * admin only.
+ */
+export function setGroupAvatar(
+  groupId: string,
+  avatarBase64: string
+): Promise<void> {
+  return invoke("set_group_avatar", { groupId, avatar: avatarBase64 });
+}
+
 /** Promote a member to group admin (owner or admin only). */
 export function promoteMember(groupId: string, peerId: string): Promise<void> {
   return invoke("promote_member", { groupId, peerId });
@@ -306,6 +327,16 @@ export function onContactUpdated(
   handler: (event: ContactUpdatedEvent) => void
 ): Promise<UnlistenFn> {
   return listen<ContactUpdatedEvent>("contact-updated", (event) =>
+    handler(event.payload)
+  );
+}
+
+/** Subscribe to `group-removed` pushes (the owner removed us from a group).
+ *  Returns an unlisten function. */
+export function onGroupRemoved(
+  handler: (event: GroupRemovedEvent) => void
+): Promise<UnlistenFn> {
+  return listen<GroupRemovedEvent>("group-removed", (event) =>
     handler(event.payload)
   );
 }

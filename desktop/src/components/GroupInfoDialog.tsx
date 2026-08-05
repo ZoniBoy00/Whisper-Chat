@@ -1,14 +1,15 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import type { ChangeEvent } from "react";
 import {
   ArrowLeftRight,
   Crown,
+  ImagePlus,
   Loader2,
   LogOut,
   ShieldCheck,
   Trash2,
   UserMinus,
   UserPlus,
-  Users,
   X,
 } from "lucide-react";
 import type { ContactInfo, GroupInfo, GroupMember, ProfileInfo } from "../types";
@@ -18,6 +19,11 @@ import type { TFunction } from "../i18n/types";
 import { useI18n } from "../i18n/I18nContext";
 import { useToast } from "../hooks/useToast";
 import { Avatar } from "./Avatar";
+
+/** Whisper IDs are 24 lowercase hex characters. */
+const PEER_ID_PATTERN = /^[0-9a-f]{24}$/i;
+/** Uploaded group photos are capped at 2 MiB, mirroring the relay. */
+const MAX_AVATAR_BYTES = 2 * 1024 * 1024;
 
 /** A member's resolved public identity: the best-known name, username and
  *  avatar path, merged from the roster lookup (contact list + one-time profile
@@ -34,6 +40,10 @@ interface GroupInfoDialogProps {
   groupId: string | null;
   onOpenChange: (open: boolean) => void;
   onFetchInfo: (groupId: string) => Promise<GroupInfo>;
+  /** Add a member to the group's roster after creation (owner/admin). */
+  onAddMember: (groupId: string, peerId: string) => Promise<void>;
+  /** Set the group's avatar image (raw base64, ≤2 MB; owner/admin). */
+  onSetGroupAvatar: (groupId: string, avatarBase64: string) => Promise<void>;
   onPromote: (groupId: string, peerId: string) => Promise<void>;
   onDemote: (groupId: string, peerId: string) => Promise<void>;
   onRemove: (groupId: string, peerId: string) => Promise<void>;
@@ -90,6 +100,8 @@ export function GroupInfoDialog({
   groupId,
   onOpenChange,
   onFetchInfo,
+  onAddMember,
+  onSetGroupAvatar,
   onPromote,
   onDemote,
   onRemove,
@@ -108,6 +120,11 @@ export function GroupInfoDialog({
   const [confirmingLeave, setConfirmingLeave] = useState(false);
   const [transferTarget, setTransferTarget] = useState("");
   const [confirmingTransfer, setConfirmingTransfer] = useState(false);
+  // Add-member input: the Whisper ID of the peer being invited.
+  const [addMemberInput, setAddMemberInput] = useState("");
+  const [addMemberError, setAddMemberError] = useState<string | null>(null);
+  // Group-photo upload errors (type / size validation happens client-side).
+  const [avatarError, setAvatarError] = useState<string | null>(null);
   // Profiles fetched for roster members the contact list does not know yet.
   const [memberProfiles, setMemberProfiles] = useState<Record<string, ProfileInfo>>({});
 
@@ -207,6 +224,9 @@ export function GroupInfoDialog({
       setConfirmingTransfer(false);
       setTransferTarget("");
       setError(null);
+      setAddMemberInput("");
+      setAddMemberError(null);
+      setAvatarError(null);
       dialog.showModal();
       if (groupId) void reload(groupId);
     } else if (!open && dialog.open) {
@@ -259,6 +279,83 @@ export function GroupInfoDialog({
    *  confirmation (like leaving), a second click executes. On success the
    *  dialog reloads so the caller's role badge and the transfer control
    *  reflect the new owner right away. */
+  /** Add a member by Whisper ID (owner/admin): validates the peer ID, runs the
+   *  relay call (which shares every member's Megolm key to the newcomer) and
+   *  reloads the roster so the new member and count appear immediately. */
+  const handleAddMember = async () => {
+    if (!groupId) return;
+    const peerId = addMemberInput.trim().toLowerCase();
+    if (!PEER_ID_PATTERN.test(peerId)) {
+      setAddMemberError(t("groupInfo.invalid_peer_id_24"));
+      return;
+    }
+    if (info?.members.some((m) => m.peer_id === peerId)) {
+      setAddMemberError(t("groupInfo.member_already_in_group"));
+      return;
+    }
+    setBusyPeer("__add_member__");
+    setError(null);
+    setAddMemberError(null);
+    try {
+      await onAddMember(groupId, peerId);
+      setAddMemberInput("");
+      if (groupId) await reload(groupId);
+      toast(t("toast.member_added"), "success");
+    } catch (err) {
+      const message = String(err).replace(/^Error:\s*/, "");
+      setError(message);
+      toast(message, "error");
+    } finally {
+      setBusyPeer(null);
+    }
+  };
+
+  /** Read a picked photo file, validate type/size and upload it as the group's
+   *  avatar (raw base64 without the `data:` prefix, like the profile avatar). */
+  const handleAvatarFile = (event: ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+    if (!/^image\/(png|jpe?g|webp)$/i.test(file.type)) {
+      const message = t("groupInfo.photo_type_error");
+      setAvatarError(message);
+      toast(message, "error");
+      return;
+    }
+    if (file.size > MAX_AVATAR_BYTES) {
+      const message = t("groupInfo.photo_size_error");
+      setAvatarError(message);
+      toast(message, "error");
+      return;
+    }
+    const reader = new FileReader();
+    reader.onload = () => {
+      const result = String(reader.result ?? "");
+      const comma = result.indexOf(",");
+      void applyAvatar(comma >= 0 ? result.slice(comma + 1) : result);
+    };
+    reader.readAsDataURL(file);
+    // Allow picking the same file again after a rejected/retried upload.
+    event.target.value = "";
+  };
+
+  const applyAvatar = async (avatarBase64: string) => {
+    if (!groupId) return;
+    setBusyPeer("__set_avatar__");
+    setError(null);
+    setAvatarError(null);
+    try {
+      await onSetGroupAvatar(groupId, avatarBase64);
+      if (groupId) await reload(groupId);
+      toast(t("toast.group_avatar_updated"), "success");
+    } catch (err) {
+      const message = String(err).replace(/^Error:\s*/, "");
+      setError(message);
+      toast(message, "error");
+    } finally {
+      setBusyPeer(null);
+    }
+  };
+
   const handleTransfer = async () => {
     if (!groupId || !transferTarget) return;
     if (!confirmingTransfer) {
@@ -302,9 +399,14 @@ export function GroupInfoDialog({
       <div className="w-[min(94vw,30rem)] rounded-2xl bg-wp-panel-2">
         <div className="flex items-center justify-between gap-4 border-b border-wp-line/10 px-5 py-4">
           <div className="flex items-center gap-3">
-            <div className="rounded-xl bg-wp-panel-3 p-2 text-wp-accent">
-              <Users className="h-4 w-4" aria-hidden="true" />
-            </div>
+            <Avatar
+              name={info?.name ?? undefined}
+              size={40}
+              src={
+                info?.avatar_url ? mediaUrl(relayUrl, info.avatar_url) : null
+              }
+              variant="group"
+            />
             <div>
               <h2
                 id="group-info-title"
@@ -438,6 +540,102 @@ export function GroupInfoDialog({
             <p role="alert" className="text-xs leading-snug text-wp-danger">
               {error}
             </p>
+          ) : null}
+
+          {canPromote && info ? (
+            <div className="border-t border-wp-line/10 pt-4">
+              <p className="mb-2 text-xs leading-snug text-wp-faint">
+                {t("groupInfo.add_member_hint")}
+              </p>
+              <div className="flex items-center gap-2">
+                <label className="sr-only" htmlFor="group-add-member">
+                  {t("groupInfo.add_member")}
+                </label>
+                <input
+                  id="group-add-member"
+                  type="text"
+                  value={addMemberInput}
+                  onChange={(e) => {
+                    setAddMemberInput(e.target.value);
+                    setAddMemberError(null);
+                  }}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") {
+                      e.preventDefault();
+                      void handleAddMember();
+                    }
+                  }}
+                  placeholder={t("groupInfo.add_member_placeholder")}
+                  autoComplete="off"
+                  spellCheck={false}
+                  aria-invalid={addMemberError ? true : undefined}
+                  aria-describedby={
+                    addMemberError ? "group-add-member-error" : undefined
+                  }
+                  disabled={busyPeer !== null}
+                  className="min-w-0 flex-1 rounded-xl border border-wp-line/10 bg-wp-panel-3 px-3 py-2 font-mono text-xs text-wp-text placeholder-wp-faint outline-none transition focus:border-wp-accent disabled:opacity-40"
+                />
+                <button
+                  type="button"
+                  onClick={() => void handleAddMember()}
+                  disabled={busyPeer !== null || !addMemberInput.trim()}
+                  className="inline-flex shrink-0 items-center gap-1.5 rounded-xl border border-wp-line/10 px-3 py-2 text-xs font-semibold text-wp-dim transition hover:bg-wp-panel-3 hover:text-wp-text disabled:opacity-40"
+                >
+                  {busyPeer === "__add_member__" ? (
+                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                  ) : (
+                    <UserPlus className="h-3.5 w-3.5" aria-hidden="true" />
+                  )}
+                  {t("groupInfo.add_member")}
+                </button>
+              </div>
+              {addMemberError ? (
+                <p
+                  id="group-add-member-error"
+                  role="alert"
+                  className="mt-2 text-xs leading-snug text-wp-danger"
+                >
+                  {addMemberError}
+                </p>
+              ) : null}
+            </div>
+          ) : null}
+
+          {canPromote && info ? (
+            <div className="border-t border-wp-line/10 pt-4">
+              <p className="mb-2 text-xs leading-snug text-wp-faint">
+                {t("groupInfo.change_photo_hint")}
+              </p>
+              <label
+                htmlFor="group-avatar-file"
+                className="inline-flex cursor-pointer items-center gap-2 rounded-xl border border-wp-line/10 px-3 py-2 text-xs font-semibold text-wp-dim transition hover:bg-wp-panel-3 hover:text-wp-text"
+              >
+                <ImagePlus className="h-3.5 w-3.5" aria-hidden="true" />
+                {t("groupInfo.change_photo")}
+                <input
+                  id="group-avatar-file"
+                  type="file"
+                  accept="image/png,image/jpeg,image/webp"
+                  onChange={handleAvatarFile}
+                  disabled={busyPeer !== null}
+                  className="sr-only"
+                />
+              </label>
+              {busyPeer === "__set_avatar__" ? (
+                <Loader2
+                  className="ml-2 inline h-3.5 w-3.5 animate-spin text-wp-faint"
+                  aria-hidden="true"
+                />
+              ) : null}
+              {avatarError ? (
+                <p
+                  role="alert"
+                  className="mt-2 text-xs leading-snug text-wp-danger"
+                >
+                  {avatarError}
+                </p>
+              ) : null}
+            </div>
           ) : null}
 
           <div className="border-t border-wp-line/10 pt-4">
