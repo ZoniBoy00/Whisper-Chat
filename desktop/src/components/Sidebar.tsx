@@ -32,6 +32,7 @@ import { relayErrorCode, searchUsers } from "../lib/relay";
 import { copyText } from "../lib/clipboard";
 import { useI18n } from "../i18n/I18nContext";
 import { Avatar } from "./Avatar";
+import { ContactsView } from "./ContactsView";
 import { CopyButton } from "./CopyButton";
 import { ContextMenu } from "./ContextMenu";
 import type { ContextMenuItem } from "./ContextMenu";
@@ -145,6 +146,9 @@ export function Sidebar({
   // in. The initial mount is skipped so an existing list does not replay.
   const [enteringIds, setEnteringIds] = useState<ReadonlySet<string>>(new Set());
   const seenPeerIdsRef = useRef<Set<string> | null>(null);
+  // Chats (recency-sorted conversation list) vs Contacts (all friends with
+  // live Online / Last seen status and a remove button).
+  const [view, setView] = useState<"chats" | "contacts">("chats");
 
   useEffect(() => {
     const seen = seenPeerIdsRef.current;
@@ -350,6 +354,36 @@ export function Sidebar({
         ) : null}
       </div>
 
+      {/* Chats / Contacts view switch */}
+      <div className="flex gap-1 px-4 pb-2">
+        <button
+          type="button"
+          onClick={() => setView("chats")}
+          aria-pressed={view === "chats"}
+          className={cx(
+            "flex-1 rounded-lg px-3 py-1.5 text-sm font-semibold transition",
+            view === "chats"
+              ? "bg-wp-accent text-wp-accent-fg shadow-sm"
+              : "text-wp-dim hover:bg-wp-panel-3 hover:text-wp-text"
+          )}
+        >
+          {t("sidebar.tab_chats")}
+        </button>
+        <button
+          type="button"
+          onClick={() => setView("contacts")}
+          aria-pressed={view === "contacts"}
+          className={cx(
+            "flex-1 rounded-lg px-3 py-1.5 text-sm font-semibold transition",
+            view === "contacts"
+              ? "bg-wp-accent text-wp-accent-fg shadow-sm"
+              : "text-wp-dim hover:bg-wp-panel-3 hover:text-wp-text"
+          )}
+        >
+          {t("sidebar.tab_contacts")}
+        </button>
+      </div>
+
       {/* Section header */}
       <div className="flex items-center justify-between px-4 pb-2">
         <p className="text-xs font-semibold uppercase tracking-widest text-wp-faint">
@@ -452,7 +486,19 @@ export function Sidebar({
         </div>
       ) : null}
 
-      {/* Conversation list / directory results */}
+      {/* Contacts view: all friends with live Online/Last seen + remove */}
+      {view === "contacts" ? (
+        <div className="flex-1 overflow-y-auto px-2 pb-2">
+          <ContactsView
+            contacts={conversations.filter((c) => c.isGroup !== true)}
+            presence={presence}
+            activeId={activeId}
+            onSelect={onSelect}
+            onRemoveContact={onRemoveContact}
+          />
+        </div>
+      ) : (
+      /* Conversation list / directory results */
       <div className="flex-1 overflow-y-auto px-2 pb-2">
         {serverSearchActive ? (
           serverResults === null ? (
@@ -643,6 +689,7 @@ export function Sidebar({
           })
         )}
       </div>
+      )}
 
       {rowMenu ? (
         <ContextMenu
