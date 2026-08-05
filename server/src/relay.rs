@@ -222,6 +222,12 @@ enum ClientMessage {
         group_id: String,
         new_owner_peer_id: String,
     },
+    /// Set a group's avatar image. `avatar` is a base64 image blob of at most
+    /// 2 MiB; the relay stores it content-addressed in the media directory and
+    /// exposes it through `get_group_info` as `avatar_url`. Only the group
+    /// owner or an admin may change the avatar.
+    #[serde(rename = "set_group_avatar")]
+    SetGroupAvatar { group_id: String, avatar: String },
 }
 
 /// Messages the SERVER sends to the client.
@@ -297,12 +303,14 @@ pub(crate) enum ServerMessage {
     /// The public metadata + member roster of a group (`get_group_info`
     /// reply). `members` carries each member's current role (owner/admin/
     /// member) so clients can render role badges and permission-gated
-    /// controls.
+    /// controls. `avatar_url` is the public path of the group avatar blob
+    /// (`/media/{hash}`), `null` when the group has none.
     #[serde(rename = "group_info")]
     GroupInfo {
         group_id: String,
         name: String,
         owner_peer_id: String,
+        avatar_url: Option<String>,
         members: Vec<GroupMember>,
     },
     /// Confirmation that `peer_id` was promoted to admin (`promote_member`
@@ -324,6 +332,10 @@ pub(crate) enum ServerMessage {
         group_id: String,
         new_owner_peer_id: String,
     },
+    /// Confirmation that a group's avatar was updated (`set_group_avatar`
+    /// reply).
+    #[serde(rename = "group_avatar_set")]
+    GroupAvatarSet { group_id: String },
     /// Protocol error.
     Error { code: String },
 }
@@ -633,6 +645,10 @@ impl Relay {
                             new_owner_peer_id,
                         }) => {
                             self.transfer_ownership(&peer_id, &ip, &group_id, &new_owner_peer_id)
+                                .await;
+                        }
+                        Ok(ClientMessage::SetGroupAvatar { group_id, avatar }) => {
+                            self.set_group_avatar(&peer_id, &ip, &group_id, &avatar)
                                 .await;
                         }
                         // Re-registration or protocol violations: ignore for now.

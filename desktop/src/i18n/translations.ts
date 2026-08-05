@@ -171,6 +171,18 @@ export const translations = {
     "groupInfo.transfer_owner_select_aria": "Choose the new group owner",
     "groupInfo.transfer_owner_placeholder": "Choose a member…",
     "groupInfo.close_group_info": "Close group info",
+    "groupInfo.add_member": "Add member",
+    "groupInfo.add_member_hint":
+      "Add a member by their Whisper ID. Every existing member shares their encryption key with them end-to-end.",
+    "groupInfo.add_member_placeholder": "e.g. 3f2a91c07b44d8e5a1b2c3d4",
+    "groupInfo.invalid_peer_id_24":
+      "Enter a valid 24-character Whisper ID (hex digits only).",
+    "groupInfo.member_already_in_group": "That peer is already in this group.",
+    "groupInfo.change_photo": "Change photo",
+    "groupInfo.change_photo_hint":
+      "Set a group photo. PNG, JPEG or WebP, up to 2 MB.",
+    "groupInfo.photo_type_error": "Choose a PNG, JPEG or WebP image.",
+    "groupInfo.photo_size_error": "Photo must be 2 MB or smaller.",
 
     // ---- New-group dialog ------------------------------------------------
     "newGroup.hint":
@@ -336,6 +348,9 @@ export const translations = {
     "toast.member_demoted": "Member demoted to regular member",
     "toast.member_removed": "Member removed from the group",
     "toast.group_transferred": "Group ownership transferred",
+    "toast.member_added": "Member added",
+    "toast.group_avatar_updated": "Group photo updated",
+    "toast.group_removed": "You were removed from the group",
     "toast.history_cleared": "Chat history cleared",
     "toast.identity_exported": "Identity backed up",
     "toast.identity_imported": "Identity restored",
@@ -507,6 +522,18 @@ export const translations = {
     "groupInfo.transfer_owner_select_aria": "Valitse uusi ryhmän omistaja",
     "groupInfo.transfer_owner_placeholder": "Valitse jäsen…",
     "groupInfo.close_group_info": "Sulje ryhmän tiedot",
+    "groupInfo.add_member": "Lisää jäsen",
+    "groupInfo.add_member_hint":
+      "Lisää jäsen Whisper-ID:llä. Jokainen nykyinen jäsen jakaa oman salausavaimensa uudelle jäsenelle päästä päähän.",
+    "groupInfo.add_member_placeholder": "esim. 3f2a91c07b44d8e5a1b2c3d4",
+    "groupInfo.invalid_peer_id_24":
+      "Anna kelvollinen 24-merkkinen Whisper-ID (vain heksadesimaalimerkkejä).",
+    "groupInfo.member_already_in_group": "Tämä käyttäjä on jo ryhmässä.",
+    "groupInfo.change_photo": "Vaihda kuva",
+    "groupInfo.change_photo_hint":
+      "Aseta ryhmäkuva. PNG, JPEG tai WebP, enintään 2 Mt.",
+    "groupInfo.photo_type_error": "Valitse PNG-, JPEG- tai WebP-kuva.",
+    "groupInfo.photo_size_error": "Kuvan on oltava enintään 2 Mt.",
 
     // ---- New-group dialog ------------------------------------------------
     "newGroup.hint":
@@ -671,6 +698,9 @@ export const translations = {
     "toast.member_demoted": "Ylläpitäjyys poistettu",
     "toast.member_removed": "Jäsen poistettu ryhmästä",
     "toast.group_transferred": "Ryhmän omistajuus siirretty",
+    "toast.member_added": "Jäsen lisätty",
+    "toast.group_avatar_updated": "Ryhmäkuva päivitetty",
+    "toast.group_removed": "Sinut poistettiin ryhmästä",
     "toast.history_cleared": "Keskusteluhistoria tyhjennetty",
     "toast.identity_exported": "Henkilöllisyys varmuuskopioitu",
     "toast.identity_imported": "Henkilöllisyys palautettu",

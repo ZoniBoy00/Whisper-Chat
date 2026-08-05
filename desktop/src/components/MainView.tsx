@@ -1,6 +1,7 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { Theme } from "../types";
 import {
+  addGroupMember,
   clearChatHistory,
   createGroup,
   demoteMember,
@@ -15,6 +16,7 @@ import {
   resetRelay,
   setAutostart,
   setAvatar,
+  setGroupAvatar,
   setPrivacy,
   setTheme as persistTheme,
   updateSettings,
@@ -69,6 +71,9 @@ export function MainView({ peerId, onReset }: MainViewProps) {
   const [pinnedIds, setPinnedIds] = useState<string[]>(() =>
     loadPinnedChats(peerId)
   );
+  // In-memory drafts per conversation (keyed by peer/group id). Only the
+  // composer text lives here; drafts are never persisted to the store.
+  const [drafts, setDrafts] = useState<Record<string, string>>({});
 
   const chat = useChatState({
     notificationsEnabled,
@@ -77,6 +82,11 @@ export function MainView({ peerId, onReset }: MainViewProps) {
     t,
   });
   const { myProfile, refreshOwnProfile } = useOwnProfile(peerId, chat.connected);
+  // The peer we last sent an "is typing" signal to; null when idle. Tracked so
+  // switching conversations can emit a typing-stop to exactly that peer.
+  const typingPeerRef = useRef<string | null>(null);
+  // Previous active peer, so the switch effect below can tell when it changed.
+  const prevActivePeerRef = useRef<string | null>(chat.activePeerId);
 
   // Real-time presence pushes come through the `presence` event (registered in
   // useChatState); the poll re-seeds the active peer and covers reconnects.
@@ -164,19 +174,58 @@ export function MainView({ peerId, onReset }: MainViewProps) {
 
   const handleSend = useCallback(
     (text: string) => {
-      if (!chat.activePeerId) return;
-      void chat.sendMessage(chat.activePeerId, text);
+      const active = chat.activePeerId;
+      if (!active) return;
+      void chat.sendMessage(active, text);
+      // Sending ends the draft for this conversation and the typing state.
+      setDrafts((prev) =>
+        prev[active] !== undefined ? { ...prev, [active]: "" } : prev
+      );
+      if (typingPeerRef.current === active) typingPeerRef.current = null;
     },
     [chat.activePeerId, chat.sendMessage]
   );
 
   const handleTypingChange = useCallback(
     (isTyping: boolean) => {
-      if (!chat.activePeerId) return;
-      chat.sendTyping(chat.activePeerId, isTyping);
+      const active = chat.activePeerId;
+      if (!active) return;
+      // Remember who we are signalling so a conversation switch can stop it.
+      if (isTyping) typingPeerRef.current = active;
+      else if (typingPeerRef.current === active) {
+        typingPeerRef.current = null;
+      }
+      chat.sendTyping(active, isTyping);
     },
     [chat.activePeerId, chat.sendTyping]
   );
+
+  const handleDraftChange = useCallback(
+    (text: string) => {
+      const active = chat.activePeerId;
+      if (!active) return;
+      setDrafts((prev) =>
+        prev[active] === text ? prev : { ...prev, [active]: text }
+      );
+    },
+    [chat.activePeerId]
+  );
+
+  // Leaving a conversation while typing (or with a non-empty draft) must send
+  // a typing-stop to the peer we were writing to — otherwise the old
+  // conversation shows "typing…" forever because the composer's stop timer now
+  // fires against the newly active peer.
+  useEffect(() => {
+    const previous = prevActivePeerRef.current;
+    prevActivePeerRef.current = chat.activePeerId;
+    if (!previous || previous === chat.activePeerId) return;
+    const wasTyping = typingPeerRef.current === previous;
+    const hadDraft = (drafts[previous] ?? "").trim() !== "";
+    if (wasTyping || hadDraft) {
+      if (typingPeerRef.current === previous) typingPeerRef.current = null;
+      chat.sendTyping(previous, false);
+    }
+  }, [chat.activePeerId, chat.sendTyping, drafts]);
 
   const handleRegisterUsername = useCallback(
     async (username: string) => {
@@ -195,11 +244,12 @@ export function MainView({ peerId, onReset }: MainViewProps) {
         throw new Error(t("general.register_username_first"));
       }
       await setAvatar(username, avatarBase64);
-      // Re-fetch the profile so the avatar_url (and preview) refresh.
-      await refreshOwnProfile();
+      // Re-fetch the profile so the avatar_url (and preview) refresh, and
+      // resync the chat-state snapshot so the sidebar header avatar follows.
+      await Promise.all([refreshOwnProfile(), chat.refresh()]);
       toast(t("toast.avatar_updated"), "success");
     },
-    [myProfile?.username, refreshOwnProfile, toast, t]
+    [myProfile?.username, refreshOwnProfile, chat.refresh, toast, t]
   );
 
   // Privacy / notification preference handlers: apply in memory immediately
@@ -401,6 +451,30 @@ export function MainView({ peerId, onReset }: MainViewProps) {
     [chat.refresh, toast, t]
   );
 
+  /** Add a member to a group after creation (owner/admin). The backend shares
+   *  every existing member's Megolm key to the newcomer; a refresh resyncs the
+   *  roster so the member count and the info panel update right away. */
+  const handleAddMember = useCallback(
+    async (groupId: string, peerId: string) => {
+      await addGroupMember(groupId, peerId);
+      await chat.refresh();
+      toast(t("toast.member_added"), "success");
+    },
+    [chat.refresh, toast, t]
+  );
+
+  /** Set a group's avatar (owner/admin). The backend stores the blob
+   *  content-addressed; a refresh repoints the group's avatar_url so the chat
+   *  list and header render the new photo. */
+  const handleSetGroupAvatar = useCallback(
+    async (groupId: string, avatarBase64: string) => {
+      await setGroupAvatar(groupId, avatarBase64);
+      await chat.refresh();
+      toast(t("toast.group_avatar_updated"), "success");
+    },
+    [chat.refresh, toast, t]
+  );
+
   const handleLeaveGroup = useCallback(
     async (groupId: string) => {
       try {
@@ -465,7 +539,7 @@ export function MainView({ peerId, onReset }: MainViewProps) {
       <Sidebar
         peerId={peerId}
         myDisplayName={chat.myDisplayName}
-        myAvatarUrl={myProfile?.avatar_url ?? null}
+        myAvatarUrl={chat.myAvatarUrl ?? myProfile?.avatar_url ?? null}
         conversations={conversations}
         presence={chat.presence}
         activeId={chat.activePeerId}
@@ -503,6 +577,8 @@ export function MainView({ peerId, onReset }: MainViewProps) {
           active?.isGroup ? () => setGroupInfoGroupId(active.peerId) : undefined
         }
         onDeleteMessage={handleDeleteMessage}
+        draft={chat.activePeerId ? drafts[chat.activePeerId] ?? "" : ""}
+        onDraftChange={handleDraftChange}
       />
       <AddContactDialog
         open={addDialogOpen}
@@ -522,6 +598,8 @@ export function MainView({ peerId, onReset }: MainViewProps) {
           if (!open) setGroupInfoGroupId(null);
         }}
         onFetchInfo={handleFetchGroupInfo}
+        onAddMember={handleAddMember}
+        onSetGroupAvatar={handleSetGroupAvatar}
         onPromote={handlePromote}
         onDemote={handleDemote}
         onRemove={handleRemoveMember}
@@ -550,7 +628,7 @@ export function MainView({ peerId, onReset }: MainViewProps) {
         peerId={peerId}
         myDisplayName={chat.myDisplayName}
         myUsername={myProfile?.username ?? null}
-        myAvatarUrl={myProfile?.avatar_url ?? null}
+        myAvatarUrl={chat.myAvatarUrl ?? myProfile?.avatar_url ?? null}
         theme={theme}
         onThemeChange={handleThemeChange}
         relayUrl={relayUrl}

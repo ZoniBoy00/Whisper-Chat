@@ -43,6 +43,10 @@ interface ChatViewProps {
   onTypingChange: (isTyping: boolean) => void;
   /** Whether Enter sends a message in the composer (off: Enter = new line). */
   enterToSend: boolean;
+  /** The active conversation's draft text (controlled, from the parent). */
+  draft: string;
+  /** Called with the new draft text on every composer edit. */
+  onDraftChange: (text: string) => void;
   /** Opens the contact's profile dialog (WhatsApp/Signal style). */
   onOpenProfile: () => void;
   /** Opens the group info panel (WhatsApp/Signal style). Only set for groups. */
@@ -73,6 +77,8 @@ export function ChatView({
   onSend,
   onTypingChange,
   enterToSend,
+  draft,
+  onDraftChange,
   onOpenProfile,
   onOpenGroupInfo,
   onDeleteMessage,
@@ -253,11 +259,9 @@ export function ChatView({
   const displayName = isGroup
     ? conversation.name
     : conversation.displayName ?? shortPeerId(conversation.peerId, 16);
-  const avatarSrc = isGroup
-    ? null
-    : conversation.avatarUrl
-      ? mediaUrl(relayUrl, conversation.avatarUrl)
-      : null;
+  const avatarSrc = conversation.avatarUrl
+    ? mediaUrl(relayUrl, conversation.avatarUrl)
+    : null;
   const headerClick = isGroup ? onOpenGroupInfo : onOpenProfile;
 
   return (
@@ -529,6 +533,9 @@ export function ChatView({
       ) : null}
 
       <Composer
+        value={draft}
+        onChange={onDraftChange}
+        conversationId={conversationId}
         onSend={onSend}
         onTypingChange={onTypingChange}
         enterToSend={enterToSend}

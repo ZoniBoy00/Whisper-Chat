@@ -24,6 +24,8 @@ pub(crate) struct GroupInfoState {
     pub(crate) members: Vec<GroupMember>,
     /// This identity's role in the group, when known.
     pub(crate) my_role: Option<String>,
+    /// Server avatar path ("/media/{hash}"), when the group has a photo.
+    pub(crate) avatar_url: Option<String>,
     /// Our own outbound Megolm session. In the multi-sender model EVERY member
     /// holds one (created automatically when they first receive the group's
     /// key), so each member can send to the group.
@@ -112,6 +114,7 @@ impl RelayClient {
                 name: name.to_string(),
                 members: members.clone(),
                 my_role: Some("owner".to_string()),
+                avatar_url: None,
                 outbound: Some(outbound),
             },
         );
@@ -213,9 +216,61 @@ impl RelayClient {
                 group.name = info.name.clone();
                 group.members = info.members.clone();
                 group.my_role = my_role.clone();
+                group.avatar_url = info.avatar_url.clone();
             }
         }
         Ok(GroupInfo { my_role, ..info })
+    }
+
+    /// Add an existing peer to a group's roster AFTER creation. Only the group
+    /// owner or an admin may add members.
+    ///
+    /// The relay fans a `group_member_added` push to every existing member; the
+    /// inbound handler ([`RelayClient::handle_group_member_added`]) updates the
+    /// roster and shares this identity's own Megolm outbound session key to the
+    /// newcomer over a 1:1 Double Ratchet channel, so the multi-sender model
+    /// keeps working (every member shares its own key to every new member).
+    /// The cached roster is refreshed so roles and the member count update
+    /// immediately.
+    pub async fn add_group_member(&self, group_id: &str, peer_id: &str) -> Result<(), RelayError> {
+        let (tx, rx) = oneshot::channel();
+        mutex_guard(&self.inner.pending_group_member_added)?.push_back(tx);
+        if let Err(err) = self.send_json(&ClientMessage::AddGroupMember {
+            group_id: group_id.to_string(),
+            peer_id: peer_id.to_string(),
+        }) {
+            mutex_guard(&self.inner.pending_group_member_added)?.pop_back();
+            return Err(err);
+        }
+        match tokio::time::timeout(PREKEY_FETCH_TIMEOUT, rx).await {
+            Err(_) => {
+                // The reply never arrived. Drop the waiter so a late reply can
+                // never misalign the FIFO pending queue for later requests.
+                mutex_guard(&self.inner.pending_group_member_added)?.pop_front();
+                return Err(RelayError::GroupTimeout);
+            }
+            Ok(inner) => inner.map_err(|_| RelayError::GroupRequestFailed)??,
+        }
+        // The roster push already appended the member locally; refresh roles
+        // from the server in the background.
+        self.spawn_group_info_refresh(group_id);
+        Ok(())
+    }
+
+    /// Set a group's avatar image (`avatar_b64`, base64, ≤2 MB). The relay
+    /// stores the blob content-addressed and exposes it as `avatar_url` in the
+    /// group metadata, so a `get_group_info` refresh re-renders the photo.
+    /// Only the owner or an admin may change the avatar.
+    pub async fn set_group_avatar(
+        &self,
+        group_id: &str,
+        avatar_b64: &str,
+    ) -> Result<(), RelayError> {
+        self.group_op(ClientMessage::SetGroupAvatar {
+            group_id: group_id.to_string(),
+            avatar: avatar_b64.to_string(),
+        })
+        .await
     }
 
     /// Promote `peer_id` to a group admin. The relay only allows this for the
@@ -299,6 +354,10 @@ impl RelayClient {
         } else if let ClientMessage::TransferOwnership { group_id, .. } = message {
             // The roster (and our own role) changed: refresh so the chat list
             // and group panel reflect the new owner immediately.
+            let _ = self.get_group_info(&group_id).await;
+        } else if let ClientMessage::SetGroupAvatar { group_id, .. } = message {
+            // The avatar changed: refresh so the chat list and header show the
+            // new group photo.
             let _ = self.get_group_info(&group_id).await;
         }
         Ok(())
@@ -610,6 +669,7 @@ impl RelayClient {
                 name: payload.group_name.clone(),
                 members: Vec::new(),
                 my_role: None,
+                avatar_url: None,
                 outbound: None,
             });
         // The group ID acts as a contact whose display name is the group name.
@@ -757,13 +817,21 @@ impl RelayClient {
                 name,
                 members: roster,
                 my_role: Some("owner".to_string()),
+                avatar_url: None,
                 outbound: None,
             });
         Ok(())
     }
 
-    /// A `group_member_added` reply resolves the in-flight request and keeps
-    /// the local roster in sync by appending the member.
+    /// A `group_member_added` reply resolves the in-flight request, keeps the
+    /// local roster in sync by appending the member and — in the multi-sender
+    /// model — shares this identity's own Megolm outbound session key to the
+    /// newly added member, so the newcomer can decrypt this identity's group
+    /// messages. Every existing member does the same (each receives the same
+    /// roster push), so the newcomer ends up holding every member's stream.
+    ///
+    /// The key share runs in the background because it may need a 1:1
+    /// `start_chat` round-trip (a fresh member has no established session yet).
     pub(crate) fn handle_group_member_added(
         &self,
         group_id: &str,
@@ -782,7 +850,50 @@ impl RelayClient {
                 }
             }
         }
+        let client = self.clone();
+        let group = group_id.to_string();
+        let member = peer_id.to_string();
+        tauri::async_runtime::spawn(async move {
+            if let Err(err) = client.share_group_key_to_member(&group, &member).await {
+                tracing::warn!(group = %group, member = %member, error = %err, "failed to share group key to new member");
+            }
+        });
         Ok(())
+    }
+
+    /// Share this identity's own outbound Megolm session key to `member` over
+    /// a 1:1 Double Ratchet session, so the member can decrypt this identity's
+    /// group messages. Establishes the outbound group session and the 1:1
+    /// session on demand. Best-effort per member: a member that is unreachable
+    /// (rate-limited, offline without published pre-keys) is skipped so one
+    /// failure never aborts the add flow.
+    async fn share_group_key_to_member(
+        &self,
+        group_id: &str,
+        member: &str,
+    ) -> Result<(), RelayError> {
+        // A member never shares a key to itself.
+        if member == self.my_peer_id()? {
+            return Ok(());
+        }
+        // We must be a roster member to hold (and share) an outbound session;
+        // this also establishes one lazily for legacy groups.
+        self.ensure_outbound_session(group_id).await?;
+        let (session_key, group_name) = {
+            let groups = read_guard(&self.inner.groups)?;
+            let group = groups
+                .get(group_id)
+                .ok_or_else(|| RelayError::NoOutboundGroup(group_id.to_string()))?;
+            let outbound = group
+                .outbound
+                .as_ref()
+                .ok_or_else(|| RelayError::NoOutboundGroup(group_id.to_string()))?;
+            (outbound.session_key(), group.name.clone())
+        };
+        if !mutex_guard(&self.inner.sessions)?.contains_key(member) {
+            self.start_chat(member).await?;
+        }
+        self.send_group_key(member, group_id, &session_key, &group_name)
     }
 
     /// A `group_member_left` reply resolves the in-flight leave request.
@@ -800,6 +911,7 @@ impl RelayClient {
         group_id: String,
         name: String,
         owner_peer_id: String,
+        avatar_url: Option<String>,
         members: Vec<GroupMember>,
     ) -> Result<(), RelayError> {
         let my_peer_id = self.my_peer_id()?;
@@ -812,6 +924,7 @@ impl RelayClient {
                 name: name.clone(),
                 members: members.clone(),
                 my_role: my_role.clone(),
+                avatar_url: avatar_url.clone(),
                 outbound: None,
             });
         }
@@ -820,6 +933,7 @@ impl RelayClient {
                 group_id,
                 name,
                 owner_peer_id,
+                avatar_url,
                 members,
                 my_role,
             }));
@@ -895,12 +1009,31 @@ impl RelayClient {
 
     /// A `group_member_removed` reply drops the member from the cached roster
     /// and resolves the in-flight request.
+    ///
+    /// When the removed peer is THIS identity (the owner removed us), the
+    /// whole group is dropped locally — roster, Megolm sessions, contact entry
+    /// and history — and a `group-removed` event is emitted so the UI can show
+    /// a toast and close the conversation. This MVP push only covers online
+    /// members: an offline member learns about the removal on its next
+    /// `get_group_info` round-trip, which the relay answers with
+    /// `not_a_member` (documented limitation — offline group eviction is a
+    /// later improvement).
     pub(crate) fn handle_group_member_removed(
         &self,
         group_id: &str,
         peer_id: &str,
     ) -> Result<(), RelayError> {
-        if let Ok(mut groups) = write_guard(&self.inner.groups) {
+        let my_peer_id = self.my_peer_id()?;
+        if peer_id == my_peer_id {
+            self.forget_group(group_id);
+            write_guard(&self.inner.messages)?.remove(group_id);
+            let _ = self.inner.app.emit(
+                "group-removed",
+                GroupRemovedEvent {
+                    group_id: group_id.to_string(),
+                },
+            );
+        } else if let Ok(mut groups) = write_guard(&self.inner.groups) {
             if let Some(group) = groups.get_mut(group_id) {
                 group.members.retain(|m| m.peer_id != peer_id);
             }
@@ -908,6 +1041,17 @@ impl RelayClient {
         if let Some(tx) = mutex_guard(&self.inner.pending_group_op)?.pop_front() {
             let _ = tx.send(Ok(()));
         }
+        Ok(())
+    }
+
+    /// A `group_avatar_set` reply resolves the in-flight `set_group_avatar`
+    /// request. The group-op path refreshes the metadata afterwards so the new
+    /// photo renders in the chat list and header.
+    pub(crate) fn handle_group_avatar_set(&self, group_id: &str) -> Result<(), RelayError> {
+        if let Some(tx) = mutex_guard(&self.inner.pending_group_op)?.pop_front() {
+            let _ = tx.send(Ok(()));
+        }
+        self.spawn_group_info_refresh(group_id);
         Ok(())
     }
 
@@ -1014,11 +1158,16 @@ mod tests {
                 group_id,
                 name,
                 owner_peer_id,
+                avatar_url,
                 members,
             } => {
                 assert_eq!(group_id, "g-1");
                 assert_eq!(name, "Squad");
                 assert_eq!(owner_peer_id, "alice");
+                assert_eq!(
+                    avatar_url, None,
+                    "a group without a photo has no avatar_url"
+                );
                 assert_eq!(members.len(), 2);
                 assert_eq!(members[0].peer_id, "alice");
                 assert_eq!(members[0].role, "owner");

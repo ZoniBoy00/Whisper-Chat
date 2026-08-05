@@ -10,11 +10,12 @@
 // The rate-limit tests rely on WHISPER_RATE_BURST / WHISPER_RATE_REFILL
 // being set low. The username/profile tests perform ~12 profile operations
 // from one source IP, the envelope tests burst 20+ acks and the group tests
-// (including ownership transfer) consume ~27 tokens from the per-IP group
-// bucket, so the shared budget must hold at least that many: run with
-// WHISPER_RATE_BURST=40 (which every bucket falls back to) or set
-// WHISPER_PROFILE_RATE_BURST explicitly. The 120-envelope burst test still
-// overflows a 40-token budget, so rate limiting stays meaningfully exercised.
+// (including ownership transfer, the member-add/removal pushes and the group
+// avatar roundtrip) consume ~26 tokens from the per-IP group bucket, so the
+// shared budget must hold at least that many: run with WHISPER_RATE_BURST=40
+// (which every bucket falls back to) or set WHISPER_PROFILE_RATE_BURST
+// explicitly. The 120-envelope burst test still overflows a 40-token budget,
+// so rate limiting stays meaningfully exercised.
 //
 // The presence tests also consume a few tokens from the per-IP buckets.
 
@@ -1124,6 +1125,92 @@ async function main() {
     aliceConn.ws.messages.some((m) => m.type === "error" && m.code === "group_not_found")
   );
   check("group: unknown group_id -> group_not_found", true);
+
+  // --- Group-member lifecycle pushes -----------------------------------------
+  // When the owner removed bob earlier in this flow, bob (online) received a
+  // `group_member_removed` push so his client could drop the group.
+  check(
+    "group: removed member receives group_member_removed push",
+    bob6.ws.messages.some(
+      (m) =>
+        m.type === "group_member_removed" &&
+        m.group_id === groupId &&
+        m.peer_id === bob.peer_id
+    )
+  );
+
+  // A second group exercises the add-member fan-out: adding a member pushes
+  // `group_member_added` to every OTHER online member (multi-sender model).
+  aliceConn.ws.sendJson({ type: "create_group", name: "Push Squad" });
+  await waitFor("group_created (push squad)", () =>
+    aliceConn.ws.messages.filter((m) => m.type === "group_created").length >= 2
+  );
+  const pushGroupCreated = aliceConn.ws.messages
+    .filter((m) => m.type === "group_created")
+    .pop();
+  const pushGroupId = pushGroupCreated && pushGroupCreated.group_id;
+  check(
+    "group: second group created for the push tests",
+    typeof pushGroupId === "string"
+  );
+
+  aliceConn.ws.sendJson({ type: "add_group_member", group_id: pushGroupId, peer_id: bob.peer_id });
+  await waitFor("group_member_added (push squad, bob)", () =>
+    aliceConn.ws.messages.filter((m) => m.type === "group_member_added").length >= 3
+  );
+  check("group: bob added to the push squad", true);
+
+  // Adding carol pushes `group_member_added` to alice AND bob (both members).
+  aliceConn.ws.sendJson({ type: "add_group_member", group_id: pushGroupId, peer_id: carol.peer_id });
+  await waitFor("bob received add push", () =>
+    bob6.ws.messages.some(
+      (m) =>
+        m.type === "group_member_added" &&
+        m.group_id === pushGroupId &&
+        m.peer_id === carol.peer_id
+    )
+  );
+  check("group: existing members receive group_member_added push", true);
+
+  // --- Group avatar (set_group_avatar roundtrip) -----------------------------
+  // A plain member cannot change the group photo.
+  carolConn.ws.sendJson({
+    type: "set_group_avatar",
+    group_id: pushGroupId,
+    avatar: avatarB64,
+  });
+  await waitFor("not_admin (set group avatar)", () =>
+    carolConn.ws.messages.some((m) => m.type === "error" && m.code === "not_admin")
+  );
+  check("group: member set_group_avatar -> not_admin", true);
+
+  // The owner sets the avatar; the blob lands under /media/{hash}.
+  aliceConn.ws.sendJson({
+    type: "set_group_avatar",
+    group_id: pushGroupId,
+    avatar: avatarB64,
+  });
+  await waitFor("group_avatar_set", () =>
+    aliceConn.ws.messages.some((m) => m.type === "group_avatar_set")
+  );
+  check("group: set_group_avatar acknowledged", true);
+
+  // get_group_info exposes the avatar as a public /media/{sha256} URL.
+  aliceConn.ws.sendJson({ type: "get_group_info", group_id: pushGroupId });
+  await waitFor("group_info with avatar_url", () =>
+    aliceConn.ws.messages.some(
+      (m) => m.type === "group_info" && m.avatar_url === `/media/${avatarHash}`
+    )
+  );
+  check("group: get_group_info exposes avatar_url = /media/{sha256}", true);
+
+  // GET /media/{hash} serves the uploaded group avatar bytes.
+  const groupMediaRes = await fetch(`${HTTP_URL}/media/${avatarHash}`);
+  const groupMediaBlob = Buffer.from(await groupMediaRes.arrayBuffer());
+  check(
+    "group: GET /media/{hash} serves the group avatar bytes",
+    groupMediaRes.status === 200 && groupMediaBlob.equals(AVATAR_PNG)
+  );
 
   aliceConn.ws.close();
   bob6.ws.close();

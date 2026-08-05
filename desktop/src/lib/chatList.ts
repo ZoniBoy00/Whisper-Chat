@@ -29,7 +29,9 @@ export function buildConversations(
         displayName: isGroup ? null : contact.display_name,
         peerId: contact.peer_id,
         username: isGroup ? undefined : contact.username,
-        avatarUrl: isGroup ? undefined : contact.avatar_url,
+        avatarUrl: isGroup
+          ? group?.avatar_url ?? null
+          : contact.avatar_url ?? null,
         isGroup,
         // An empty roster means the member count is not known yet (the group
         // was just hydrated or joined and `get_group_info` has not returned);

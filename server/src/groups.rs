@@ -103,15 +103,28 @@ impl Relay {
         {
             Ok(()) => {
                 tracing::info!(peer = %peer_id, group = %group_id, added = %target, "group member added");
-                let _ = self
-                    .send(
-                        peer_id,
-                        ServerMessage::GroupMemberAdded {
-                            group_id: group_id.to_string(),
-                            peer_id: target.to_string(),
-                        },
-                    )
-                    .await;
+                // Fan the roster change out to every existing member except the
+                // newly added peer. The caller's socket is included (it is a
+                // member), so this both resolves the requester and lets the
+                // other online members update their rosters and — in the
+                // multi-sender model — share their own Megolm session key to
+                // the newcomer. Offline members learn about the change on
+                // their next `get_group_info` round-trip.
+                let members = self.inner.store.list_group_members(group_id);
+                for member in members {
+                    if member == target {
+                        continue;
+                    }
+                    let _ = self
+                        .send(
+                            &member,
+                            ServerMessage::GroupMemberAdded {
+                                group_id: group_id.to_string(),
+                                peer_id: target.to_string(),
+                            },
+                        )
+                        .await;
+                }
             }
             Err(err) => {
                 tracing::error!(peer = %peer_id, group = %group_id, "failed to add member: {err}");
@@ -214,6 +227,7 @@ impl Relay {
                     group_id: group.id,
                     name: group.name,
                     owner_peer_id: group.owner_peer_id,
+                    avatar_url: group.avatar_hash.map(|hash| format!("/media/{hash}")),
                     members,
                 },
             )
@@ -506,9 +520,24 @@ impl Relay {
         match self.inner.store.remove_group_member(group_id, target) {
             Ok(()) => {
                 tracing::info!(peer = %peer_id, group = %group_id, removed = %target, "group member removed");
+                // The reply to the owner carries the full roster-change payload.
                 let _ = self
                     .send(
                         peer_id,
+                        ServerMessage::GroupMemberRemoved {
+                            group_id: group_id.to_string(),
+                            peer_id: target.to_string(),
+                        },
+                    )
+                    .await;
+                // Push the same removal to the removed peer (when online) so
+                // their client drops the group instead of keeping a stale
+                // roster entry. Offline members learn about the removal on
+                // their next `get_group_info` round-trip (which rejects
+                // non-members), so this MVP push only covers the online case.
+                let _ = self
+                    .send(
+                        target,
                         ServerMessage::GroupMemberRemoved {
                             group_id: group_id.to_string(),
                             peer_id: target.to_string(),
@@ -607,6 +636,108 @@ impl Relay {
         }
     }
 
+    /// Set a group's avatar image (`set_group_avatar`).
+    ///
+    /// The avatar blob is a base64 image of at most 2 MiB, stored
+    /// content-addressed as `media/<sha256>.bin` exactly like profile avatars.
+    /// Only the group owner or an admin may change the avatar; a regular
+    /// member gets `not_admin`.
+    pub(crate) async fn set_group_avatar(
+        &self,
+        peer_id: &str,
+        ip: &str,
+        group_id: &str,
+        avatar_b64: &str,
+    ) {
+        if !self.take_group_slot(peer_id, ip).await {
+            return;
+        }
+
+        if self.inner.store.get_group(group_id).is_none() {
+            let _ = self
+                .send(
+                    peer_id,
+                    ServerMessage::Error {
+                        code: "group_not_found".into(),
+                    },
+                )
+                .await;
+            return;
+        }
+        if !self.inner.store.is_group_member(group_id, peer_id) {
+            let _ = self
+                .send(
+                    peer_id,
+                    ServerMessage::Error {
+                        code: "not_a_member".into(),
+                    },
+                )
+                .await;
+            return;
+        }
+        let actor_role = self.inner.store.get_member_role(group_id, peer_id);
+        if !matches!(actor_role.as_deref(), Some("owner") | Some("admin")) {
+            let _ = self
+                .send(
+                    peer_id,
+                    ServerMessage::Error {
+                        code: "not_admin".into(),
+                    },
+                )
+                .await;
+            return;
+        }
+
+        // Decode and size-check the avatar before touching the database. The
+        // blob itself is only written to disk once the permission checks above
+        // passed, so a rejected request never leaves a dangling file.
+        let bytes = match Self::decode_avatar(avatar_b64) {
+            Ok(bytes) => bytes,
+            Err(()) => {
+                let _ = self
+                    .send(
+                        peer_id,
+                        ServerMessage::Error {
+                            code: "invalid_avatar".into(),
+                        },
+                    )
+                    .await;
+                return;
+            }
+        };
+        let hash = match Self::store_avatar(&self.inner.media_dir, &bytes) {
+            Ok(hash) => hash,
+            Err(()) => {
+                let _ = self
+                    .send(
+                        peer_id,
+                        ServerMessage::Error {
+                            code: "media_error".into(),
+                        },
+                    )
+                    .await;
+                return;
+            }
+        };
+
+        match self.inner.store.set_group_avatar_hash(group_id, &hash) {
+            Ok(()) => {
+                tracing::info!(peer = %peer_id, group = %group_id, "group avatar set");
+                let _ = self
+                    .send(
+                        peer_id,
+                        ServerMessage::GroupAvatarSet {
+                            group_id: group_id.to_string(),
+                        },
+                    )
+                    .await;
+            }
+            Err(err) => {
+                tracing::error!(peer = %peer_id, group = %group_id, "failed to persist group avatar: {err}");
+            }
+        }
+    }
+
     /// Fan out one client-encrypted envelope to every group member except the
     /// sender.
     ///
@@ -696,6 +827,8 @@ impl Relay {
 mod tests {
     use super::*;
     use crate::relay::test_utils::{env, online_peer, read_reply};
+    use base64::Engine;
+    use sha2::{Digest, Sha256};
 
     #[tokio::test]
     async fn create_group_replies_with_owner_membership() {
@@ -867,6 +1000,11 @@ mod tests {
             .add_group_member(&alice.peer_id(), "127.0.0.1", &group_id, &carol.peer_id())
             .await;
         read_reply(&mut alice_rx);
+        // Both members are online, so the member-add fan-out queued a
+        // `group_member_added` push on each socket; drain them so the reads
+        // below see only the fan-out envelope.
+        drain(&mut bob_rx);
+        drain(&mut carol_rx);
 
         relay
             .send_group_message(
@@ -1164,6 +1302,13 @@ mod tests {
         group_id
     }
 
+    /// Drop every queued message of a member's channel. The member-add fan-out
+    /// pushes `group_member_added` to online members, so tests that then read
+    /// a member's socket must first drain those roster pushes.
+    fn drain(rx: &mut mpsc::UnboundedReceiver<WsMessage>) {
+        while rx.try_recv().is_ok() {}
+    }
+
     #[tokio::test]
     async fn group_info_lists_members_with_roles() {
         let store = Store::open_in_memory().unwrap();
@@ -1215,6 +1360,7 @@ mod tests {
         let mut bob_rx = online_peer(&relay, &bob).await;
         online_peer(&relay, &carol).await;
         let group_id = role_group(&relay, &mut alice_rx, &alice, &bob, &carol).await;
+        drain(&mut bob_rx);
 
         // The owner promotes bob.
         relay
@@ -1259,6 +1405,7 @@ mod tests {
         let mut bob_rx = online_peer(&relay, &bob).await;
         online_peer(&relay, &carol).await;
         let group_id = role_group(&relay, &mut alice_rx, &alice, &bob, &carol).await;
+        drain(&mut bob_rx);
 
         // Bob is a plain member: he cannot promote anyone.
         relay
@@ -1298,6 +1445,7 @@ mod tests {
         let mut bob_rx = online_peer(&relay, &bob).await;
         online_peer(&relay, &carol).await;
         let group_id = role_group(&relay, &mut alice_rx, &alice, &bob, &carol).await;
+        drain(&mut bob_rx);
         relay
             .promote_member(&alice.peer_id(), "127.0.0.1", &group_id, &bob.peer_id())
             .await;
@@ -1375,6 +1523,7 @@ mod tests {
         let mut bob_rx = online_peer(&relay, &bob).await;
         online_peer(&relay, &carol).await;
         let group_id = role_group(&relay, &mut alice_rx, &alice, &bob, &carol).await;
+        drain(&mut bob_rx);
         relay
             .promote_member(&alice.peer_id(), "127.0.0.1", &group_id, &bob.peer_id())
             .await;
@@ -1471,6 +1620,7 @@ mod tests {
         let mut bob_rx = online_peer(&relay, &bob).await;
         online_peer(&relay, &carol).await;
         let group_id = role_group(&relay, &mut alice_rx, &alice, &bob, &carol).await;
+        drain(&mut bob_rx);
 
         // The owner transfers ownership to bob.
         relay
@@ -1572,6 +1722,7 @@ mod tests {
         let mut bob_rx = online_peer(&relay, &bob).await;
         online_peer(&relay, &carol).await;
         let group_id = role_group(&relay, &mut alice_rx, &alice, &bob, &carol).await;
+        drain(&mut bob_rx);
 
         // A plain member cannot transfer ownership.
         relay
@@ -1618,6 +1769,216 @@ mod tests {
                 .as_deref(),
             Some("owner"),
             "a rejected transfer must leave the owner untouched"
+        );
+    }
+
+    #[tokio::test]
+    async fn add_group_member_pushes_to_other_online_members() {
+        let store = Store::open_in_memory().unwrap();
+        let relay = Relay::with_limiter(store, 100.0, 0.0);
+        let alice = Identity::new();
+        let bob = Identity::new();
+        let carol = Identity::new();
+        let mut alice_rx = online_peer(&relay, &alice).await;
+        let mut bob_rx = online_peer(&relay, &bob).await;
+        online_peer(&relay, &carol).await;
+
+        relay
+            .create_group(&alice.peer_id(), "127.0.0.1", "Squad")
+            .await;
+        let group_id = read_reply(&mut alice_rx)["group_id"]
+            .as_str()
+            .expect("group_id must be set")
+            .to_string();
+
+        // Alice adds bob: the only other member (alice) gets the push.
+        relay
+            .add_group_member(&alice.peer_id(), "127.0.0.1", &group_id, &bob.peer_id())
+            .await;
+        let reply = read_reply(&mut alice_rx);
+        assert_eq!(reply["type"].as_str(), Some("group_member_added"));
+
+        // Alice adds carol: bob (an existing member) receives the push too.
+        relay
+            .add_group_member(&alice.peer_id(), "127.0.0.1", &group_id, &carol.peer_id())
+            .await;
+        let alice_reply = read_reply(&mut alice_rx);
+        assert_eq!(alice_reply["type"].as_str(), Some("group_member_added"));
+        assert_eq!(
+            alice_reply["peer_id"].as_str(),
+            Some(carol.peer_id().as_str())
+        );
+        let bob_reply = read_reply(&mut bob_rx);
+        assert_eq!(bob_reply["type"].as_str(), Some("group_member_added"));
+        assert_eq!(bob_reply["group_id"].as_str(), Some(group_id.as_str()));
+        assert_eq!(
+            bob_reply["peer_id"].as_str(),
+            Some(carol.peer_id().as_str()),
+            "the push names the newly added member"
+        );
+    }
+
+    #[tokio::test]
+    async fn remove_member_pushes_to_the_removed_peer() {
+        let store = Store::open_in_memory().unwrap();
+        let relay = Relay::with_limiter(store, 100.0, 0.0);
+        let alice = Identity::new();
+        let bob = Identity::new();
+        let mut alice_rx = online_peer(&relay, &alice).await;
+        let mut bob_rx = online_peer(&relay, &bob).await;
+
+        relay
+            .create_group(&alice.peer_id(), "127.0.0.1", "Squad")
+            .await;
+        let group_id = read_reply(&mut alice_rx)["group_id"]
+            .as_str()
+            .expect("group_id must be set")
+            .to_string();
+        relay
+            .add_group_member(&alice.peer_id(), "127.0.0.1", &group_id, &bob.peer_id())
+            .await;
+        read_reply(&mut alice_rx);
+
+        // Alice removes bob: the owner gets the reply AND bob (online)
+        // receives the same group_member_removed push.
+        relay
+            .remove_member(&alice.peer_id(), "127.0.0.1", &group_id, &bob.peer_id())
+            .await;
+        let alice_reply = read_reply(&mut alice_rx);
+        assert_eq!(alice_reply["type"].as_str(), Some("group_member_removed"));
+
+        let bob_reply = read_reply(&mut bob_rx);
+        assert_eq!(bob_reply["type"].as_str(), Some("group_member_removed"));
+        assert_eq!(bob_reply["group_id"].as_str(), Some(group_id.as_str()));
+        assert_eq!(
+            bob_reply["peer_id"].as_str(),
+            Some(bob.peer_id().as_str()),
+            "the push identifies the removed peer so the client can drop the group"
+        );
+    }
+
+    #[tokio::test]
+    async fn set_group_avatar_roundtrip_exposes_avatar_url() {
+        let store = Store::open_in_memory().unwrap();
+        let dir = std::env::temp_dir().join(format!(
+            "whisper-relay-group-media-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let relay = Relay::with_parts(
+            store,
+            dir.clone(),
+            RateLimiter::new(100.0, 0.0),
+            RateLimiter::new(100.0, 0.0),
+        );
+        let alice = Identity::new();
+        let mut alice_rx = online_peer(&relay, &alice).await;
+
+        relay
+            .create_group(&alice.peer_id(), "127.0.0.1", "Squad")
+            .await;
+        let group_id = read_reply(&mut alice_rx)["group_id"]
+            .as_str()
+            .expect("group_id must be set")
+            .to_string();
+
+        let png: &[u8] = &[
+            0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d,
+        ];
+        let encoded = base64::engine::general_purpose::STANDARD.encode(png);
+
+        relay
+            .set_group_avatar(&alice.peer_id(), "127.0.0.1", &group_id, &encoded)
+            .await;
+        let reply = read_reply(&mut alice_rx);
+        assert_eq!(reply["type"].as_str(), Some("group_avatar_set"));
+
+        let digest = Sha256::digest(png);
+        let hash = Relay::hex_encode(&digest);
+        assert!(
+            dir.join(format!("{hash}.bin")).exists(),
+            "the group avatar blob must be written to the media directory"
+        );
+        assert_eq!(
+            relay
+                .inner
+                .store
+                .get_group_avatar_hash(&group_id)
+                .as_deref(),
+            Some(hash.as_str())
+        );
+
+        // get_group_info surfaces the avatar as a public /media/{hash} URL.
+        relay
+            .get_group_info(&alice.peer_id(), "127.0.0.1", &group_id)
+            .await;
+        let info = read_reply(&mut alice_rx);
+        assert_eq!(info["type"].as_str(), Some("group_info"));
+        assert_eq!(
+            info["avatar_url"].as_str(),
+            Some(format!("/media/{hash}").as_str())
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn set_group_avatar_requires_owner_or_admin_and_valid_input() {
+        let store = Store::open_in_memory().unwrap();
+        let relay = Relay::with_limiter(store, 100.0, 0.0);
+        let alice = Identity::new();
+        let bob = Identity::new();
+        let carol = Identity::new();
+        let mut alice_rx = online_peer(&relay, &alice).await;
+        let mut bob_rx = online_peer(&relay, &bob).await;
+        let mut carol_rx = online_peer(&relay, &carol).await;
+
+        relay
+            .create_group(&alice.peer_id(), "127.0.0.1", "Squad")
+            .await;
+        let group_id = read_reply(&mut alice_rx)["group_id"]
+            .as_str()
+            .expect("group_id must be set")
+            .to_string();
+        relay
+            .add_group_member(&alice.peer_id(), "127.0.0.1", &group_id, &bob.peer_id())
+            .await;
+        read_reply(&mut alice_rx);
+
+        // A plain member cannot change the avatar.
+        relay
+            .set_group_avatar(&bob.peer_id(), "127.0.0.1", &group_id, "aGVsbG8=")
+            .await;
+        let reply = read_reply(&mut bob_rx);
+        assert_eq!(reply["type"].as_str(), Some("error"));
+        assert_eq!(reply["code"].as_str(), Some("not_admin"));
+
+        // Invalid base64 / oversized input is rejected with invalid_avatar.
+        relay
+            .set_group_avatar(&alice.peer_id(), "127.0.0.1", &group_id, "not base64!")
+            .await;
+        let reply = read_reply(&mut alice_rx);
+        assert_eq!(reply["type"].as_str(), Some("error"));
+        assert_eq!(reply["code"].as_str(), Some("invalid_avatar"));
+
+        // An unknown group is rejected with group_not_found.
+        relay
+            .set_group_avatar(&alice.peer_id(), "127.0.0.1", "ghost", "aGVsbG8=")
+            .await;
+        let reply = read_reply(&mut alice_rx);
+        assert_eq!(reply["type"].as_str(), Some("error"));
+        assert_eq!(reply["code"].as_str(), Some("group_not_found"));
+
+        // A non-member cannot change the avatar either.
+        relay
+            .set_group_avatar(&carol.peer_id(), "127.0.0.1", &group_id, "aGVsbG8=")
+            .await;
+        let reply = read_reply(&mut carol_rx);
+        assert_eq!(reply["type"].as_str(), Some("error"));
+        assert_eq!(reply["code"].as_str(), Some("not_a_member"));
+        assert_eq!(
+            relay.inner.store.get_group_avatar_hash(&group_id),
+            None,
+            "rejected requests must never persist an avatar"
         );
     }
 }

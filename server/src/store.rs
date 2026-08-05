@@ -98,6 +98,9 @@ pub struct Group {
     pub name: String,
     /// Peer ID of the peer that created the group.
     pub owner_peer_id: String,
+    /// SHA-256 of the uploaded group avatar blob, if any. The blob itself
+    /// lives in the media directory under `data/media/<hash>.bin`.
+    pub avatar_hash: Option<String>,
     /// Unix-seconds timestamp of creation.
     pub created_at: i64,
 }
@@ -167,6 +170,7 @@ impl Store {
                 id             TEXT PRIMARY KEY,
                 name           TEXT NOT NULL,
                 owner_peer_id  TEXT NOT NULL,
+                avatar_hash    TEXT,
                 created_at     INTEGER NOT NULL
             );
             CREATE TABLE IF NOT EXISTS group_members (
@@ -254,6 +258,18 @@ impl Store {
                 "ALTER TABLE users ADD COLUMN presence_visible INTEGER NOT NULL DEFAULT 1",
                 [],
             )?;
+        }
+
+        // Migration: databases created before the group-avatar feature lack the
+        // `avatar_hash` column in `groups`. SQLite has no
+        // `ADD COLUMN IF NOT EXISTS`, so inspect the live schema and alter it
+        // in place when needed. Existing groups simply have no avatar.
+        let group_columns: Vec<String> = conn
+            .prepare("PRAGMA table_info(groups)")?
+            .query_map([], |row| row.get::<_, String>(1))?
+            .collect::<rusqlite::Result<_>>()?;
+        if !group_columns.iter().any(|c| c.as_str() == "avatar_hash") {
+            conn.execute("ALTER TABLE groups ADD COLUMN avatar_hash TEXT", [])?;
         }
         Ok(())
     }
@@ -575,14 +591,15 @@ impl Store {
     pub fn get_group(&self, group_id: &str) -> Option<Group> {
         let conn = self.conn.lock().unwrap();
         conn.query_row(
-            "SELECT id, name, owner_peer_id, created_at FROM groups WHERE id = ?1",
+            "SELECT id, name, owner_peer_id, avatar_hash, created_at FROM groups WHERE id = ?1",
             params![group_id],
             |r| {
                 Ok(Group {
                     id: r.get(0)?,
                     name: r.get(1)?,
                     owner_peer_id: r.get(2)?,
-                    created_at: r.get(3)?,
+                    avatar_hash: r.get(3)?,
+                    created_at: r.get(4)?,
                 })
             },
         )
@@ -677,6 +694,32 @@ impl Store {
             params![group_id, peer_id],
         )?;
         Ok(())
+    }
+
+    /// Set (or update) a group's avatar hash. The blob itself lives in the
+    /// media directory under `data/media/<hash>.bin`; the hash is the only
+    /// piece persisted in the database.
+    pub fn set_group_avatar_hash(&self, group_id: &str, avatar_hash: &str) -> SqlResult<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "UPDATE groups SET avatar_hash = ?1 WHERE id = ?2",
+            params![avatar_hash, group_id],
+        )?;
+        Ok(())
+    }
+
+    /// The stored SHA-256 of a group's avatar blob, if one was uploaded.
+    #[cfg(test)]
+    pub fn get_group_avatar_hash(&self, group_id: &str) -> Option<String> {
+        let conn = self.conn.lock().unwrap();
+        conn.query_row(
+            "SELECT avatar_hash FROM groups WHERE id = ?1",
+            params![group_id],
+            |r| r.get::<_, Option<String>>(0),
+        )
+        .optional()
+        .unwrap_or(None)
+        .flatten()
     }
 
     /// Whether `peer_id` is currently a member of `group_id`.
@@ -1425,11 +1468,74 @@ mod tests {
         assert_eq!(group.name, "Ghost Squad");
         assert_eq!(group.owner_peer_id, "alice");
         assert_eq!(group.created_at, now);
+        assert_eq!(group.avatar_hash, None, "a fresh group has no avatar");
         assert!(
             store.is_group_member("g1", "alice"),
             "the owner must join as the first member"
         );
         assert_eq!(store.list_group_members("g1"), vec!["alice".to_string()]);
+    }
+
+    #[test]
+    fn group_avatar_hash_roundtrip() {
+        let store = Store::open_in_memory().unwrap();
+        store.create_group("g1", "Squad", "alice", 1).unwrap();
+        assert_eq!(store.get_group_avatar_hash("g1"), None);
+        store
+            .set_group_avatar_hash("g1", "aa".repeat(32).as_str())
+            .unwrap();
+        assert_eq!(store.get_group_avatar_hash("g1"), Some("aa".repeat(32)));
+        assert_eq!(
+            store.get_group("g1").expect("group must exist").avatar_hash,
+            Some("aa".repeat(32))
+        );
+    }
+
+    #[test]
+    fn migration_adds_group_avatar_hash_column_to_legacy_groups_table() {
+        let path = std::env::temp_dir().join(format!(
+            "whisper-relay-group-avatar-migration-{}.db",
+            uuid::Uuid::new_v4()
+        ));
+        // Simulate a database created before the group-avatar feature.
+        {
+            let conn = Connection::open(&path).expect("open legacy db");
+            conn.execute_batch(
+                "CREATE TABLE groups (
+                     id            TEXT PRIMARY KEY,
+                     name          TEXT NOT NULL,
+                     owner_peer_id TEXT NOT NULL,
+                     created_at    INTEGER NOT NULL
+                 );
+                 CREATE TABLE group_members (
+                     group_id  TEXT NOT NULL,
+                     peer_id   TEXT NOT NULL,
+                     joined_at INTEGER NOT NULL,
+                     role      TEXT NOT NULL DEFAULT 'member',
+                     PRIMARY KEY (group_id, peer_id)
+                 );
+                 INSERT INTO groups (id, name, owner_peer_id, created_at)
+                     VALUES ('g1', 'Squad', 'alice', 1);
+                 INSERT INTO group_members (group_id, peer_id, joined_at)
+                     VALUES ('g1', 'alice', 1);",
+            )
+            .expect("create legacy schema");
+        }
+        let store = Store::open(&path).expect("migrated db must open");
+        // The new column must be usable and the legacy row must survive.
+        assert_eq!(store.get_group_avatar_hash("g1"), None);
+        store
+            .set_group_avatar_hash("g1", "bb".repeat(32).as_str())
+            .unwrap();
+        assert_eq!(store.get_group_avatar_hash("g1"), Some("bb".repeat(32)));
+        assert_eq!(
+            store
+                .get_group("g1")
+                .expect("group must exist")
+                .owner_peer_id,
+            "alice"
+        );
+        std::fs::remove_file(&path).ok();
     }
 
     #[test]
