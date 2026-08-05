@@ -26,6 +26,9 @@
   --wp-danger: 248 113 113; /* #f87171 — destructive actions */
   --wp-read: 109 164 255; /* #6da4ff — read receipt double tick (dark) */
   --wp-online: 37 211 102; /* #25d366 — WhatsApp-style online green (dark) */
+  --wp-success: 37 211 102; /* #25d366 — success toasts */
+  --wp-info: 109 164 255; /* #6da4ff — info toasts */
+  --wp-selection: 47 111 237; /* #2f6fed — text selection highlight */
   --wp-owner: 250 204 21; /* #facd15 — group owner badge (yellow) */
   --wp-owner-fg: 24 24 27; /* #18181b — text on the owner badge */
 }
@@ -53,6 +56,9 @@
   --wp-danger: 220 38 38; /* #dc2626 — destructive actions */
   --wp-read: 47 111 237; /* #2f6fed — read receipt double tick (light) */
   --wp-online: 21 128 61; /* #15803d — online green that meets AA on light */
+  --wp-success: 21 128 61; /* #15803d — success toasts */
+  --wp-info: 47 111 237; /* #2f6fed — info toasts */
+  --wp-selection: 47 111 237; /* #2f6fed — text selection highlight */
   --wp-owner: 202 138 4; /* #ca8a04 — group owner badge (amber-600) */
   --wp-owner-fg: 255 251 235; /* #fffbeb — text on the owner badge */
 }
@@ -370,10 +376,10 @@ dialog.wp-dialog::backdrop {
   }
 }
 
-/* Visible text selection in both themes — the accent color makes it obvious
-   that a message is being marked/copied (works on dark and light). */
+/* Visible text selection in both themes — the WhatsApp-style blue makes it
+   obvious that a message is being marked/copied (works on dark and light). */
 ::selection {
-  background: rgba(var(--wp-accent), 0.35);
+  background: rgb(var(--wp-selection) / 0.4);
   color: rgb(var(--wp-text));
 }
 
@@ -413,4 +419,107 @@ mark.chat-mark-active {
 }
 .animate-jump-in {
   animation: jump-in 0.22s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+/* ---------------------------------------------------------------------------
+   In-app toasts
+   ------------------------------------------------------------------------- */
+
+/* Fixed top-right stack. The container ignores pointer events so it never
+   blocks clicks in the empty space between toasts; each card re-enables them. */
+.wp-toast-viewport {
+  position: fixed;
+  top: 1rem;
+  right: 1rem;
+  z-index: 100;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  max-width: min(92vw, 22rem);
+  pointer-events: none;
+}
+
+/* A single toast: dark card with a type-colored left border and icon. The
+   three modifiers drive the color; everything else is shared. */
+.wp-toast {
+  pointer-events: auto;
+  display: flex;
+  align-items: flex-start;
+  gap: 0.625rem;
+  padding: 0.75rem 0.875rem;
+  border-radius: 0.75rem;
+  background: rgb(var(--wp-panel-2));
+  border: 1px solid rgb(var(--wp-line) / 0.1);
+  border-left-width: 3px;
+  box-shadow: 0 12px 32px -8px rgb(0 0 0 / 0.5);
+  color: rgb(var(--wp-text));
+  animation: toast-in 0.22s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+.wp-toast-success {
+  border-left-color: rgb(var(--wp-success));
+}
+.wp-toast-error {
+  border-left-color: rgb(var(--wp-danger));
+}
+.wp-toast-info {
+  border-left-color: rgb(var(--wp-info));
+}
+.wp-toast-icon {
+  margin-top: 1px;
+  flex-shrink: 0;
+}
+.wp-toast-success .wp-toast-icon {
+  color: rgb(var(--wp-success));
+}
+.wp-toast-error .wp-toast-icon {
+  color: rgb(var(--wp-danger));
+}
+.wp-toast-info .wp-toast-icon {
+  color: rgb(var(--wp-info));
+}
+.wp-toast-message {
+  flex: 1;
+  font-size: 0.8125rem;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+.wp-toast-close {
+  flex-shrink: 0;
+  padding: 0.125rem;
+  border-radius: 0.375rem;
+  color: rgb(var(--wp-text-dim));
+  transition:
+    color 0.15s ease,
+    background-color 0.15s ease;
+}
+.wp-toast-close:hover {
+  color: rgb(var(--wp-text));
+  background-color: rgb(var(--wp-panel-3));
+}
+
+/* Manual close fades + slides the card out before it is removed. */
+.wp-toast-leaving {
+  animation: toast-out 0.16s ease-in both;
+}
+
+@keyframes toast-in {
+  from {
+    opacity: 0;
+    transform: translateX(16px) translateY(-4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0) translateY(0);
+  }
+}
+
+@keyframes toast-out {
+  from {
+    opacity: 1;
+    transform: translateX(0);
+  }
+  to {
+    opacity: 0;
+    transform: translateX(16px);
+  }
 }

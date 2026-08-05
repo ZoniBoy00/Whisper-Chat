@@ -42,6 +42,7 @@ impl Relay {
         {
             Ok(()) => {
                 let members = self.inner.store.list_group_members(&group_id);
+                tracing::info!(peer = %peer_id, group = %group_id, name = %name, "group created");
                 let _ = self
                     .send(
                         peer_id,
@@ -101,6 +102,7 @@ impl Relay {
             .add_group_member(group_id, target, unix_now())
         {
             Ok(()) => {
+                tracing::info!(peer = %peer_id, group = %group_id, added = %target, "group member added");
                 let _ = self
                     .send(
                         peer_id,
@@ -148,6 +150,7 @@ impl Relay {
 
         match self.inner.store.remove_group_member(group_id, peer_id) {
             Ok(()) => {
+                tracing::info!(peer = %peer_id, group = %group_id, "group member left");
                 let _ = self
                     .send(
                         peer_id,
@@ -301,6 +304,7 @@ impl Relay {
 
         match self.inner.store.set_member_role(group_id, target, "admin") {
             Ok(()) => {
+                tracing::info!(peer = %peer_id, group = %group_id, promoted = %target, "member promoted to admin");
                 let _ = self
                     .send(
                         peer_id,
@@ -397,6 +401,7 @@ impl Relay {
 
         match self.inner.store.set_member_role(group_id, target, "member") {
             Ok(()) => {
+                tracing::info!(peer = %peer_id, group = %group_id, demoted = %target, "admin demoted to member");
                 let _ = self
                     .send(
                         peer_id,
@@ -500,6 +505,7 @@ impl Relay {
 
         match self.inner.store.remove_group_member(group_id, target) {
             Ok(()) => {
+                tracing::info!(peer = %peer_id, group = %group_id, removed = %target, "group member removed");
                 let _ = self
                     .send(
                         peer_id,
@@ -512,6 +518,91 @@ impl Relay {
             }
             Err(err) => {
                 tracing::error!(peer = %peer_id, group = %group_id, "failed to remove member: {err}");
+            }
+        }
+    }
+
+    /// Transfer group ownership to `new_owner` (`transfer_ownership`).
+    ///
+    /// Permissions:
+    /// - Only the current group owner may transfer. An admin or member gets
+    ///   `not_owner`.
+    /// - `new_owner` must be a member of the group, else `not_a_member`.
+    ///
+    /// On success the old owner becomes an admin, `new_owner` becomes the
+    /// owner and the group's `owner_peer_id` is updated accordingly.
+    pub(crate) async fn transfer_ownership(
+        &self,
+        peer_id: &str,
+        ip: &str,
+        group_id: &str,
+        new_owner: &str,
+    ) {
+        if !self.take_group_slot(peer_id, ip).await {
+            return;
+        }
+
+        if self.inner.store.get_group(group_id).is_none() {
+            let _ = self
+                .send(
+                    peer_id,
+                    ServerMessage::Error {
+                        code: "group_not_found".into(),
+                    },
+                )
+                .await;
+            return;
+        }
+        if !self.inner.store.is_group_member(group_id, peer_id) {
+            let _ = self
+                .send(
+                    peer_id,
+                    ServerMessage::Error {
+                        code: "not_a_member".into(),
+                    },
+                )
+                .await;
+            return;
+        }
+        let actor_role = self.inner.store.get_member_role(group_id, peer_id);
+        if actor_role.as_deref() != Some("owner") {
+            let _ = self
+                .send(
+                    peer_id,
+                    ServerMessage::Error {
+                        code: "not_owner".into(),
+                    },
+                )
+                .await;
+            return;
+        }
+        if !self.inner.store.is_group_member(group_id, new_owner) {
+            let _ = self
+                .send(
+                    peer_id,
+                    ServerMessage::Error {
+                        code: "not_a_member".into(),
+                    },
+                )
+                .await;
+            return;
+        }
+
+        match self.inner.store.transfer_ownership(group_id, new_owner) {
+            Ok(()) => {
+                tracing::info!(peer = %peer_id, group = %group_id, new_owner = %new_owner, "group ownership transferred");
+                let _ = self
+                    .send(
+                        peer_id,
+                        ServerMessage::OwnershipTransferred {
+                            group_id: group_id.to_string(),
+                            new_owner_peer_id: new_owner.to_string(),
+                        },
+                    )
+                    .await;
+            }
+            Err(err) => {
+                tracing::error!(peer = %peer_id, group = %group_id, "failed to transfer ownership: {err}");
             }
         }
     }
@@ -581,6 +672,7 @@ impl Relay {
 
         let seq = envelope.seq;
         let members = self.inner.store.list_group_members(group_id);
+        let mut fanned = 0;
         for member in &members {
             if member == peer_id {
                 continue;
@@ -588,7 +680,9 @@ impl Relay {
             let mut copy = envelope.clone();
             copy.recipient = member.clone();
             self.deliver_one(&copy).await;
+            fanned += 1;
         }
+        tracing::debug!(sender = %peer_id, group = %group_id, recipients = fanned, "group message fanned out");
 
         // Single delivery confirmation to the sender; the fan-out copies share
         // the same client `seq`.
@@ -1357,5 +1451,173 @@ mod tests {
         let reply = read_reply(&mut alice_rx);
         assert_eq!(reply["type"].as_str(), Some("error"));
         assert_eq!(reply["code"].as_str(), Some("group_not_found"));
+
+        relay
+            .transfer_ownership(&alice.peer_id(), "127.0.0.1", "ghost", &bob.peer_id())
+            .await;
+        let reply = read_reply(&mut alice_rx);
+        assert_eq!(reply["type"].as_str(), Some("error"));
+        assert_eq!(reply["code"].as_str(), Some("group_not_found"));
+    }
+
+    #[tokio::test]
+    async fn transfer_ownership_swaps_owner_and_old_owner_becomes_admin() {
+        let store = Store::open_in_memory().unwrap();
+        let relay = Relay::with_limiter(store, 100.0, 0.0);
+        let alice = Identity::new();
+        let bob = Identity::new();
+        let carol = Identity::new();
+        let mut alice_rx = online_peer(&relay, &alice).await;
+        let mut bob_rx = online_peer(&relay, &bob).await;
+        online_peer(&relay, &carol).await;
+        let group_id = role_group(&relay, &mut alice_rx, &alice, &bob, &carol).await;
+
+        // The owner transfers ownership to bob.
+        relay
+            .transfer_ownership(&alice.peer_id(), "127.0.0.1", &group_id, &bob.peer_id())
+            .await;
+        let reply = read_reply(&mut alice_rx);
+        assert_eq!(reply["type"].as_str(), Some("ownership_transferred"));
+        assert_eq!(reply["group_id"].as_str(), Some(group_id.as_str()));
+        assert_eq!(
+            reply["new_owner_peer_id"].as_str(),
+            Some(bob.peer_id().as_str())
+        );
+
+        // Bob is now the owner, alice is an admin, carol stays a member.
+        assert_eq!(
+            relay
+                .inner
+                .store
+                .get_member_role(&group_id, &bob.peer_id())
+                .as_deref(),
+            Some("owner")
+        );
+        assert_eq!(
+            relay
+                .inner
+                .store
+                .get_member_role(&group_id, &alice.peer_id())
+                .as_deref(),
+            Some("admin")
+        );
+        assert_eq!(
+            relay
+                .inner
+                .store
+                .get_member_role(&group_id, &carol.peer_id())
+                .as_deref(),
+            Some("member")
+        );
+        assert_eq!(
+            relay
+                .inner
+                .store
+                .get_group(&group_id)
+                .unwrap()
+                .owner_peer_id,
+            bob.peer_id()
+        );
+
+        // The new owner shows up as the owner in group_info.
+        relay
+            .get_group_info(&alice.peer_id(), "127.0.0.1", &group_id)
+            .await;
+        let reply = read_reply(&mut alice_rx);
+        assert_eq!(
+            reply["owner_peer_id"].as_str(),
+            Some(bob.peer_id().as_str())
+        );
+
+        // The old owner (now an admin) can no longer transfer.
+        relay
+            .transfer_ownership(&alice.peer_id(), "127.0.0.1", &group_id, &carol.peer_id())
+            .await;
+        let reply = read_reply(&mut alice_rx);
+        assert_eq!(reply["type"].as_str(), Some("error"));
+        assert_eq!(reply["code"].as_str(), Some("not_owner"));
+
+        // Bob (the new owner) can transfer back.
+        relay
+            .transfer_ownership(&bob.peer_id(), "127.0.0.1", &group_id, &alice.peer_id())
+            .await;
+        let reply = read_reply(&mut bob_rx);
+        assert_eq!(reply["type"].as_str(), Some("ownership_transferred"));
+        assert_eq!(
+            relay
+                .inner
+                .store
+                .get_member_role(&group_id, &alice.peer_id())
+                .as_deref(),
+            Some("owner")
+        );
+        assert_eq!(
+            relay
+                .inner
+                .store
+                .get_member_role(&group_id, &bob.peer_id())
+                .as_deref(),
+            Some("admin")
+        );
+    }
+
+    #[tokio::test]
+    async fn transfer_ownership_rejects_non_owner_actor() {
+        let store = Store::open_in_memory().unwrap();
+        let relay = Relay::with_limiter(store, 100.0, 0.0);
+        let alice = Identity::new();
+        let bob = Identity::new();
+        let carol = Identity::new();
+        let mut alice_rx = online_peer(&relay, &alice).await;
+        let mut bob_rx = online_peer(&relay, &bob).await;
+        online_peer(&relay, &carol).await;
+        let group_id = role_group(&relay, &mut alice_rx, &alice, &bob, &carol).await;
+
+        // A plain member cannot transfer ownership.
+        relay
+            .transfer_ownership(&bob.peer_id(), "127.0.0.1", &group_id, &carol.peer_id())
+            .await;
+        let reply = read_reply(&mut bob_rx);
+        assert_eq!(reply["type"].as_str(), Some("error"));
+        assert_eq!(reply["code"].as_str(), Some("not_owner"));
+        assert_eq!(
+            relay
+                .inner
+                .store
+                .get_member_role(&group_id, &alice.peer_id())
+                .as_deref(),
+            Some("owner"),
+            "a rejected transfer must not touch the roles"
+        );
+    }
+
+    #[tokio::test]
+    async fn transfer_ownership_rejects_non_member_target() {
+        let store = Store::open_in_memory().unwrap();
+        let relay = Relay::with_limiter(store, 100.0, 0.0);
+        let alice = Identity::new();
+        let bob = Identity::new();
+        let dave = Identity::new();
+        let mut alice_rx = online_peer(&relay, &alice).await;
+        online_peer(&relay, &bob).await;
+        online_peer(&relay, &dave).await;
+        let group_id = role_group(&relay, &mut alice_rx, &alice, &bob, &Identity::new()).await;
+
+        // dave is not a member of the group.
+        relay
+            .transfer_ownership(&alice.peer_id(), "127.0.0.1", &group_id, &dave.peer_id())
+            .await;
+        let reply = read_reply(&mut alice_rx);
+        assert_eq!(reply["type"].as_str(), Some("error"));
+        assert_eq!(reply["code"].as_str(), Some("not_a_member"));
+        assert_eq!(
+            relay
+                .inner
+                .store
+                .get_member_role(&group_id, &alice.peer_id())
+                .as_deref(),
+            Some("owner"),
+            "a rejected transfer must leave the owner untouched"
+        );
     }
 }

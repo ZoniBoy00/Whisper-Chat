@@ -385,6 +385,20 @@ async fn remove_member(
         .map_err(|e| e.to_string())
 }
 
+/// Transfer group ownership to `peer_id` (owner only). The old owner becomes
+/// an admin; `peer_id` takes over the owner role.
+#[tauri::command]
+async fn transfer_ownership(
+    state: State<'_, RelayClient>,
+    group_id: String,
+    peer_id: String,
+) -> Result<(), String> {
+    state
+        .transfer_ownership(&group_id, &peer_id)
+        .await
+        .map_err(|e| e.to_string())
+}
+
 /// Remove the caller from a group's roster.
 #[tauri::command]
 async fn leave_group(state: State<'_, RelayClient>, group_id: String) -> Result<(), String> {
@@ -501,6 +515,7 @@ pub fn run() {
             promote_member,
             demote_member,
             remove_member,
+            transfer_ownership,
             leave_group
         ])
         .run(tauri::generate_context!())

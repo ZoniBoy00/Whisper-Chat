@@ -25,8 +25,7 @@ use relay::Relay;
 async fn main() {
     tracing_subscriber::fmt()
         .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "info,whisper_relay=debug".into()),
+            tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()),
         )
         .init();
 
@@ -60,7 +59,10 @@ async fn main() {
         .parse()
         .expect("invalid WHISPER_ADDR");
 
-    tracing::info!("whisper-relay listening on {addr}");
+    tracing::info!(
+        version = env!("CARGO_PKG_VERSION"),
+        "whisper-relay listening on {addr}"
+    );
     let listener = tokio::net::TcpListener::bind(addr)
         .await
         .expect("failed to bind listener");
@@ -68,8 +70,46 @@ async fn main() {
         listener,
         app.into_make_service_with_connect_info::<SocketAddr>(),
     )
+    .with_graceful_shutdown(shutdown_signal())
     .await
     .expect("server error");
+    tracing::info!("whisper-relay shut down cleanly");
+}
+
+/// Wait for a shutdown signal so the relay can drain gracefully.
+///
+/// Ctrl+C (SIGINT) is handled on every platform via `tokio::signal::ctrl_c`;
+/// on Unix, SIGTERM (e.g. `systemctl stop`) is handled too. Instead of the
+/// process being hard-killed (the `STATUS_CONTROL_C_EXIT` exit code Windows
+/// reports for an unhandled Ctrl+C), `axum::serve` now stops accepting new
+/// connections, lets in-flight handlers finish and returns, so `main` exits
+/// with a clean status.
+async fn shutdown_signal() {
+    let ctrl_c = async {
+        tokio::signal::ctrl_c()
+            .await
+            .expect("failed to install Ctrl+C handler");
+    };
+
+    #[cfg(unix)]
+    let terminate = async {
+        tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+            .expect("failed to install SIGTERM handler")
+            .recv()
+            .await;
+    };
+
+    #[cfg(not(unix))]
+    let terminate = std::future::pending::<()>();
+
+    tokio::select! {
+        _ = ctrl_c => {
+            tracing::info!("SIGINT received, draining gracefully");
+        }
+        _ = terminate => {
+            tracing::info!("SIGTERM received, draining gracefully");
+        }
+    }
 }
 
 /// Liveness probe — no sensitive info ever exposed here.
@@ -91,12 +131,26 @@ async fn media(Path(hash): Path<String>, State(relay): State<Relay>) -> Response
     match tokio::fs::read(relay.media_path(&hash)).await {
         Ok(bytes) => {
             let content_type = image_content_type(&bytes);
+            tracing::debug!(
+                hash = %hash,
+                size = bytes.len(),
+                content_type,
+                "media blob served"
+            );
             let mut response = Response::new(bytes.into());
             response
                 .headers_mut()
                 .insert(header::CONTENT_TYPE, HeaderValue::from_static(content_type));
             response
         }
+        // A missing blob is the expected 404 case (never uploaded or purged),
+        // so it is logged at debug rather than warned about.
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+            tracing::debug!(hash = %hash, "media blob not found");
+            StatusCode::NOT_FOUND.into_response()
+        }
+        // Unexpected I/O errors (permissions, disk, ...) are real problems and
+        // deserve a warning with the full context.
         Err(err) => {
             tracing::warn!(hash = %hash, path = %relay.media_path(&hash).display(), "media blob read failed: {err}");
             StatusCode::NOT_FOUND.into_response()

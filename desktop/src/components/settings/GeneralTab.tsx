@@ -16,6 +16,7 @@ import {
 import type { Theme } from "../../types";
 import { cx, mediaUrl } from "../../lib/format";
 import { useI18n } from "../../i18n/I18nContext";
+import { useToast } from "../../hooks/useToast";
 import type { TFunction } from "../../i18n/types";
 import { Avatar } from "../Avatar";
 import { CopyButton } from "../CopyButton";
@@ -95,6 +96,7 @@ export function GeneralTab({
   onBusyChange,
 }: GeneralTabProps) {
   const { t, language, setLanguage } = useI18n();
+  const { toast } = useToast();
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [nameInput, setNameInput] = useState(myDisplayName ?? "");
   const [usernameInput, setUsernameInput] = useState(myUsername ?? "");
@@ -140,8 +142,11 @@ export function GeneralTab({
       await onSaveDisplayName(name);
       setSavedName(true);
       window.setTimeout(() => setSavedName(false), 2000);
+      toast(t("toast.display_name_saved"), "success");
     } catch (err) {
-      setNameError(String(err).replace(/^Error:\s*/, ""));
+      const message = String(err).replace(/^Error:\s*/, "");
+      setNameError(message);
+      toast(message, "error");
     } finally {
       setSavingName(false);
     }
@@ -152,6 +157,7 @@ export function GeneralTab({
     const err = usernameError(value, t);
     if (err) {
       setUsernameErrorText(err);
+      toast(err, "error");
       return;
     }
     setRegistering(true);
@@ -163,7 +169,9 @@ export function GeneralTab({
       setRegisteredFlash(true);
       window.setTimeout(() => setRegisteredFlash(false), 2500);
     } catch (err) {
-      setUsernameErrorText(String(err).replace(/^Error:\s*/, ""));
+      const message = String(err).replace(/^Error:\s*/, "");
+      setUsernameErrorText(message);
+      toast(message, "error");
     } finally {
       setRegistering(false);
     }
@@ -173,11 +181,15 @@ export function GeneralTab({
     if (!file) return;
     setAvatarError(null);
     if (!/^image\/(png|jpe?g|webp)$/i.test(file.type)) {
-      setAvatarError(t("general.avatar_type_error"));
+      const message = t("general.avatar_type_error");
+      setAvatarError(message);
+      toast(message, "error");
       return;
     }
     if (file.size > MAX_AVATAR_BYTES) {
-      setAvatarError(t("general.avatar_size_error"));
+      const message = t("general.avatar_size_error");
+      setAvatarError(message);
+      toast(message, "error");
       return;
     }
     const reader = new FileReader();
@@ -201,7 +213,9 @@ export function GeneralTab({
       setSavedAvatar(true);
       window.setTimeout(() => setSavedAvatar(false), 2500);
     } catch (err) {
-      setAvatarError(String(err).replace(/^Error:\s*/, ""));
+      const message = String(err).replace(/^Error:\s*/, "");
+      setAvatarError(message);
+      toast(message, "error");
     } finally {
       setSavingAvatar(false);
     }
@@ -213,6 +227,18 @@ export function GeneralTab({
       ? mediaUrl(relayUrl, myAvatarUrl)
       : null;
   const usernameValid = usernameInput.trim() && usernameError(usernameInput.trim(), t) === null;
+
+  /** Apply a theme choice and confirm it with a toast. */
+  const handleThemeChange = (next: Theme) => {
+    onThemeChange(next);
+    toast(t("toast.settings_saved"), "info");
+  };
+
+  /** Switch the UI language and confirm it with a toast. */
+  const handleLanguageChange = (next: "en" | "fi") => {
+    setLanguage(next);
+    toast(t("toast.settings_saved"), "info");
+  };
 
   return (
     <div
@@ -485,7 +511,7 @@ export function GeneralTab({
               <button
                 type="button"
                 aria-pressed={theme === "dark"}
-                onClick={() => onThemeChange("dark")}
+                onClick={() => handleThemeChange("dark")}
                 className={cx(
                   "inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-semibold transition",
                   theme === "dark"
@@ -499,7 +525,7 @@ export function GeneralTab({
               <button
                 type="button"
                 aria-pressed={theme === "light"}
-                onClick={() => onThemeChange("light")}
+                onClick={() => handleThemeChange("light")}
                 className={cx(
                   "inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-semibold transition",
                   theme === "light"
@@ -528,7 +554,7 @@ export function GeneralTab({
                   key={option.value}
                   type="button"
                   aria-pressed={language === option.value}
-                  onClick={() => setLanguage(option.value)}
+                  onClick={() => handleLanguageChange(option.value)}
                   className={cx(
                     "inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-semibold transition",
                     language === option.value

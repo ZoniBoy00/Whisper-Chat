@@ -615,6 +615,32 @@ impl Store {
         Ok(())
     }
 
+    /// Transfer group ownership to `new_owner` in one transaction: the current
+    /// owner (the only "owner" row) becomes an admin, `new_owner` becomes the
+    /// owner and the `groups.owner_peer_id` column is updated to match. The
+    /// two role swaps and the metadata update commit atomically so a crash can
+    /// never leave a group with two owners or none. Permission and membership
+    /// checks are the caller's responsibility.
+    pub fn transfer_ownership(&self, group_id: &str, new_owner: &str) -> SqlResult<()> {
+        let mut conn = self.conn.lock().unwrap();
+        let tx = conn.transaction()?;
+        tx.execute(
+            "UPDATE groups SET owner_peer_id = ?1 WHERE id = ?2",
+            params![new_owner, group_id],
+        )?;
+        tx.execute(
+            "UPDATE group_members SET role = 'admin'
+             WHERE group_id = ?1 AND role = 'owner'",
+            params![group_id],
+        )?;
+        tx.execute(
+            "UPDATE group_members SET role = 'owner'
+             WHERE group_id = ?1 AND peer_id = ?2",
+            params![group_id, new_owner],
+        )?;
+        tx.commit()
+    }
+
     /// The current role of `peer_id` in `group_id`, if they are a member.
     pub fn get_member_role(&self, group_id: &str, peer_id: &str) -> Option<String> {
         let conn = self.conn.lock().unwrap();

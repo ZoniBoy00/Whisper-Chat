@@ -20,6 +20,7 @@ import { useI18n } from "../i18n/I18nContext";
 import { useChatState } from "../hooks/useChatState";
 import { useOwnProfile } from "../hooks/useOwnProfile";
 import { usePresencePolling } from "../hooks/usePresencePolling";
+import { useToast } from "../hooks/useToast";
 import { Sidebar } from "./Sidebar";
 import { ChatView } from "./ChatView";
 import { AddContactDialog } from "./AddContactDialog";
@@ -35,6 +36,7 @@ interface MainViewProps {
 
 export function MainView({ peerId, onReset }: MainViewProps) {
   const { t } = useI18n();
+  const { toast } = useToast();
   const [theme, setTheme] = useState<Theme>("dark");
   const [relayUrl, setRelayUrl] = useState("");
   // Privacy / notification preferences, hydrated from the settings store on
@@ -157,8 +159,9 @@ export function MainView({ peerId, onReset }: MainViewProps) {
       await registerProfile(username);
       // Re-fetch the profile so the UI picks up the new username.
       await refreshOwnProfile();
+      toast(t("toast.username_registered"), "success");
     },
-    [refreshOwnProfile]
+    [refreshOwnProfile, toast, t]
   );
 
   const handleSetAvatar = useCallback(
@@ -170,8 +173,9 @@ export function MainView({ peerId, onReset }: MainViewProps) {
       await setAvatar(username, avatarBase64);
       // Re-fetch the profile so the avatar_url (and preview) refresh.
       await refreshOwnProfile();
+      toast(t("toast.avatar_updated"), "success");
     },
-    [myProfile?.username, refreshOwnProfile, t]
+    [myProfile?.username, refreshOwnProfile, toast, t]
   );
 
   // Privacy / notification preference handlers: apply in memory immediately
@@ -253,9 +257,10 @@ export function MainView({ peerId, onReset }: MainViewProps) {
       const groupId = await createGroup(name, memberIds);
       await chat.refresh();
       chat.setActivePeerId(groupId);
+      toast(t("toast.group_created"), "success");
       return groupId;
     },
-    [chat.refresh, chat.setActivePeerId]
+    [chat.refresh, chat.setActivePeerId, toast, t]
   );
 
   /** Fetch fresh group metadata (name, roster, roles) for the info panel. */
@@ -269,24 +274,27 @@ export function MainView({ peerId, onReset }: MainViewProps) {
     async (groupId: string, peerId: string) => {
       await promoteMember(groupId, peerId);
       await chat.refresh();
+      toast(t("toast.member_promoted"), "success");
     },
-    [chat.refresh]
+    [chat.refresh, toast, t]
   );
 
   const handleDemote = useCallback(
     async (groupId: string, peerId: string) => {
       await demoteMember(groupId, peerId);
       await chat.refresh();
+      toast(t("toast.member_demoted"), "success");
     },
-    [chat.refresh]
+    [chat.refresh, toast, t]
   );
 
   const handleRemoveMember = useCallback(
     async (groupId: string, peerId: string) => {
       await removeMember(groupId, peerId);
       await chat.refresh();
+      toast(t("toast.member_removed"), "success");
     },
-    [chat.refresh]
+    [chat.refresh, toast, t]
   );
 
   const handleLeaveGroup = useCallback(
@@ -299,8 +307,9 @@ export function MainView({ peerId, onReset }: MainViewProps) {
         persistPinnedChats(peerId, next);
         return next;
       });
+      toast(t("toast.group_left"), "success");
     },
-    [chat.leaveGroup, peerId]
+    [chat.leaveGroup, peerId, toast, t]
   );
 
   const handleReset = useCallback(() => {
@@ -402,6 +411,7 @@ export function MainView({ peerId, onReset }: MainViewProps) {
         onDemote={handleDemote}
         onRemove={handleRemoveMember}
         onLeave={handleLeaveGroup}
+        onTransferOwnership={chat.transferOwnership}
       />
       <ProfileDialog
         open={profilePeerId !== null}

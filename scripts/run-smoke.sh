@@ -14,7 +14,10 @@ cargo build --release -p whisper-relay
 
 SCRATCH="$(mktemp -d)"
 export WHISPER_DB_PATH="$SCRATCH/smoke.db"
-export WHISPER_RATE_BURST=20
+# Burst budget shared by every per-IP bucket. Must clear the ~27 group
+# operations (ownership transfer included) while still letting the
+# 120-envelope burst test hit its rate limit.
+export WHISPER_RATE_BURST=40
 export WHISPER_RATE_REFILL=0
 
 "$ROOT/target/release/whisper-relay" &

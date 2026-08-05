@@ -164,6 +164,11 @@ export const translations = {
     "groupInfo.leave_group": "Leave group",
     "groupInfo.leave_group_owner_hint":
       "You are the owner. If you leave, this group will have no owner.",
+    "groupInfo.transfer_ownership": "Transfer ownership",
+    "groupInfo.transfer_ownership_hint":
+      "You are the owner. Transfer ownership to another member — you will become an admin.",
+    "groupInfo.transfer_owner_select_aria": "Choose the new group owner",
+    "groupInfo.transfer_owner_placeholder": "Choose a member…",
     "groupInfo.close_group_info": "Close group info",
 
     // ---- New-group dialog ------------------------------------------------
@@ -268,6 +273,19 @@ export const translations = {
 
     // ---- Chat list previews ----------------------------------------------
     "chatList.you_prefix": "You: ",
+
+    // ---- Toasts (in-app notifications) -----------------------------------
+    "toast.dismiss": "Dismiss notification",
+    "toast.avatar_updated": "Avatar updated",
+    "toast.username_registered": "Username registered",
+    "toast.display_name_saved": "Display name saved",
+    "toast.settings_saved": "Settings saved",
+    "toast.group_created": "Group created",
+    "toast.group_left": "You left the group",
+    "toast.member_promoted": "Member promoted to admin",
+    "toast.member_demoted": "Member demoted to regular member",
+    "toast.member_removed": "Member removed from the group",
+    "toast.group_transferred": "Group ownership transferred",
   },
 
   fi: {
@@ -425,6 +443,11 @@ export const translations = {
     "groupInfo.leave_group": "Poistu ryhmästä",
     "groupInfo.leave_group_owner_hint":
       "Olet omistaja. Jos poistut, ryhmä jää ilman omistajaa.",
+    "groupInfo.transfer_ownership": "Siirrä omistajuus",
+    "groupInfo.transfer_ownership_hint":
+      "Olet omistaja. Siirrä omistajuus toiselle jäsenelle — sinusta tulee ylläpitäjä.",
+    "groupInfo.transfer_owner_select_aria": "Valitse uusi ryhmän omistaja",
+    "groupInfo.transfer_owner_placeholder": "Valitse jäsen…",
     "groupInfo.close_group_info": "Sulje ryhmän tiedot",
 
     // ---- New-group dialog ------------------------------------------------
@@ -528,5 +551,18 @@ export const translations = {
 
     // ---- Chat list previews ----------------------------------------------
     "chatList.you_prefix": "Sinä: ",
+
+    // ---- Toasts (in-app notifications) -----------------------------------
+    "toast.dismiss": "Sulje ilmoitus",
+    "toast.avatar_updated": "Profiilikuva päivitetty",
+    "toast.username_registered": "Käyttäjänimi rekisteröity",
+    "toast.display_name_saved": "Näyttönimi tallennettu",
+    "toast.settings_saved": "Asetukset tallennettu",
+    "toast.group_created": "Ryhmä luotu",
+    "toast.group_left": "Poistuit ryhmästä",
+    "toast.member_promoted": "Jäsen ylennetty ylläpitäjäksi",
+    "toast.member_demoted": "Ylläpitäjyys poistettu",
+    "toast.member_removed": "Jäsen poistettu ryhmästä",
+    "toast.group_transferred": "Ryhmän omistajuus siirretty",
   },
 };

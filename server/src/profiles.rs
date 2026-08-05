@@ -74,7 +74,10 @@ impl Relay {
     ///
     /// The optional `avatar` (base64 image, ≤ 2 MiB) is stored on disk as
     /// `media/<sha256>.bin`; identical content hashes to the same blob, so
-    /// re-uploads are idempotent.
+    /// re-uploads are idempotent. The blob is written (and the media directory
+    /// created) before anything is persisted, and a write failure aborts the
+    /// whole registration with `media_error` — the relay never stores an
+    /// `avatar_hash` that has no blob behind it.
     ///
     /// Rate limiting: registration is throttled per source IP under the
     /// `profile:<ip>` bucket (default 5/hour; burst/refill overridable via
@@ -200,7 +203,31 @@ impl Relay {
             return;
         }
 
-        // 5) Uniqueness + persistence of the username binding.
+        // 5) Persist the avatar blob BEFORE the username binding, so a storage
+        //    failure aborts the whole registration with a hard `media_error`
+        //    and leaves nothing dangling: no username, no avatar hash pointing
+        //    at a blob that is not on disk. The blob is content-addressed, so
+        //    a write that is later orphaned (the username turns out to be
+        //    taken) is harmless — nothing ever references it.
+        let avatar_hash = match decoded_avatar {
+            Some(bytes) => match Self::store_avatar(&self.inner.media_dir, &bytes) {
+                Ok(hash) => Some(hash),
+                Err(()) => {
+                    let _ = self
+                        .send(
+                            peer_id,
+                            ServerMessage::Error {
+                                code: "media_error".into(),
+                            },
+                        )
+                        .await;
+                    return;
+                }
+            },
+            None => None,
+        };
+
+        // 6) Uniqueness + persistence of the username binding.
         let now = unix_now();
         match self
             .inner
@@ -226,22 +253,15 @@ impl Relay {
             Ok(()) => {}
         }
 
-        // 6) Persist the profile extras (display name + avatar).
+        // 7) Persist the profile extras (display name + avatar hash).
         if let Some(name) = display_name {
             if let Err(err) = self.inner.store.set_display_name(peer_id, name) {
                 tracing::error!(peer = %peer_id, "failed to persist display name: {err}");
             }
         }
-        if let Some(bytes) = decoded_avatar {
-            match Self::store_avatar(&self.inner.media_dir, &bytes) {
-                Ok(hash) => {
-                    if let Err(err) = self.inner.store.set_avatar_hash(peer_id, &hash) {
-                        tracing::error!(peer = %peer_id, "failed to persist avatar hash: {err}");
-                    }
-                }
-                Err(()) => {
-                    tracing::error!(peer = %peer_id, "failed to write avatar blob");
-                }
+        if let Some(hash) = avatar_hash {
+            if let Err(err) = self.inner.store.set_avatar_hash(peer_id, &hash) {
+                tracing::error!(peer = %peer_id, "failed to persist avatar hash: {err}");
             }
         }
 
@@ -253,6 +273,7 @@ impl Relay {
                 },
             )
             .await;
+        tracing::debug!(peer = %peer_id, username = %username, "profile registered");
     }
 
     /// Prefix-search the public directory by username or peer ID.
@@ -300,9 +321,16 @@ impl Relay {
                 })
                 .collect()
         };
+        let results_count = results.len();
         let _ = self
             .send(peer_id, ServerMessage::UsersSearch { results })
             .await;
+        tracing::debug!(
+            peer = %peer_id,
+            query = %query,
+            results = results_count,
+            "users searched"
+        );
     }
 
     /// Fetch another peer's public profile by peer ID, or answer `no_profile`
@@ -340,6 +368,7 @@ impl Relay {
                         },
                     )
                     .await;
+                tracing::debug!(peer = %peer_id, target = %target, "profile fetched");
             }
             None => {
                 let _ = self
@@ -350,6 +379,7 @@ impl Relay {
                         },
                     )
                     .await;
+                tracing::debug!(peer = %peer_id, target = %target, "profile not found");
             }
         }
     }
@@ -801,6 +831,60 @@ mod tests {
             Some(hash.as_str())
         );
 
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn register_profile_reports_media_error_when_avatar_write_fails() {
+        let store = Store::open_in_memory().unwrap();
+        let dir =
+            std::env::temp_dir().join(format!("whisper-relay-media-fail-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        // A regular FILE squatting on the media path makes create_dir_all
+        // fail, so the blob cannot be written.
+        let media_dir = dir.join("media");
+        std::fs::write(&media_dir, b"not a directory").unwrap();
+        let relay = Relay::with_parts(
+            store,
+            media_dir,
+            RateLimiter::new(100.0, 0.0),
+            RateLimiter::new(100.0, 0.0),
+        );
+        let alice = Identity::new();
+        let mut rx = online_peer(&relay, &alice).await;
+
+        let png: &[u8] = &[0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a];
+        let encoded = STANDARD.encode(png);
+        relay
+            .register_profile(
+                &alice.peer_id(),
+                "127.0.0.1",
+                "alice",
+                &sign_username(&alice, "alice"),
+                None,
+                Some(&encoded),
+            )
+            .await;
+
+        let reply = read_reply(&mut rx);
+        assert_eq!(reply["type"].as_str(), Some("error"));
+        assert_eq!(reply["code"].as_str(), Some("media_error"));
+        // Nothing must be persisted: a failed blob write aborts the whole
+        // registration, so there is no username and no dangling avatar hash.
+        let profile = relay.inner.store.get_profile(&alice.peer_id()).unwrap();
+        assert_eq!(
+            profile.username, None,
+            "a failed avatar write must abort the registration"
+        );
+        assert_eq!(
+            relay
+                .inner
+                .store
+                .get_avatar_hash(&alice.peer_id())
+                .as_deref(),
+            None,
+            "an avatar hash must never be stored without its blob"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 

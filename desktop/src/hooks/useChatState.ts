@@ -33,6 +33,7 @@ import {
   sendTyping as relaySendTyping,
   setDisplayName as persistDisplayName,
   startChat,
+  transferOwnership as relayTransferOwnership,
 } from "../lib/relay";
 import { shortPeerId } from "../lib/format";
 import { playNotificationSound } from "../lib/sound";
@@ -135,6 +136,9 @@ export interface ChatStateApi {
   deleteMessage: (peerId: string, messageId: string) => Promise<void>;
   /** Remove the caller from a group and drop it from every local list. */
   leaveGroup: (groupId: string) => Promise<void>;
+  /** Transfer group ownership to `peerId`, then resync the roster and our own
+   *  role so the UI reflects the new owner immediately. */
+  transferOwnership: (groupId: string, peerId: string) => Promise<void>;
 }
 
 /** Owns the chat state (contacts, messages, groups, connection, presence,
@@ -539,6 +543,20 @@ export function useChatState({
     [refresh]
   );
 
+  /**
+   * Transfer group ownership to another member. The backend flips the roles
+   * (old owner -> admin, `peerId` -> owner); a full refresh resyncs the
+   * roster and our own role so the chat list and group panel update right
+   * away. Failures propagate so the dialog can surface them.
+   */
+  const transferOwnership = useCallback(
+    async (groupId: string, peerId: string) => {
+      await relayTransferOwnership(groupId, peerId);
+      await refresh();
+    },
+    [refresh]
+  );
+
   return {
     contacts,
     myDisplayName,
@@ -564,5 +582,6 @@ export function useChatState({
     updatePresence,
     deleteMessage,
     leaveGroup,
+    transferOwnership,
   };
 }
