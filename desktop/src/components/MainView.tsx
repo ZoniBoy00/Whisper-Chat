@@ -403,15 +403,23 @@ export function MainView({ peerId, onReset }: MainViewProps) {
 
   const handleLeaveGroup = useCallback(
     async (groupId: string) => {
-      await chat.leaveGroup(groupId);
-      setGroupInfoGroupId(null);
-      setPinnedIds((prev) => {
-        if (!prev.includes(groupId)) return prev;
-        const next = prev.filter((id) => id !== groupId);
-        persistPinnedChats(peerId, next);
-        return next;
-      });
-      toast(t("toast.group_left"), "success");
+      try {
+        await chat.leaveGroup(groupId);
+        setGroupInfoGroupId(null);
+        setPinnedIds((prev) => {
+          if (!prev.includes(groupId)) return prev;
+          const next = prev.filter((id) => id !== groupId);
+          persistPinnedChats(peerId, next);
+          return next;
+        });
+        toast(t("toast.group_left"), "success");
+      } catch (err) {
+        // Never swallow a failure: the group stays on the roster (and in the
+        // list) until the leave actually goes through, and the user must see
+        // why instead of a silent no-op.
+        const message = String(err).replace(/^Error:\s*/, "");
+        toast(message, "error");
+      }
     },
     [chat.leaveGroup, peerId, toast, t]
   );
@@ -519,6 +527,8 @@ export function MainView({ peerId, onReset }: MainViewProps) {
         onRemove={handleRemoveMember}
         onLeave={handleLeaveGroup}
         onTransferOwnership={chat.transferOwnership}
+        contacts={chat.contacts}
+        relayUrl={relayUrl}
       />
       <ProfileDialog
         open={profilePeerId !== null}
