@@ -30,6 +30,10 @@ sender and the recipient can read them.
   read, live "typing…" indicators and Online / Last seen status (WhatsApp-style).
 - **Username & profile system** — register a unique signed username (Ed25519
   binding), set a display name and avatar, search by username or UID.
+- **Friend system (anti-spam)** — contacts are established via signed friend
+  requests; the relay refuses 1:1 messages, pre-key fetches and group member
+  adds between non-contacts (`not_contacts`). A Contacts tab lists every friend
+  with live Online / Last seen status and one-click removal.
 - **Privacy controls** — hide your online status, disable read receipts or
   typing signals, per-option notification previews.
 - **Zero-knowledge blind relay** — the server only ever sees opaque, encrypted
@@ -219,9 +223,9 @@ cargo fmt --check
 
 ## Testing & TDD
 
-- **219 unit tests** across the workspace (e2ee-core 48, whisper-desktop 59,
-  whisper-relay 112)
-- **67 smoke tests** covering live routing, offline delivery, SQLite
+- **277 unit tests** across the workspace (e2ee-core 48, whisper-desktop 89,
+  whisper-relay 140)
+- **92 smoke tests** covering live routing, offline delivery, SQLite
   persistence, `fetch_since` sync, rate limiting and signed-hello spoofing
   protection
 - **TDD policy:** every crypto change requires tests before merge — tests

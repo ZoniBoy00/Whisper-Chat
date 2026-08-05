@@ -80,8 +80,8 @@ Each role waits for the previous one to finish; parallel coding is capped at 3.
 ## Quick reference for commands
 
 ```sh
-# Run the whole workspace's tests (209 unit tests as of 2026-08-05:
-# e2ee-core 48, whisper-desktop 53, whisper-relay 108)
+# Run the whole workspace's tests (277 unit tests as of 2026-08-05:
+# e2ee-core 48, whisper-desktop 89, whisper-relay 140)
 cargo test --workspace
 
 # Windows note: desktop requires the MSVC toolchain (rustup default

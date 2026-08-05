@@ -385,6 +385,15 @@ impl RelayClient {
             }
         }
         let _ = self.save_group_sessions();
+        // The UI keeps its own copy of the group in React state: without an
+        // event it would keep showing the group (and every action on it would
+        // fail with not_a_member). Emit so the UI drops it and can toast.
+        let _ = self.inner.app.emit(
+            "group-removed",
+            GroupRemovedEvent {
+                group_id: group_id.to_string(),
+            },
+        );
     }
 
     /// Kick off a best-effort background `get_group_info` for `group_id` so

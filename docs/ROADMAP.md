@@ -178,7 +178,8 @@ talks to whom, IP) is visible just as in Signal/WhatsApp — this is an
 | **6** | **Groups:** Megolm E2EE groups — owner/admin roles, multi-sender (every member sends with an own Megolm session), ownership transfer, key sharing over 1:1 E2EE, WhatsApp/Signal-style group chat + info UI | 2 | ✅ **done** |
 | **6.5** | **Disappearing messages:** per-chat TTL, auto-delete both ends | 1–2 | 🔒 Next |
 | **6.6** | **i18n + notifications:** EN/FI translations, native notifications + sounds, unread badges, pinned chats, in-chat message search, day separators, context menus, auto-reconnect | 1–2 | ✅ **done** |
-| **6.7** | **Group multi-sender:** every member sends with their own outbound Megolm session (created on first group-key receipt); connection toasts | 1 | ✅ **done** (toasts ⏳) |
+| **6.7** | **Group multi-sender:** every member sends with their own outbound Megolm session (created on first group-key receipt); connection toasts | 1 | ✅ **done** |
+| **6.8** | **Friend system (anti-spam):** signed friend requests + accept/decline/remove, server-enforced `not_contacts` gating (1:1 envelopes, pre-keys, group member adds), Contacts tab with live Online / Last seen + one-click removal | 2 | ✅ **done** |
 | **7** | **Media + calls:** encrypted file transfer, WebRTC (DTLS-SRTP) + coturn | 2 | 🔒 After MVP |
 | **8** | **Mobile:** Flutter + flutter_rust_bridge; push (APNs/FCM — only "you have a message") | separate | 🔒 After MVP |
 | **9** | **Audit + PQ:** cargo audit, fuzz, external review, threat model, X25519Kyber768 | — | 🔒 After MVP |
@@ -286,8 +287,8 @@ tester → reviewer → report → approval → push.
 - [x] Code hardening: release profiles, systemd template, .env.example
 - [x] Rename `ghost-relay` → `whisper-relay` (crate, `WHISPER_*` env vars, deploy unit)
 
-**Test counts (2026-08-05):** 219 unit tests — e2ee-core 48, whisper-relay 112,
-whisper-desktop 59; smoke suite 67/67 checks.
+**Test counts (2026-08-05):** 277 unit tests — e2ee-core 48, whisper-relay 140,
+whisper-desktop 89; smoke suite 92/92 checks.
 
 **⏳ Next up:**
 - [ ] Phase 6.5: disappearing messages (per-chat TTL, auto-delete both ends)
