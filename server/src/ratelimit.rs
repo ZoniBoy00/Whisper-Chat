@@ -14,10 +14,12 @@ use std::collections::HashMap;
 const DEFAULT_RATE_BURST: f64 = 60.0;
 const DEFAULT_RATE_REFILL_PER_SEC: f64 = 1.0;
 
-/// Default per-IP profile token bucket: 5 mutations, refilled at 5/hour.
-/// Registration, search and profile lookups all draw from it.
-const DEFAULT_PROFILE_RATE_BURST: f64 = 5.0;
-const DEFAULT_PROFILE_RATE_REFILL_PER_SEC: f64 = 5.0 / 3600.0;
+/// Default per-IP profile token bucket: 30 mutations, refilled at 30/hour.
+/// Registration, search and profile lookups all draw from it. Generous enough
+/// for normal use (avatar/display-name tweaks) while still limiting username
+/// squatting spam.
+const DEFAULT_PROFILE_RATE_BURST: f64 = 30.0;
+const DEFAULT_PROFILE_RATE_REFILL_PER_SEC: f64 = 30.0 / 3600.0;
 
 /// Per-IP token bucket. Each accepted envelope consumes one token; tokens are
 /// refilled continuously up to the burst capacity.

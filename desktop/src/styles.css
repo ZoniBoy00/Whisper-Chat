@@ -358,3 +358,10 @@ dialog.wp-dialog::backdrop {
     scroll-behavior: auto !important;
   }
 }
+
+/* Visible text selection in both themes — the accent color makes it obvious
+   that a message is being marked/copied (works on dark and light). */
+::selection {
+  background: rgba(var(--wp-accent), 0.35);
+  color: var(--wp-text);
+}

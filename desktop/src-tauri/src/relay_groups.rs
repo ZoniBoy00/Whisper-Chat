@@ -45,13 +45,16 @@ pub(crate) struct GroupKeyPayload {
 }
 
 impl RelayClient {
-    /// Create a group on the relay, register its members, build the Megolm
-    /// outbound session and share its `session_key` to every member over the
+    /// Create a group on the relay, build the Megolm outbound session, register
+    /// the group locally and share its `session_key` to every member over the
     /// existing 1:1 Double Ratchet channel.
     ///
-    /// Returns the relay-assigned group ID. Key sharing is best-effort per
-    /// member: a member whose pre-keys are unavailable (never connected) is
-    /// skipped so one failure cannot abort group creation.
+    /// The outbound session is built and persisted BEFORE the roster is
+    /// mutated, so a member-add failure can never leave this identity with a
+    /// group that has no outbound session. Returns the relay-assigned group ID.
+    /// Member adds and key sharing are both best-effort per member: a member
+    /// that is rate-limited, offline or unreachable is skipped so one failure
+    /// cannot abort group creation.
     pub async fn create_group(
         &self,
         name: &str,
@@ -79,26 +82,14 @@ impl RelayClient {
                 .map_err(|_| RelayError::GroupRequestFailed)??
         };
 
-        // 2) Add every member to the roster (owner or member may add, and the
-        //    creator is the owner).
-        for member in &member_ids {
-            let (tx, rx) = oneshot::channel();
-            mutex_guard(&self.inner.pending_group_member_added)?.push_back(tx);
-            if let Err(err) = self.send_json(&ClientMessage::AddGroupMember {
-                group_id: group_id.clone(),
-                peer_id: member.clone(),
-            }) {
-                mutex_guard(&self.inner.pending_group_member_added)?.pop_back();
-                return Err(err);
-            }
-            tokio::time::timeout(PREKEY_FETCH_TIMEOUT, rx)
-                .await
-                .map_err(|_| RelayError::GroupTimeout)?
-                .map_err(|_| RelayError::GroupRequestFailed)??;
-        }
-
-        // 3) Build the Megolm outbound session and keep it in the groups map
-        //    together with the roster we just assembled.
+        // 2) Build the Megolm outbound session and register the group locally
+        //    BEFORE touching the roster. The relay confirms `group_created`
+        //    (and `handle_group_created` caches the group) as soon as the
+        //    reply arrives, so if a member add failed afterwards the group
+        //    would otherwise linger with `outbound: None` and every send would
+        //    fail with "group X has no outbound session". Building and
+        //    persisting the pickle up front keeps the owner's state consistent
+        //    no matter how the roster mutations go.
         let outbound = OutboundGroup::new();
         let session_key = outbound.session_key();
         let mut members = vec![GroupMember {
@@ -122,6 +113,40 @@ impl RelayClient {
         // with the group name as its display name).
         self.remember_contact_name(&group_id, name)?;
         self.save_group_sessions()?;
+
+        // 3) Add every member to the roster (owner or member may add, and the
+        //    creator is the owner). Best-effort: a member whose add request is
+        //    rate-limited, times out or otherwise fails must not abort group
+        //    creation — the group is already created and fully functional for
+        //    the owner, and the member can be added again later. A timed-out
+        //    waiter is removed so a request that never receives a reply cannot
+        //    misalign the FIFO pending queue for the remaining members.
+        for member in &member_ids {
+            let result = async {
+                let (tx, rx) = oneshot::channel();
+                mutex_guard(&self.inner.pending_group_member_added)?.push_back(tx);
+                if let Err(err) = self.send_json(&ClientMessage::AddGroupMember {
+                    group_id: group_id.clone(),
+                    peer_id: member.clone(),
+                }) {
+                    mutex_guard(&self.inner.pending_group_member_added)?.pop_back();
+                    return Err(err);
+                }
+                match tokio::time::timeout(PREKEY_FETCH_TIMEOUT, rx).await {
+                    Err(_) => {
+                        mutex_guard(&self.inner.pending_group_member_added)?.pop_front();
+                        Err(RelayError::GroupTimeout)
+                    }
+                    Ok(inner) => inner
+                        .map_err(|_| RelayError::GroupRequestFailed)
+                        .and_then(|reply| reply),
+                }
+            }
+            .await;
+            if let Err(err) = result {
+                eprintln!("whisper desktop: failed to add {member} to group {group_id}: {err}");
+            }
+        }
 
         // 4) Share the session key to every member over 1:1 sessions. Each
         //    member starts with `start_chat` (which also sends the greeting)
