@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState } from "react";
 import {
+  Copy,
   Loader2,
+  MessageCircle,
   MessageCirclePlus,
   MoreVertical,
   Search,
@@ -9,14 +11,19 @@ import {
   SquarePen,
   Trash2,
   UserPlus,
+  UserRound,
+  UserX,
   Users,
 } from "lucide-react";
 import type { Conversation, PresenceInfo, ProfileInfo } from "../types";
 import { cx, formatTime, mediaUrl, shortPeerId } from "../lib/format";
 import { conversationPreview } from "../lib/chatList";
 import { searchUsers } from "../lib/relay";
+import { copyText } from "../lib/clipboard";
 import { Avatar } from "./Avatar";
 import { CopyButton } from "./CopyButton";
+import { ContextMenu } from "./ContextMenu";
+import type { ContextMenuItem } from "./ContextMenu";
 
 interface SidebarProps {
   peerId: string;
@@ -28,6 +35,10 @@ interface SidebarProps {
   activeId: string | null;
   connected: boolean;
   connecting: boolean;
+  /** Whether the Rust side is retrying a dropped connection automatically. */
+  reconnecting: boolean;
+  /** Current auto-reconnect progress; null while not reconnecting. */
+  reconnectInfo: { attempt: number; nextInMs: number } | null;
   connectionError: string | null;
   /** Relay endpoint; used to resolve `/media/{hash}` avatar paths. */
   relayUrl: string;
@@ -40,6 +51,19 @@ interface SidebarProps {
   onOpenSettings: () => void;
   onReconnect: () => void;
   onReset: () => void;
+  /** Open the profile dialog for a specific 1:1 contact (context menu). */
+  onOpenProfile: (peerId: string) => void;
+  /** Open the group info panel for a specific group (context menu). */
+  onOpenGroupInfo: (groupId: string) => void;
+  /** Remove a 1:1 contact locally (context menu). */
+  onRemoveContact: (peerId: string) => void;
+}
+
+/** Right-click state of a conversation row: menu position + the target. */
+interface RowMenuState {
+  x: number;
+  y: number;
+  conversation: Conversation;
 }
 
 /** Debounce for the directory search so keystrokes don't spam the backend. */
@@ -55,6 +79,8 @@ export function Sidebar({
   activeId,
   connected,
   connecting,
+  reconnecting,
+  reconnectInfo,
   connectionError,
   relayUrl,
   onSelect,
@@ -64,9 +90,13 @@ export function Sidebar({
   onOpenSettings,
   onReconnect,
   onReset,
+  onOpenProfile,
+  onOpenGroupInfo,
+  onRemoveContact,
 }: SidebarProps) {
   const [menuOpen, setMenuOpen] = useState(false);
   const [confirming, setConfirming] = useState(false);
+  const [rowMenu, setRowMenu] = useState<RowMenuState | null>(null);
   const [query, setQuery] = useState("");
   const [serverResults, setServerResults] = useState<ProfileInfo[] | null>(null);
   const [serverSearching, setServerSearching] = useState(false);
@@ -399,6 +429,10 @@ export function Sidebar({
                 key={conversation.id}
                 type="button"
                 onClick={() => onSelect(conversation.id)}
+                onContextMenu={(event) => {
+                  event.preventDefault();
+                  setRowMenu({ x: event.clientX, y: event.clientY, conversation });
+                }}
                 aria-current={active ? "true" : undefined}
                 className={cx(
                   "flex w-full items-center gap-3 rounded-xl px-3 py-3 text-left transition-colors duration-200 ease-out",
@@ -448,6 +482,56 @@ export function Sidebar({
         )}
       </div>
 
+      {rowMenu ? (
+        <ContextMenu
+          x={rowMenu.x}
+          y={rowMenu.y}
+          label={`Actions for ${rowMenu.conversation.name}`}
+          onClose={() => setRowMenu(null)}
+          items={(() => {
+            const conversation = rowMenu.conversation;
+            const isGroup = conversation.isGroup === true;
+            const items: ContextMenuItem[] = [
+              {
+                id: "view-profile",
+                label: isGroup ? "View Group Info" : "View Profile",
+                icon: isGroup ? (
+                  <Users className="h-4 w-4" />
+                ) : (
+                  <UserRound className="h-4 w-4" />
+                ),
+                onSelect: () => {
+                  if (isGroup) onOpenGroupInfo(conversation.peerId);
+                  else onOpenProfile(conversation.peerId);
+                },
+              },
+              {
+                id: "send-message",
+                label: "Send Message",
+                icon: <MessageCircle className="h-4 w-4" />,
+                onSelect: () => onSelect(conversation.id),
+              },
+              {
+                id: "copy-peer-id",
+                label: "Copy Peer ID",
+                icon: <Copy className="h-4 w-4" />,
+                onSelect: () => void copyText(conversation.peerId),
+              },
+            ];
+            if (!isGroup) {
+              items.push({
+                id: "remove-contact",
+                label: "Remove Contact",
+                danger: true,
+                icon: <UserX className="h-4 w-4" />,
+                onSelect: () => onRemoveContact(conversation.peerId),
+              });
+            }
+            return items;
+          })()}
+        />
+      ) : null}
+
       {/* Connection status */}
       <footer className="border-t border-wp-line/10 px-4 py-3">
         {connected ? (
@@ -462,6 +546,25 @@ export function Sidebar({
             <span className="text-xs text-wp-faint">
               · end-to-end encrypted
             </span>
+          </div>
+        ) : reconnecting ? (
+          <div
+            role="status"
+            aria-live="polite"
+            className="flex items-center gap-2.5 text-wp-dim"
+          >
+            <Loader2 className="h-4 w-4 animate-spin text-wp-accent" />
+            <div className="min-w-0">
+              <p className="text-sm font-semibold tracking-wide">
+                Reconnecting…
+              </p>
+              {reconnectInfo ? (
+                <p className="text-xs text-wp-faint">
+                  Attempt {reconnectInfo.attempt} · retrying in{" "}
+                  {Math.max(1, Math.round(reconnectInfo.nextInMs / 1000))}s
+                </p>
+              ) : null}
+            </div>
           </div>
         ) : connecting ? (
           <div className="flex items-center gap-2.5 text-wp-dim">

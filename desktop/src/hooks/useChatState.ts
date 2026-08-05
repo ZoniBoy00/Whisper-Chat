@@ -10,12 +10,14 @@ import type {
 } from "../types";
 import {
   connectRelay,
+  deleteMessage as relayDeleteMessage,
   getChatState,
   getProfile,
   onChatMessage,
   onContactUpdated,
   onMessageStatus,
   onPresence,
+  onReconnecting,
   onRelayStatus,
   onTyping,
   publishPrekeys,
@@ -83,6 +85,10 @@ export interface ChatStateApi {
   groups: GroupInfo[];
   connected: boolean;
   connecting: boolean;
+  /** Whether the Rust side is retrying a dropped connection automatically. */
+  reconnecting: boolean;
+  /** Current auto-reconnect progress; null while not reconnecting. */
+  reconnectInfo: { attempt: number; nextInMs: number } | null;
   connectionError: string | null;
   typing: Record<string, boolean>;
   presence: Record<string, PresenceInfo>;
@@ -96,6 +102,7 @@ export interface ChatStateApi {
   removeContact: (peerId: string) => Promise<void>;
   addContact: (peerId: string) => Promise<void>;
   updatePresence: (peerId: string, info: PresenceInfo) => void;
+  deleteMessage: (peerId: string, messageId: string) => Promise<void>;
 }
 
 /** Owns the chat state (contacts, messages, groups, connection, presence,
@@ -111,6 +118,11 @@ export function useChatState({
   const [groups, setGroups] = useState<GroupInfo[]>([]);
   const [connected, setConnected] = useState(false);
   const [connecting, setConnecting] = useState(true);
+  const [reconnecting, setReconnecting] = useState(false);
+  const [reconnectInfo, setReconnectInfo] = useState<{
+    attempt: number;
+    nextInMs: number;
+  } | null>(null);
   const [connectionError, setConnectionError] = useState<string | null>(null);
   const [typing, setTyping] = useState<Record<string, boolean>>({});
   const [presence, setPresence] = useState<Record<string, PresenceInfo>>({});
@@ -198,7 +210,21 @@ export function useChatState({
         onRelayStatus(({ connected: isConnected }) => {
           if (disposed) return;
           setConnected(isConnected);
-          if (isConnected) void refresh();
+          if (isConnected) {
+            // A live connection means no auto-reconnect is pending and any
+            // earlier connect failure is moot.
+            setConnectionError(null);
+            setReconnecting(false);
+            setReconnectInfo(null);
+            void refresh();
+          }
+        })
+      );
+      const reconnectingUnlisten = await register(() =>
+        onReconnecting(({ active, attempt, next_in_ms }) => {
+          if (disposed) return;
+          setReconnecting(active);
+          setReconnectInfo(active ? { attempt, nextInMs: next_in_ms } : null);
         })
       );
       const messageStatusUnlisten = await register(() =>
@@ -262,6 +288,7 @@ export function useChatState({
         disposed ||
         !chatUnlisten ||
         !statusUnlisten ||
+        !reconnectingUnlisten ||
         !messageStatusUnlisten ||
         !typingUnlisten ||
         !contactUpdatedUnlisten ||
@@ -326,6 +353,30 @@ export function useChatState({
   const updatePresence = useCallback((peerId: string, info: PresenceInfo) => {
     setPresence((prev) => ({ ...prev, [peerId]: info }));
   }, []);
+
+  /** Delete one message locally ("delete for me"): the backend drops the row
+   *  from the encrypted store and its in-memory history; this removes it from
+   *  the React state so no refresh is needed. The peer's copy and any
+   *  relay-queued envelopes are untouched. */
+  const deleteMessage = useCallback(
+    async (targetPeerId: string, messageId: string) => {
+      try {
+        await relayDeleteMessage(targetPeerId, messageId);
+      } catch {
+        // Client-local best-effort: the in-memory removal below still applies
+        // for this session.
+      }
+      setMessages((prev) => {
+        const list = prev[targetPeerId];
+        if (!list || !list.some((m) => m.id === messageId)) return prev;
+        return {
+          ...prev,
+          [targetPeerId]: list.filter((m) => m.id !== messageId),
+        };
+      });
+    },
+    []
+  );
 
   /** Remove a contact and its messages on this device (client-local). The
    *  Rust backend drops the contact row, history and session; this keeps the
@@ -393,6 +444,8 @@ export function useChatState({
     groups,
     connected,
     connecting,
+    reconnecting,
+    reconnectInfo,
     connectionError,
     typing,
     presence,
@@ -406,5 +459,6 @@ export function useChatState({
     removeContact,
     addContact,
     updatePresence,
+    deleteMessage,
   };
 }

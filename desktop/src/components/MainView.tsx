@@ -187,12 +187,30 @@ export function MainView({ peerId, onReset }: MainViewProps) {
     if (chat.activePeerId) setProfilePeerId(chat.activePeerId);
   }, [chat.activePeerId]);
 
+  /** Open the profile dialog for a specific peer (context-menu action). */
+  const handleOpenProfileFor = useCallback((targetPeerId: string) => {
+    setProfilePeerId(targetPeerId);
+  }, []);
+
+  /** Open the group info panel for a specific group (context-menu action). */
+  const handleOpenGroupInfoFor = useCallback((groupId: string) => {
+    setGroupInfoGroupId(groupId);
+  }, []);
+
   const handleRemoveContact = useCallback(
     (targetPeerId: string) => {
       setProfilePeerId(null);
       void chat.removeContact(targetPeerId);
     },
     [chat.removeContact]
+  );
+
+  /** "Delete for me" from the message context menu: client-local removal. */
+  const handleDeleteMessage = useCallback(
+    (messageId: string) => {
+      if (chat.activePeerId) void chat.deleteMessage(chat.activePeerId, messageId);
+    },
+    [chat.activePeerId, chat.deleteMessage]
   );
 
   // ---- Group chat wiring --------------------------------------------------
@@ -282,6 +300,8 @@ export function MainView({ peerId, onReset }: MainViewProps) {
         activeId={chat.activePeerId}
         connected={chat.connected}
         connecting={chat.connecting}
+        reconnecting={chat.reconnecting}
+        reconnectInfo={chat.reconnectInfo}
         connectionError={chat.connectionError}
         relayUrl={relayUrl}
         onSelect={chat.setActivePeerId}
@@ -291,6 +311,9 @@ export function MainView({ peerId, onReset }: MainViewProps) {
         onOpenSettings={() => setSettingsOpen(true)}
         onReconnect={() => void chat.connect()}
         onReset={handleReset}
+        onOpenProfile={handleOpenProfileFor}
+        onOpenGroupInfo={handleOpenGroupInfoFor}
+        onRemoveContact={handleRemoveContact}
       />
       <ChatView
         conversation={active}
@@ -303,6 +326,7 @@ export function MainView({ peerId, onReset }: MainViewProps) {
         onOpenGroupInfo={
           active?.isGroup ? () => setGroupInfoGroupId(active.peerId) : undefined
         }
+        onDeleteMessage={handleDeleteMessage}
       />
       <AddContactDialog
         open={addDialogOpen}

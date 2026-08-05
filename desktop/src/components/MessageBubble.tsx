@@ -1,3 +1,4 @@
+import type { MouseEvent } from "react";
 import { Check, CheckCheck } from "lucide-react";
 import type { Message } from "../types";
 import { cx, formatTime } from "../lib/format";
@@ -6,9 +7,15 @@ interface MessageBubbleProps {
   message: Message;
   /** Animate the entrance — only newly appended messages set this. */
   animate?: boolean;
+  /** Right-click handler (opens the message context menu). */
+  onContextMenu?: (event: MouseEvent<HTMLDivElement>) => void;
 }
 
-export function MessageBubble({ message, animate = false }: MessageBubbleProps) {
+export function MessageBubble({
+  message,
+  animate = false,
+  onContextMenu,
+}: MessageBubbleProps) {
   const { outgoing } = message;
   // Read receipts: "sent" = single gray tick, "delivered" = double gray tick,
   // "read" = double blue tick.
@@ -32,6 +39,7 @@ export function MessageBubble({ message, animate = false }: MessageBubbleProps) 
             ? "rounded-br-md bg-gradient-to-br from-wp-bubble-out-2 to-wp-bubble-out"
             : "rounded-bl-md bg-wp-bubble-in"
         )}
+        onContextMenu={onContextMenu}
       >
         <p className="whitespace-pre-wrap break-words text-[15px] leading-relaxed text-wp-text">
           {message.text}

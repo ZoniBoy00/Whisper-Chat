@@ -267,6 +267,20 @@ async fn remove_contact(state: State<'_, RelayClient>, peer_id: String) -> Resul
     state.remove_contact(&peer_id).map_err(|e| e.to_string())
 }
 
+/// Delete one message locally ("delete for me"): the decrypted history in
+/// memory and its row in the encrypted store. The peer's copy and any
+/// relay-queued envelopes are untouched.
+#[tauri::command]
+async fn delete_message(
+    state: State<'_, RelayClient>,
+    peer_id: String,
+    message_id: String,
+) -> Result<(), String> {
+    state
+        .delete_message(&peer_id, &message_id)
+        .map_err(|e| e.to_string())
+}
+
 /// Persist our own public display name and announce it to the relay so other
 /// peers can show it when they look us up.
 #[tauri::command]
@@ -380,6 +394,16 @@ async fn leave_group(state: State<'_, RelayClient>, group_id: String) -> Result<
         .map_err(|e| e.to_string())
 }
 
+/// Suppresses the WebView2 default right-click menu (Reload/Inspect/Copy/...)
+/// on every window. Tauri 2.11 has no `Webview::on_menu` / `prevent_default`
+/// API — `on_menu_event` only reports native app-menu clicks — so the supported
+/// way to kill the browser menu is a DOM-level `contextmenu` preventDefault:
+/// WebView2 honors it and skips its built-in menu. The global `on_page_load`
+/// hook covers BOTH config-defined windows (splash + main) plus any window
+/// created later.
+const SUPPRESS_CONTEXT_MENU_SCRIPT: &str =
+    "window.addEventListener('contextmenu',(e)=>e.preventDefault(),true);";
+
 /// Splash screen handoff. The main window is created hidden so the splash
 /// window is the first thing the user sees. The frontend emits a `splash-done`
 /// event once its view is ready; if that never arrives (e.g. the webview
@@ -427,6 +451,14 @@ fn show_main_window(app: &tauri::AppHandle) {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        // Re-injected on every page load so a navigation (or a window that was
+        // still booting when the setup hook ran) can never bring the browser
+        // menu back.
+        .on_page_load(|webview, payload| {
+            if payload.event() == tauri::webview::PageLoadEvent::Finished {
+                let _ = webview.eval(SUPPRESS_CONTEXT_MENU_SCRIPT);
+            }
+        })
         .setup(|app| {
             app.manage(RelayClient::new(app.handle().clone()));
 
@@ -451,6 +483,7 @@ pub fn run() {
             set_privacy,
             update_settings,
             remove_contact,
+            delete_message,
             set_display_name,
             send_typing,
             get_presence,
