@@ -4,6 +4,7 @@ import type { Theme } from "../types";
 import { useI18n } from "../i18n/I18nContext";
 import { AboutTab } from "./settings/AboutTab";
 import { GeneralTab } from "./settings/GeneralTab";
+import { LogsTab } from "./settings/LogsTab";
 import { NotificationsTab } from "./settings/NotificationsTab";
 import { PrivacyTab } from "./settings/PrivacyTab";
 import { SettingsTabs } from "./settings/SettingsTabs";
@@ -174,6 +175,7 @@ export function SettingsDialog({
                 notificationSound={notificationSound}
                 onNotificationSoundChange={onNotificationSoundChange}
               />
+              <LogsTab active={activeTab === "logs"} />
               <AboutTab active={activeTab === "about"} />
             </>
           )}

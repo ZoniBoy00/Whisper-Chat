@@ -194,6 +194,7 @@ export const translations = {
     "settings.tab_general": "General",
     "settings.tab_privacy": "Privacy",
     "settings.tab_notifications": "Notifications",
+    "settings.tab_logs": "Logs",
     "settings.tab_about": "About",
 
     // ---- Settings: General ----------------------------------------------
@@ -270,6 +271,17 @@ export const translations = {
     "about.version": "Version 0.1.0 · MIT",
     "about.e2ee_zero_knowledge": "End-to-end encrypted · Zero-knowledge relay",
     "about.keys_on_device": "Keys never leave this device",
+
+    // ---- Settings: Logs --------------------------------------------------
+    "logs.intro":
+      "Client-side logs help you diagnose issues. Logs stay on this device — they are never sent anywhere.",
+    "logs.refresh": "Refresh",
+    "logs.copy": "Copy logs",
+    "logs.load_failed": "Could not load client logs.",
+    "logs.empty": "No log entries yet.",
+    "logs.filter_all": "All",
+    "logs.filter_errors": "Errors",
+    "logs.list_aria": "Recent client logs",
 
     // ---- Chat list previews ----------------------------------------------
     "chatList.you_prefix": "You: ",
@@ -473,6 +485,7 @@ export const translations = {
     "settings.tab_general": "Yleiset",
     "settings.tab_privacy": "Yksityisyys",
     "settings.tab_notifications": "Ilmoitukset",
+    "settings.tab_logs": "Lokit",
     "settings.tab_about": "Tietoja",
 
     // ---- Settings: General ----------------------------------------------
@@ -548,6 +561,17 @@ export const translations = {
     "about.version": "Versio 0.1.0 · MIT",
     "about.e2ee_zero_knowledge": "End-to-end-salattu · Zero-knowledge-rele",
     "about.keys_on_device": "Avaimet eivät koskaan poistu tästä laitteesta",
+
+    // ---- Settings: Logs --------------------------------------------------
+    "logs.intro":
+      "Asiakaspuolen lokit auttavat vianetsinnässä. Lokit pysyvät tällä laitteella — niitä ei lähetetä koskaan minnekään.",
+    "logs.refresh": "Päivitä",
+    "logs.copy": "Kopioi lokit",
+    "logs.load_failed": "Asiakaslokeja ei voitu ladata.",
+    "logs.empty": "Ei lokimerkintöjä vielä.",
+    "logs.filter_all": "Kaikki",
+    "logs.filter_errors": "Virheet",
+    "logs.list_aria": "Viimeisimmät asiakaslokit",
 
     // ---- Chat list previews ----------------------------------------------
     "chatList.you_prefix": "Sinä: ",

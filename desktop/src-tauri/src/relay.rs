@@ -164,6 +164,9 @@ pub enum RelayError {
     /// join-time setup completes.
     #[error("group {0} has no outbound session yet")]
     NoOutboundGroup(String),
+    /// The local identity is not (or no longer) in the group's roster.
+    #[error("you are not a member of group {0}")]
+    NotInGroup(String),
     /// The relay replied with an error code.
     #[error("relay error: {0}")]
     Relay(String),
@@ -505,12 +508,16 @@ pub struct TypingEvent {
 }
 
 /// Payload of the `contact-updated` event emitted when a contact's display
-/// name is learned or refreshed (from a pre-key lookup), so the UI can update
-/// the contact list without waiting for a full state refresh.
+/// name or avatar is learned or refreshed (from a pre-key or profile lookup),
+/// so the UI can update the contact list without waiting for a full state
+/// refresh.
 #[derive(Debug, Clone, Serialize)]
 pub struct ContactUpdatedEvent {
     pub peer_id: String,
     pub display_name: Option<String>,
+    /// Server avatar path ("/media/{hash}"); `None` when unknown/unchanged.
+    #[serde(default)]
+    pub avatar_url: Option<String>,
 }
 
 /// A peer's presence snapshot: whether they are online right now, plus their
@@ -551,14 +558,23 @@ pub struct Profiles {
     /// Peer ID -> the display name that peer advertises in pre-key lookups.
     #[serde(default)]
     pub contacts: HashMap<String, String>,
+    /// Peer ID -> the avatar path that peer advertises ("/media/{hash}").
+    /// Kept alongside `contacts` so `get_chat_state` can render contact
+    /// avatars without a per-peer profile round-trip.
+    #[serde(default)]
+    pub contact_avatars: HashMap<String, String>,
 }
 
-/// A known conversation peer plus the display name they advertise, if any.
+/// A known conversation peer plus the display name and avatar they advertise,
+/// if any.
 #[derive(Debug, Clone, Serialize)]
 pub struct ContactInfo {
     pub peer_id: String,
     /// `None` (or a peer with no name) falls back to the peer ID in the UI.
     pub display_name: Option<String>,
+    /// Server avatar path ("/media/{hash}"); `None` when not known.
+    #[serde(default)]
+    pub avatar_url: Option<String>,
 }
 
 /// Snapshot of everything the UI needs to render the chat surface.
@@ -700,6 +716,11 @@ struct RelayInner {
     /// stacking a second loop when a `connect` fails while one is already
     /// retrying.
     reconnect_loop_active: AtomicBool,
+    /// Whether our persisted public profile has been re-asserted against the
+    /// relay for this process run. The relay rate-limits profile mutations
+    /// per source IP, so the startup sync must run once — not on every
+    /// auto-reconnect.
+    profile_synced: AtomicBool,
     /// Monotonic envelope sequence counter.
     seq: AtomicU64,
     /// Monotonic id counter for server-side message ids.
@@ -803,6 +824,7 @@ impl RelayClient {
                 connected: AtomicBool::new(false),
                 auto_reconnect: AtomicBool::new(true),
                 reconnect_loop_active: AtomicBool::new(false),
+                profile_synced: AtomicBool::new(false),
                 seq: AtomicU64::new(1),
                 next_msg_id: AtomicU64::new(1),
                 outbox: RwLock::new(None),
@@ -945,7 +967,7 @@ impl RelayClient {
                 match item {
                     Ok(WsMessage::Text(text)) => {
                         if let Err(err) = client.handle_text(&text) {
-                            eprintln!("whisper relay: inbound error: {err}");
+                            tracing::warn!(error = %err, "inbound relay message error");
                         }
                     }
                     Ok(WsMessage::Ping(payload)) => {
@@ -963,6 +985,25 @@ impl RelayClient {
         // fetches so the chat list shows a real member count (not "0") shortly
         // after connecting, without the user opening the info panel.
         self.refresh_group_rosters();
+
+        // Re-assert our persisted public profile against the relay's users
+        // table so the server keeps (peer_id, username, display_name,
+        // avatar_hash) across app restarts. Runs once per process — the relay
+        // rate-limits profile mutations per source IP — and in the background
+        // so a slow relay can never delay the connect handoff.
+        if self
+            .inner
+            .profile_synced
+            .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+            .is_ok()
+        {
+            let client = self.clone();
+            tauri::async_runtime::spawn(async move {
+                if let Err(err) = client.sync_own_profile().await {
+                    tracing::warn!(error = %err, "failed to re-assert own profile on the relay");
+                }
+            });
+        }
 
         Ok(())
     }
@@ -1006,6 +1047,9 @@ impl RelayClient {
         write_guard(&self.inner.groups)?.clear();
         *write_guard(&self.inner.settings)? = Settings::default();
         *write_guard(&self.inner.profiles)? = Profiles::default();
+        // A reset may be followed by a fresh identity: allow its profile to
+        // be re-asserted on the next connect.
+        self.inner.profile_synced.store(false, Ordering::SeqCst);
         write_guard(&self.inner.messages)?.clear();
         write_guard(&self.inner.contacts)?.clear();
         write_guard(&self.inner.presence)?.clear();
@@ -1132,7 +1176,13 @@ impl RelayClient {
     ) -> Result<(), RelayError> {
         // Group messages are encrypted with the group's Megolm session and
         // routed through the relay's group fan-out rather than a 1:1 ratchet.
+        // A group that predates the multi-sender model (or whose join-time
+        // setup never finished) has no outbound session yet; establish one
+        // (fetch the roster, build our own Megolm session, share its key to
+        // the other members) before the first send so old groups become
+        // sendable without any user action.
         if read_guard(&self.inner.groups)?.contains_key(peer_id) {
+            self.ensure_outbound_session(peer_id).await?;
             return self.send_group_message(peer_id, text, client_id);
         }
 
@@ -1208,6 +1258,7 @@ impl RelayClient {
             .map(|peer_id| ContactInfo {
                 peer_id: peer_id.clone(),
                 display_name: profiles.contacts.get(&peer_id).cloned(),
+                avatar_url: profiles.contact_avatars.get(&peer_id).cloned(),
             })
             .collect();
         // Expose the group roster (without the secret outbound sessions).
@@ -1668,14 +1719,18 @@ impl RelayClient {
         }
 
         // Contacts come back as rows: the ordered contact list, their learned
-        // display names, and the last-seen timestamps that seed the presence
-        // cache before any live push arrives.
+        // display names, their avatar paths and the last-seen timestamps that
+        // seed the presence cache before any live push arrives.
         let mut contact_names = HashMap::new();
+        let mut contact_avatars = HashMap::new();
         let mut contacts = Vec::new();
         let mut presence = HashMap::new();
         for contact in stored_contacts {
             if let Some(name) = contact.display_name.clone() {
                 contact_names.insert(contact.peer_id.clone(), name);
+            }
+            if let Some(avatar) = contact.avatar_url.clone() {
+                contact_avatars.insert(contact.peer_id.clone(), avatar);
             }
             if let Some(last_seen) = contact.last_seen {
                 presence.insert(
@@ -1707,6 +1762,7 @@ impl RelayClient {
         profiles.my_username = my_username.filter(|name| !name.is_empty());
         profiles.my_avatar_url = my_avatar_url.filter(|url| !url.is_empty());
         profiles.contacts = contact_names;
+        profiles.contact_avatars = contact_avatars;
         *write_guard(&self.inner.profiles)? = profiles;
 
         if !presence.is_empty() {
@@ -1797,6 +1853,9 @@ impl RelayClient {
         write_guard(&self.inner.messages)?.remove(peer_id);
         write_guard(&self.inner.presence)?.remove(peer_id);
         write_guard(&self.inner.profiles)?.contacts.remove(peer_id);
+        write_guard(&self.inner.profiles)?
+            .contact_avatars
+            .remove(peer_id);
         let store_guard = self.store_guard()?;
         let store = store_guard.as_ref().ok_or(RelayError::StoreNotOpen)?;
         store.delete_contact(peer_id)?;
@@ -1961,6 +2020,10 @@ impl RelayClient {
                 if let Ok((_, Some(name))) = client.fetch_prekeys(&peer).await {
                     let _ = client.remember_contact_name(&peer, &name);
                 }
+                // Learn the peer's public avatar too (when they have one), so
+                // the contact list and chat header render the image instead of
+                // a letter tile. `get_profile` persists what it learns.
+                let _ = client.get_profile(&peer).await;
             });
         }
         Ok(())

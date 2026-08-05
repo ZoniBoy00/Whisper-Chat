@@ -7,9 +7,11 @@ use serde::Serialize;
 use tauri::{Listener, Manager, State};
 use tokio::sync::Notify;
 
+mod log_buffer;
 mod relay;
 mod store;
 
+use log_buffer::{init_tracing, LogBuffer, LogEntry};
 use relay::{
     ChatState, GroupInfo, PeerProfile, PresenceInfo, ProfileSearchResult, RelayClient, Settings,
     SettingsPatch,
@@ -281,6 +283,20 @@ async fn delete_message(
         .map_err(|e| e.to_string())
 }
 
+/// Return the most recent client log lines from the in-process ring buffer.
+/// `limit` caps the number of lines; the newest lines are returned.
+#[tauri::command]
+fn get_client_logs(state: State<'_, LogBuffer>, limit: Option<usize>) -> Vec<LogEntry> {
+    state.snapshot(limit)
+}
+
+/// Append a log line forwarded from the webview (e.g. an uncaught JS error),
+/// so the Logs tab shows frontend failures alongside the Rust logs.
+#[tauri::command]
+fn append_client_log(state: State<'_, LogBuffer>, level: String, message: String) {
+    state.write_line(&level, "webview", &message);
+}
+
 /// Persist our own public display name and announce it to the relay so other
 /// peers can show it when they look us up.
 #[tauri::command]
@@ -478,6 +494,13 @@ pub fn run() {
             }
         })
         .setup(|app| {
+            // Client log ring buffer backing the Logs settings tab. Captures
+            // every tracing event the app emits plus webview errors forwarded
+            // through `append_client_log`.
+            let log_buffer = LogBuffer::new();
+            init_tracing(&log_buffer);
+            app.manage(log_buffer);
+
             app.manage(RelayClient::new(app.handle().clone()));
 
             setup_splash_screen(app)?;
@@ -516,7 +539,9 @@ pub fn run() {
             demote_member,
             remove_member,
             transfer_ownership,
-            leave_group
+            leave_group,
+            get_client_logs,
+            append_client_log
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

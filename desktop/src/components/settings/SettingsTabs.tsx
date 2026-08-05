@@ -1,11 +1,11 @@
 import { useState } from "react";
 import type { ReactNode } from "react";
-import { Bell, Info, Settings, ShieldCheck } from "lucide-react";
+import { Bell, Info, ScrollText, Settings, ShieldCheck } from "lucide-react";
 import { cx } from "../../lib/format";
 import { useI18n } from "../../i18n/I18nContext";
 import type { TranslationKey } from "../../i18n/types";
 
-export type TabId = "general" | "privacy" | "notifications" | "about";
+export type TabId = "general" | "privacy" | "notifications" | "logs" | "about";
 
 interface TabDef {
   id: TabId;
@@ -17,6 +17,7 @@ const TABS: TabDef[] = [
   { id: "general", labelKey: "settings.tab_general", icon: Settings },
   { id: "privacy", labelKey: "settings.tab_privacy", icon: ShieldCheck },
   { id: "notifications", labelKey: "settings.tab_notifications", icon: Bell },
+  { id: "logs", labelKey: "settings.tab_logs", icon: ScrollText },
   { id: "about", labelKey: "settings.tab_about", icon: Info },
 ];
 
