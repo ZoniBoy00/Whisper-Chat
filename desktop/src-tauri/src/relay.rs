@@ -1199,6 +1199,35 @@ impl RelayClient {
         // after connecting, without the user opening the info panel.
         self.refresh_group_rosters();
 
+        // Contacts learned before the avatar pipeline existed (or restored from
+        // an older store) may lack an avatar_url. Kick off background
+        // `get_profile` fetches for those so the chat list and headers render
+        // images instead of letter tiles — without waiting for the user to open
+        // a profile. `get_profile` persists whatever it learns and emits
+        // `contact-updated`, so the UI updates live.
+        {
+            let contacts = read_guard(&self.inner.contacts)
+                .map(|contacts| contacts.clone())
+                .unwrap_or_default();
+            let avatars = read_guard(&self.inner.profiles)
+                .map(|profiles| profiles.contact_avatars.clone())
+                .unwrap_or_default();
+            let missing: Vec<String> = contacts
+                .into_iter()
+                .filter(|peer| !avatars.contains_key(peer))
+                .collect();
+            if !missing.is_empty() {
+                let client = self.clone();
+                tauri::async_runtime::spawn(async move {
+                    for peer in missing {
+                        if let Err(err) = client.get_profile(&peer).await {
+                            tracing::trace!(peer = %peer, error = %err, "avatar sync lookup failed");
+                        }
+                    }
+                });
+            }
+        }
+
         // Re-assert our persisted public profile against the relay's users
         // table so the server keeps (peer_id, username, display_name,
         // avatar_hash) across app restarts. Runs once per process — the relay
