@@ -8,8 +8,12 @@ interface MessageBubbleProps {
 
 export function MessageBubble({ message }: MessageBubbleProps) {
   const { outgoing } = message;
+  // Read receipts: "sent" = single gray tick, "delivered" = double gray tick,
+  // "read" = double blue tick.
+  const read = outgoing && message.status === "read";
   const delivered = outgoing && message.status === "delivered";
-  const StatusIcon = delivered ? CheckCheck : Check;
+  const doubleTick = read || delivered;
+  const StatusIcon = doubleTick ? CheckCheck : Check;
 
   return (
     <div
@@ -29,7 +33,7 @@ export function MessageBubble({ message }: MessageBubbleProps) {
         <div
           className={cx(
             "mt-1 flex items-center justify-end gap-1",
-            outgoing ? "text-wp-accent" : "text-wp-faint"
+            outgoing ? (read ? "text-wp-read" : "text-wp-faint") : "text-wp-faint"
           )}
         >
           {outgoing ? (
@@ -37,7 +41,7 @@ export function MessageBubble({ message }: MessageBubbleProps) {
               className="h-3 w-3"
               strokeWidth={2.4}
               role="img"
-              aria-label={delivered ? "Delivered" : "Sent"}
+              aria-label={read ? "Read" : delivered ? "Delivered" : "Sent"}
             />
           ) : null}
           <span className="text-[10px] font-medium tabular-nums">

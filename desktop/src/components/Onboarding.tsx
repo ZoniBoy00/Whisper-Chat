@@ -30,6 +30,7 @@ function TrustPoint({ icon, label }: { icon: ReactNode; label: string }) {
 }
 
 export function Onboarding({ onCreated }: OnboardingProps) {
+  const [name, setName] = useState("");
   const [creating, setCreating] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [restoreHint, setRestoreHint] = useState(false);
@@ -38,7 +39,9 @@ export function Onboarding({ onCreated }: OnboardingProps) {
     setCreating(true);
     setError(null);
     try {
-      const result = await invoke<IdentityResult>("generate_identity");
+      const result = await invoke<IdentityResult>("generate_identity", {
+        displayName: name.trim() || null,
+      });
       onCreated(result.peer_id);
     } catch (err) {
       setError(String(err));
@@ -81,6 +84,32 @@ export function Onboarding({ onCreated }: OnboardingProps) {
         </div>
 
         <div className="mt-9 flex w-full flex-col gap-3">
+          <label
+            htmlFor="onboarding-display-name"
+            className="block text-left"
+          >
+            <span className="text-sm font-semibold text-wp-text">
+              What should people call you?
+            </span>
+            <span className="mt-1 block text-xs leading-relaxed text-wp-dim">
+              Your display name is public profile data — like a WhatsApp
+              profile name. Leave it blank to stay anonymous and be known by
+              your Whisper ID, which you&apos;ll receive after creating your
+              identity.
+            </span>
+          </label>
+          <input
+            id="onboarding-display-name"
+            type="text"
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+            placeholder="e.g. Alice"
+            maxLength={64}
+            autoComplete="off"
+            spellCheck={false}
+            className="w-full rounded-xl bg-wp-panel px-4 py-3 text-sm text-wp-text placeholder-wp-faint outline-none transition focus:ring-1 focus:ring-wp-accent/60"
+          />
+
           <button
             type="button"
             onClick={() => void createIdentity()}

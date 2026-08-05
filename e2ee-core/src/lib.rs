@@ -28,4 +28,4 @@ pub mod wire;
 pub use identity::{HelloError, Identity, IdentityError, SignedHello};
 pub use prekey::{PreKeyBundle, PreKeyBundleError};
 pub use session::{ChatSession, InboundSession, SessionError};
-pub use wire::{Envelope, EnvelopeContent, Handshake, Message, WIRE_VERSION};
+pub use wire::{Envelope, EnvelopeContent, Handshake, Message, ReceiptKind, WIRE_VERSION};

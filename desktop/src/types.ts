@@ -1,27 +1,38 @@
 /** Delivery state of an outgoing message. */
-export type MessageStatus = "sent" | "delivered";
+export type MessageStatus = "sent" | "delivered" | "read";
 
 export interface Message {
   id: string;
   text: string;
   outgoing: boolean;
   timestamp: number;
-  /** Outgoing only: "sent" by default, "delivered" once the relay acks. */
+  /** Outgoing only: "sent" by default, "delivered" once the relay acks,
+   *  "read" once the peer's client decrypts an end-to-end read receipt. */
   status?: MessageStatus;
 }
 
 export interface Conversation {
   id: string;
+  /** Display name, falling back to a shortened peer ID. */
   name: string;
+  /** The peer's advertised display name; null when unset. */
+  displayName: string | null;
   peerId: string;
   messages: Message[];
+}
+
+/** A known conversation peer plus the display name they advertise. */
+export interface ContactInfo {
+  peer_id: string;
+  display_name: string | null;
 }
 
 /** Snapshot returned by the `get_chat_state` command. */
 export interface ChatState {
   my_peer_id: string;
+  my_display_name: string | null;
   connected: boolean;
-  contacts: string[];
+  contacts: ContactInfo[];
   messages: Record<string, Message[]>;
 }
 
@@ -36,10 +47,23 @@ export interface RelayStatusEvent {
   connected: boolean;
 }
 
-/** Payload of the `message-status` event emitted on a delivery ack. */
+/** Payload of the `message-status` event emitted on a delivery or read update. */
 export interface MessageStatusEvent {
   client_id: string;
   status: MessageStatus;
+}
+
+/** Payload of the `typing` event emitted when a peer starts/stops typing. */
+export interface TypingEvent {
+  peer_id: string;
+  is_typing: boolean;
+}
+
+/** Payload of the `contact-updated` event emitted when a contact's display
+ *  name is learned or refreshed. */
+export interface ContactUpdatedEvent {
+  peer_id: string;
+  display_name: string | null;
 }
 
 /** Settings snapshot returned by the `get_settings` command. */
