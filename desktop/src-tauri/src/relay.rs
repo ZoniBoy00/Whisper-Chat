@@ -82,6 +82,11 @@ const MAX_DISPLAY_NAME_CHARS: usize = 64;
 /// before the client auto-emits `is_typing: false` as a safety net.
 const TYPING_TIMEOUT_SECS: u64 = 5;
 
+/// How long to wait before each auto-reconnect attempt, in seconds, starting
+/// with the first retry: 2s → 5s → 10s → 20s, capped at 30s for every later
+/// attempt.
+const RECONNECT_BACKOFF_SECS: [u64; 5] = [2, 5, 10, 20, 30];
+
 /// Resolve the identity file path. `WHISPER_IDENTITY_FILE` overrides the
 /// default so two Whisper instances can run side by side on one machine
 /// (e.g. to test E2EE between two windows).
@@ -453,6 +458,20 @@ pub struct RelayStatusEvent {
     pub connected: bool,
 }
 
+/// Payload of the `reconnecting` event emitted while the client retries a
+/// dropped connection with exponential backoff. `active: false` ends the
+/// reconnecting state — either the connection was re-established or a manual
+/// disconnect/reset cancelled the retries.
+#[derive(Debug, Clone, Serialize)]
+pub struct ReconnectingEvent {
+    /// Whether the auto-reconnect loop is still running.
+    pub active: bool,
+    /// One-based retry attempt currently scheduled (or in flight).
+    pub attempt: u32,
+    /// Milliseconds until the next `connect()` attempt.
+    pub next_in_ms: u64,
+}
+
 /// Payload of the `message-status` event emitted when a sent message's
 /// delivery state changes: the relay ack flips it to "delivered" and an
 /// end-to-end read receipt flips it to "read".
@@ -633,6 +652,15 @@ struct RelayInner {
     /// Known conversation peers, in first-contact order.
     contacts: RwLock<Vec<String>>,
     connected: AtomicBool,
+    /// Whether an unexpected connection drop should be followed by automatic
+    /// reconnection (exponential backoff). Cleared by user-initiated
+    /// `disconnect()`/`reset()` calls so those never loop back; re-armed by
+    /// every successful `connect`.
+    auto_reconnect: AtomicBool,
+    /// Whether the auto-reconnect loop is currently running. Guards against
+    /// stacking a second loop when a `connect` fails while one is already
+    /// retrying.
+    reconnect_loop_active: AtomicBool,
     /// Monotonic envelope sequence counter.
     seq: AtomicU64,
     /// Monotonic id counter for server-side message ids.
@@ -733,6 +761,8 @@ impl RelayClient {
                 messages: RwLock::new(HashMap::new()),
                 contacts: RwLock::new(Vec::new()),
                 connected: AtomicBool::new(false),
+                auto_reconnect: AtomicBool::new(true),
+                reconnect_loop_active: AtomicBool::new(false),
                 seq: AtomicU64::new(1),
                 next_msg_id: AtomicU64::new(1),
                 outbox: RwLock::new(None),
@@ -797,9 +827,20 @@ impl RelayClient {
                 std::env::var("WHISPER_RELAY_URL").ok().as_deref(),
             )
         };
-        let (ws_stream, _) = tokio_tungstenite::connect_async(&url)
-            .await
-            .map_err(|err| RelayError::Connection(err.to_string()))?;
+        let (ws_stream, _) = match tokio_tungstenite::connect_async(&url).await {
+            Ok(stream) => stream,
+            Err(err) => {
+                // A failed connection attempt (the relay is unreachable) also
+                // enters the auto-reconnect loop, so the app keeps retrying by
+                // itself instead of waiting for a manual "Reconnect" click. The
+                // loop-active guard keeps this from stacking a second loop when
+                // a retry inside the loop fails too.
+                if self.inner.auto_reconnect.load(Ordering::SeqCst) {
+                    self.spawn_reconnect_loop();
+                }
+                return Err(RelayError::Connection(err.to_string()));
+            }
+        };
 
         let (mut write, read) = ws_stream.split();
         let (out_tx, mut out_rx) = mpsc::unbounded_channel::<WsMessage>();
@@ -809,6 +850,10 @@ impl RelayClient {
             *outbox = Some(out_tx.clone());
         }
         self.inner.connected.store(true, Ordering::SeqCst);
+        // A successful connect (initial, manual or automatic) re-arms
+        // auto-reconnect so a later drop is retried again. A user-initiated
+        // `disconnect()`/`reset()` clears the flag first, so they always win.
+        self.inner.auto_reconnect.store(true, Ordering::SeqCst);
         let _ = self
             .inner
             .app
@@ -868,7 +913,11 @@ impl RelayClient {
 
     /// Tear down the current connection. Other commands will report
     /// [`RelayError::NotConnected`] until [`RelayClient::connect`] is called.
+    ///
+    /// A manual disconnect cancels any pending auto-reconnect loop first, so
+    /// the connection stays down until the UI reconnects on its own.
     pub fn disconnect(&self) -> Result<(), RelayError> {
+        self.inner.auto_reconnect.store(false, Ordering::SeqCst);
         self.mark_disconnected();
         Ok(())
     }
@@ -877,6 +926,9 @@ impl RelayClient {
     /// is reset so stale contacts, sessions and messages never leak into a
     /// freshly generated identity.
     pub fn reset(&self) -> Result<(), RelayError> {
+        // Cancel any pending auto-reconnect loop before the state wipe, so the
+        // reset cannot reconnect (and resurrect state) behind the UI's back.
+        self.inner.auto_reconnect.store(false, Ordering::SeqCst);
         self.mark_disconnected();
         // Resolve the store file from the current identity (loaded or still
         // on disk) before any state is cleared.
@@ -1879,6 +1931,11 @@ impl RelayClient {
     }
 
     /// Clear connection state after the socket closes, for any reason.
+    ///
+    /// An unexpected drop (the inbound loop ending) reconnects automatically
+    /// with exponential backoff. A user-initiated `disconnect()`/`reset()` sets
+    /// `auto_reconnect` to `false` BEFORE calling this, so those never enter
+    /// the retry loop.
     fn mark_disconnected(&self) {
         self.inner.connected.store(false, Ordering::SeqCst);
         if let Ok(mut outbox) = self.inner.outbox.write() {
@@ -1888,6 +1945,127 @@ impl RelayClient {
             .inner
             .app
             .emit("relay-status", RelayStatusEvent { connected: false });
+        if self.inner.auto_reconnect.load(Ordering::SeqCst) {
+            self.spawn_reconnect_loop();
+        } else {
+            let _ = self.inner.app.emit(
+                "reconnecting",
+                ReconnectingEvent {
+                    active: false,
+                    attempt: 0,
+                    next_in_ms: 0,
+                },
+            );
+        }
+    }
+
+    /// Spawn the auto-reconnect loop for a dropped connection.
+    ///
+    /// The loop sleeps for the exponential backoff (2s → 5s → 10s → 20s →
+    /// 30s cap), retries `connect()` and keeps retrying until it succeeds or
+    /// `auto_reconnect` flips to `false` (a user `disconnect()`/`reset()`).
+    /// Progress is announced through the `reconnecting` event so the UI can
+    /// render a "Reconnecting…" state instead of a dead "Disconnected".
+    /// At most one loop runs at a time — a second entry while one is already
+    /// running is a no-op.
+    fn spawn_reconnect_loop(&self) {
+        if self
+            .inner
+            .reconnect_loop_active
+            .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+            .is_err()
+        {
+            return;
+        }
+        let client = self.clone();
+        tauri::async_runtime::spawn(async move {
+            let mut retry_index: u32 = 0;
+            while client.inner.auto_reconnect.load(Ordering::SeqCst) {
+                let backoff = std::time::Duration::from_secs(reconnect_backoff_secs(retry_index));
+                let attempt = retry_index + 1;
+                let _ = client.inner.app.emit(
+                    "reconnecting",
+                    ReconnectingEvent {
+                        active: true,
+                        attempt,
+                        next_in_ms: backoff.as_millis() as u64,
+                    },
+                );
+                tokio::time::sleep(backoff).await;
+                if !client.inner.auto_reconnect.load(Ordering::SeqCst) {
+                    break;
+                }
+                match client.connect().await {
+                    Ok(()) => {
+                        // A user-initiated disconnect may have raced with the
+                        // successful reconnect; if so, tear the fresh
+                        // connection down so the user's intent wins.
+                        if !client.inner.auto_reconnect.load(Ordering::SeqCst) {
+                            client.mark_disconnected();
+                        }
+                        client
+                            .inner
+                            .reconnect_loop_active
+                            .store(false, Ordering::SeqCst);
+                        let _ = client.inner.app.emit(
+                            "reconnecting",
+                            ReconnectingEvent {
+                                active: false,
+                                attempt,
+                                next_in_ms: 0,
+                            },
+                        );
+                        return;
+                    }
+                    Err(_) => {
+                        retry_index += 1;
+                    }
+                }
+            }
+            client
+                .inner
+                .reconnect_loop_active
+                .store(false, Ordering::SeqCst);
+            let _ = client.inner.app.emit(
+                "reconnecting",
+                ReconnectingEvent {
+                    active: false,
+                    attempt: 0,
+                    next_in_ms: 0,
+                },
+            );
+        });
+    }
+
+    /// Delete one message locally ("delete for me"): the decrypted history in
+    /// memory and its row in the encrypted store. The peer's copy and any
+    /// relay-queued envelopes are untouched. An unknown thread or message id
+    /// is an idempotent no-op.
+    pub fn delete_message(&self, peer_id: &str, message_id: &str) -> Result<(), RelayError> {
+        self.ensure_store_open()?;
+        let removed = {
+            let mut messages = write_guard(&self.inner.messages)?;
+            let msgs = match messages.get_mut(peer_id) {
+                Some(msgs) => msgs,
+                None => return Ok(()),
+            };
+            let before = msgs.len();
+            msgs.retain(|message| message.id != message_id);
+            before != msgs.len()
+        };
+        if !removed {
+            return Ok(());
+        }
+        self.store_guard()?
+            .as_ref()
+            .ok_or(RelayError::StoreNotOpen)?
+            .delete_message(message_id)?;
+        // Drop any pending ack for the deleted message so a late relay ack can
+        // neither flip its status nor resurrect the row.
+        if let Ok(mut pending_acks) = self.inner.pending_acks.lock() {
+            pending_acks.retain(|_, id| id != message_id);
+        }
+        Ok(())
     }
 }
 
@@ -1897,6 +2075,19 @@ fn now_millis() -> u64 {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|duration| duration.as_millis() as u64)
         .unwrap_or(0)
+}
+
+/// Backoff delay in seconds for the zero-based retry index. The schedule is
+/// 2, 5, 10, 20 seconds, then capped at 30 seconds for every later retry.
+fn reconnect_backoff_secs(retry_index: u32) -> u64 {
+    RECONNECT_BACKOFF_SECS
+        .get(retry_index as usize)
+        .copied()
+        .unwrap_or(
+            *RECONNECT_BACKOFF_SECS
+                .last()
+                .expect("schedule is non-empty"),
+        )
 }
 
 /// Parse a persisted boolean setting (`"true"` / `"false"`), falling back to
@@ -2289,5 +2480,42 @@ mod tests {
             .expect("envelope must serialize");
         assert_eq!(json["type"], "envelope");
         assert_eq!(json["envelope"]["seq"], 42);
+    }
+
+    // ---------------------------------------------------------------------
+    // Auto-reconnect backoff
+    // ---------------------------------------------------------------------
+
+    #[test]
+    fn reconnect_backoff_follows_the_schedule_and_caps_at_30_seconds() {
+        // 2s → 5s → 10s → 20s, then capped at 30s for every later retry.
+        assert_eq!(reconnect_backoff_secs(0), 2);
+        assert_eq!(reconnect_backoff_secs(1), 5);
+        assert_eq!(reconnect_backoff_secs(2), 10);
+        assert_eq!(reconnect_backoff_secs(3), 20);
+        assert_eq!(reconnect_backoff_secs(4), 30);
+        assert_eq!(reconnect_backoff_secs(5), 30);
+        assert_eq!(reconnect_backoff_secs(100), 30);
+    }
+
+    #[test]
+    fn reconnecting_event_serializes_for_the_ui() {
+        let event = ReconnectingEvent {
+            active: true,
+            attempt: 2,
+            next_in_ms: 5_000,
+        };
+        let json = serde_json::to_value(&event).expect("serialize");
+        assert_eq!(json["active"], true);
+        assert_eq!(json["attempt"], 2);
+        assert_eq!(json["next_in_ms"], 5000);
+
+        let ended = ReconnectingEvent {
+            active: false,
+            attempt: 0,
+            next_in_ms: 0,
+        };
+        let json = serde_json::to_value(&ended).expect("serialize");
+        assert_eq!(json["active"], false);
     }
 }

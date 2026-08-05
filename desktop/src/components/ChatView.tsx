@@ -1,10 +1,12 @@
 import { useEffect, useRef, useState } from "react";
-import { Info, Lock, MessagesSquare, Users } from "lucide-react";
-import type { Conversation, PresenceInfo } from "../types";
+import { Copy, Info, Lock, MessagesSquare, Trash2, Users } from "lucide-react";
+import type { Conversation, Message, PresenceInfo } from "../types";
 import { formatLastSeen, mediaUrl, shortPeerId } from "../lib/format";
+import { copyText } from "../lib/clipboard";
 import { Avatar } from "./Avatar";
 import { MessageBubble } from "./MessageBubble";
 import { Composer } from "./Composer";
+import { ContextMenu } from "./ContextMenu";
 
 interface ChatViewProps {
   conversation: Conversation | null;
@@ -20,6 +22,15 @@ interface ChatViewProps {
   onOpenProfile: () => void;
   /** Opens the group info panel (WhatsApp/Signal style). Only set for groups. */
   onOpenGroupInfo: (() => void) | undefined;
+  /** Deletes one message locally ("delete for me"). */
+  onDeleteMessage: (messageId: string) => void;
+}
+
+/** The right-click state of a message: where to open the menu + the target. */
+interface MessageMenuState {
+  x: number;
+  y: number;
+  message: Message;
 }
 
 export function ChatView({
@@ -31,9 +42,16 @@ export function ChatView({
   onTypingChange,
   onOpenProfile,
   onOpenGroupInfo,
+  onDeleteMessage,
 }: ChatViewProps) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const messageCount = conversation?.messages.length ?? 0;
+  const [menu, setMenu] = useState<MessageMenuState | null>(null);
+
+  // A context menu belongs to one conversation: switching chats dismisses it.
+  useEffect(() => {
+    setMenu(null);
+  }, [conversation?.peerId]);
 
   useEffect(() => {
     const el = scrollRef.current;
@@ -202,10 +220,38 @@ export function ChatView({
               key={message.id}
               message={message}
               animate={newMessageIds.has(message.id)}
+              onContextMenu={(event) => {
+                event.preventDefault();
+                setMenu({ x: event.clientX, y: event.clientY, message });
+              }}
             />
           ))}
         </div>
       </div>
+
+      {menu ? (
+        <ContextMenu
+          x={menu.x}
+          y={menu.y}
+          label={`Actions for message from ${displayName}`}
+          onClose={() => setMenu(null)}
+          items={[
+            {
+              id: "copy-text",
+              label: "Copy Text",
+              icon: <Copy className="h-4 w-4" />,
+              onSelect: () => void copyText(menu.message.text),
+            },
+            {
+              id: "delete-for-me",
+              label: "Delete for me",
+              danger: true,
+              icon: <Trash2 className="h-4 w-4" />,
+              onSelect: () => onDeleteMessage(menu.message.id),
+            },
+          ]}
+        />
+      ) : null}
 
       <Composer onSend={onSend} onTypingChange={onTypingChange} />
     </main>

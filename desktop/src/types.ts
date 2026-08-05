@@ -99,6 +99,18 @@ export interface RelayStatusEvent {
   connected: boolean;
 }
 
+/** Payload of the `reconnecting` event emitted while the client retries a
+ *  dropped connection with exponential backoff. `active: false` ends the
+ *  reconnecting state — the connection was re-established, or a manual
+ *  disconnect/reset cancelled the retries. */
+export interface ReconnectingEvent {
+  active: boolean;
+  /** One-based retry attempt currently scheduled (or in flight). */
+  attempt: number;
+  /** Milliseconds until the next `connect()` attempt. */
+  next_in_ms: number;
+}
+
 /** Payload of the `message-status` event emitted on a delivery or read update. */
 export interface MessageStatusEvent {
   client_id: string;

@@ -10,6 +10,7 @@ import type {
   PresenceEvent,
   PresenceInfo,
   ProfileInfo,
+  ReconnectingEvent,
   RelayStatusEvent,
   TypingEvent,
 } from "../types";
@@ -84,6 +85,13 @@ export function updateSettings(patch: SettingsPatch): Promise<void> {
 /** Remove a contact and its message history on this device (client-local). */
 export function removeContact(peerId: string): Promise<void> {
   return invoke("remove_contact", { peerId });
+}
+
+/** Delete one message locally ("delete for me"): history + encrypted store on
+ *  this device only. The peer's copy and any relay-queued envelopes are
+ *  untouched. */
+export function deleteMessage(peerId: string, messageId: string): Promise<void> {
+  return invoke("delete_message", { peerId, messageId });
 }
 
 /** Persist our own display name and announce it to the relay. */
@@ -212,6 +220,15 @@ export function onRelayStatus(
   handler: (event: RelayStatusEvent) => void
 ): Promise<UnlistenFn> {
   return listen<RelayStatusEvent>("relay-status", (event) =>
+    handler(event.payload)
+  );
+}
+
+/** Subscribe to auto-reconnect progress. Returns an unlisten function. */
+export function onReconnecting(
+  handler: (event: ReconnectingEvent) => void
+): Promise<UnlistenFn> {
+  return listen<ReconnectingEvent>("reconnecting", (event) =>
     handler(event.payload)
   );
 }
