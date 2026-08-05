@@ -222,6 +222,10 @@ struct RelayInner {
     next_msg_id: AtomicU64,
     /// Outbound socket half; `None` while disconnected.
     outbox: RwLock<Option<mpsc::UnboundedSender<WsMessage>>>,
+    /// Serializes concurrent `connect` calls so exactly one WebSocket is ever
+    /// opened (React StrictMode double-mounts in dev, invoking the command
+    /// twice at once).
+    connecting: tokio::sync::Mutex<()>,
     /// In-flight pre-key fetches, resolved in FIFO order.
     pending_prekeys: Mutex<VecDeque<oneshot::Sender<PrekeyResponse>>>,
     /// Bounded dedup set of (sender, seq) pairs, because the relay delivers
@@ -255,6 +259,7 @@ impl RelayClient {
                 seq: AtomicU64::new(1),
                 next_msg_id: AtomicU64::new(1),
                 outbox: RwLock::new(None),
+                connecting: tokio::sync::Mutex::new(()),
                 pending_prekeys: Mutex::new(VecDeque::new()),
                 seen_envelopes: Mutex::new(HashSet::new()),
             }),
@@ -267,6 +272,11 @@ impl RelayClient {
     /// outbound pump drains a channel shared by every command; the inbound
     /// loop decrypts incoming envelopes and emits UI events.
     pub async fn connect(&self) -> Result<(), RelayError> {
+        // Serialize concurrent connect calls: dev builds (React StrictMode)
+        // invoke this command twice at once, and without the lock both calls
+        // would open a socket and overwrite each other's outbox channel,
+        // killing one connection immediately.
+        let _connect_guard = self.inner.connecting.lock().await;
         if self.inner.connected.load(Ordering::SeqCst) {
             return Ok(());
         }
