@@ -12,6 +12,8 @@ import {
 } from "lucide-react";
 import type { GroupInfo, GroupMember } from "../types";
 import { cx, shortPeerId } from "../lib/format";
+import type { TFunction } from "../i18n/types";
+import { useI18n } from "../i18n/I18nContext";
 import { Avatar } from "./Avatar";
 
 interface GroupInfoDialogProps {
@@ -28,12 +30,12 @@ interface GroupInfoDialogProps {
 
 /** A role badge. The owner badge is yellow/highlighted per WhatsApp/Signal
  *  convention; admins get a subtle shield badge. */
-function RoleBadge({ role }: { role: GroupMember["role"] }) {
+function RoleBadge({ role, t }: { role: GroupMember["role"]; t: TFunction }) {
   if (role === "owner") {
     return (
       <span className="inline-flex items-center gap-1 rounded-full bg-[rgb(var(--wp-owner))] px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide text-[rgb(var(--wp-owner-fg))]">
         <Crown className="h-3 w-3" aria-hidden="true" />
-        Owner
+        {t("common.owner")}
       </span>
     );
   }
@@ -41,13 +43,13 @@ function RoleBadge({ role }: { role: GroupMember["role"] }) {
     return (
       <span className="inline-flex items-center gap-1 rounded-full bg-wp-panel-3 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide text-wp-dim">
         <ShieldCheck className="h-3 w-3" aria-hidden="true" />
-        Admin
+        {t("common.admin")}
       </span>
     );
   }
   return (
     <span className="rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-wp-faint">
-      Member
+      {t("common.member")}
     </span>
   );
 }
@@ -62,6 +64,7 @@ export function GroupInfoDialog({
   onRemove,
   onLeave,
 }: GroupInfoDialogProps) {
+  const { t } = useI18n();
   const dialogRef = useRef<HTMLDialogElement>(null);
   const [info, setInfo] = useState<GroupInfo | null>(null);
   const [loading, setLoading] = useState(false);
@@ -161,12 +164,11 @@ export function GroupInfoDialog({
                 id="group-info-title"
                 className="font-display text-lg font-semibold tracking-tight text-wp-text"
               >
-                {info?.name ?? "Group info"}
+                {info?.name ?? t("common.group_info")}
               </h2>
               {info ? (
                 <p className="text-xs text-wp-faint">
-                  {info.members.length} member
-                  {info.members.length === 1 ? "" : "s"}
+                  {t("common.members_count", { n: info.members.length })}
                 </p>
               ) : null}
             </div>
@@ -174,7 +176,7 @@ export function GroupInfoDialog({
           <button
             type="button"
             onClick={close}
-            aria-label="Close group info"
+            aria-label={t("groupInfo.close_group_info")}
             className="rounded-lg p-2 text-wp-dim transition hover:bg-wp-panel-3 hover:text-wp-text"
           >
             <X className="h-4 w-4" aria-hidden="true" />
@@ -185,10 +187,10 @@ export function GroupInfoDialog({
           {loading && !info ? (
             <div className="flex items-center justify-center gap-2 py-10 text-wp-faint">
               <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
-              Loading members…
+              {t("groupInfo.loading_members")}
             </div>
           ) : info ? (
-            <ul className="flex flex-col gap-1" aria-label="Group members">
+            <ul className="flex flex-col gap-1" aria-label={t("groupInfo.group_members")}>
               {info.members.map((member) => {
                 const busy = busyPeer === member.peer_id;
                 return (
@@ -205,7 +207,7 @@ export function GroupInfoDialog({
                         {shortPeerId(member.peer_id, 24)}
                       </p>
                     </div>
-                    <RoleBadge role={member.role} />
+                    <RoleBadge role={member.role} t={t} />
                     {canPromote && member.role === "member" ? (
                       <button
                         type="button"
@@ -216,8 +218,8 @@ export function GroupInfoDialog({
                           )
                         }
                         disabled={busy}
-                        title="Make admin"
-                        aria-label={`Make ${member.peer_id} an admin`}
+                        title={t("groupInfo.make_admin")}
+                        aria-label={t("groupInfo.make_admin_aria", { peerId: member.peer_id })}
                         className="rounded-lg p-1.5 text-wp-dim transition hover:bg-wp-panel-2 hover:text-wp-accent disabled:opacity-40"
                       >
                         {busy ? (
@@ -237,8 +239,8 @@ export function GroupInfoDialog({
                           )
                         }
                         disabled={busy}
-                        title="Demote from admin"
-                        aria-label={`Demote ${member.peer_id}`}
+                        title={t("groupInfo.demote_from_admin")}
+                        aria-label={t("groupInfo.demote_aria", { peerId: member.peer_id })}
                         className="rounded-lg p-1.5 text-wp-dim transition hover:bg-wp-panel-2 hover:text-wp-danger disabled:opacity-40"
                       >
                         {busy ? (
@@ -258,8 +260,8 @@ export function GroupInfoDialog({
                           )
                         }
                         disabled={busy}
-                        title="Remove from group"
-                        aria-label={`Remove ${member.peer_id} from the group`}
+                        title={t("groupInfo.remove_from_group")}
+                        aria-label={t("groupInfo.remove_from_group_aria", { peerId: member.peer_id })}
                         className="rounded-lg p-1.5 text-wp-dim transition hover:bg-wp-panel-2 hover:text-wp-danger disabled:opacity-40"
                       >
                         {busy ? (
@@ -282,6 +284,11 @@ export function GroupInfoDialog({
           ) : null}
 
           <div className="border-t border-wp-line/10 pt-4">
+            {myRole === "owner" ? (
+              <p className="mb-2 text-xs leading-snug text-wp-faint">
+                {t("groupInfo.leave_group_owner_hint")}
+              </p>
+            ) : null}
             <button
               type="button"
               onClick={() => void handleLeave()}
@@ -298,7 +305,7 @@ export function GroupInfoDialog({
               ) : (
                 <LogOut className="h-4 w-4" aria-hidden="true" />
               )}
-              {confirmingLeave ? "Click again to confirm" : "Leave group"}
+              {confirmingLeave ? t("common.confirm_again") : t("groupInfo.leave_group")}
             </button>
           </div>
         </div>

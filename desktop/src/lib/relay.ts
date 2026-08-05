@@ -69,12 +69,15 @@ export function setPrivacy(presenceVisible: boolean): Promise<void> {
 }
 
 /** Boolean preferences a settings tab can toggle without a dedicated command
- *  each: read receipts, typing indicator and desktop notification options. */
+ *  each: read receipts, typing indicator and desktop notification options.
+ *  `language` carries the UI language (string, not boolean). */
 export interface SettingsPatch {
   read_receipts?: boolean;
   typing_indicator?: boolean;
   notifications_enabled?: boolean;
   notification_preview?: boolean;
+  notification_sound?: boolean;
+  language?: string;
 }
 
 /** Persist a partial update of boolean preferences. */

@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { Send } from "lucide-react";
+import { useI18n } from "../i18n/I18nContext";
 
 interface ComposerProps {
   onSend: (text: string) => void;
@@ -14,6 +15,7 @@ const TYPING_SEND_INTERVAL_MS = 3000;
 const TYPING_STOP_AFTER_MS = 4000;
 
 export function Composer({ onSend, onTypingChange }: ComposerProps) {
+  const { t } = useI18n();
   const [text, setText] = useState("");
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const stopTimerRef = useRef<number | null>(null);
@@ -82,16 +84,16 @@ export function Composer({ onSend, onTypingChange }: ComposerProps) {
               submit();
             }
           }}
-          placeholder="Type a message"
-          aria-label="Message"
+          placeholder={t("composer.type_a_message")}
+          aria-label={t("composer.message_aria")}
           className="max-h-36 min-h-[44px] flex-1 resize-none rounded-2xl bg-wp-panel-2 px-4 py-3 text-sm text-wp-text placeholder-wp-faint outline-none transition focus:ring-1 focus:ring-wp-accent/50"
         />
         <button
           type="button"
           onClick={submit}
           disabled={!text.trim()}
-          title="Send message"
-          aria-label="Send message"
+          title={t("common.send_message")}
+          aria-label={t("common.send_message")}
           className="inline-flex h-11 w-11 shrink-0 items-center justify-center rounded-full bg-wp-accent text-wp-accent-fg shadow-lg shadow-wp-accent/25 transition hover:bg-wp-accent-strong active:scale-95 disabled:cursor-not-allowed disabled:opacity-40"
         >
           <Send className="h-4 w-4" strokeWidth={2.2} />

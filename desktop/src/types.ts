@@ -155,4 +155,8 @@ export interface AppSettings {
   notifications_enabled?: boolean;
   /** Whether notifications include the message text. */
   notification_preview?: boolean;
+  /** Whether a short chime plays for incoming messages. */
+  notification_sound?: boolean;
+  /** The UI language ("en" or "fi"). */
+  language?: string;
 }

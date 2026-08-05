@@ -602,6 +602,13 @@ pub struct Settings {
     /// only say "New message from @name".
     #[serde(default = "default_true")]
     pub notification_preview: bool,
+    /// Whether the UI plays a short chime for incoming messages.
+    #[serde(default = "default_true")]
+    pub notification_sound: bool,
+    /// UI language ("en", "fi", ...); the UI owns the valid values. Falls back
+    /// to English when unset.
+    #[serde(default)]
+    pub language: Option<String>,
 }
 
 /// Serde default for the opt-out boolean preferences above.
@@ -619,6 +626,8 @@ impl Default for Settings {
             typing_indicator: true,
             notifications_enabled: true,
             notification_preview: true,
+            notification_sound: true,
+            language: None,
         }
     }
 }
@@ -637,6 +646,10 @@ pub struct SettingsPatch {
     pub notifications_enabled: Option<bool>,
     #[serde(default)]
     pub notification_preview: Option<bool>,
+    #[serde(default)]
+    pub notification_sound: Option<bool>,
+    #[serde(default)]
+    pub language: Option<String>,
 }
 
 /// Thread-safe handle to the relay client, managed as Tauri state.
@@ -1552,6 +1565,8 @@ impl RelayClient {
             typing_indicator,
             notifications_enabled,
             notification_preview,
+            notification_sound,
+            language,
             stored_group_outbound,
             stored_group_inbound,
         ) = {
@@ -1572,6 +1587,8 @@ impl RelayClient {
                 store.get_setting("typing_indicator")?,
                 store.get_setting("notifications_enabled")?,
                 store.get_setting("notification_preview")?,
+                store.get_setting("notification_sound")?,
+                store.get_setting("language")?,
                 store.load_group_outbound()?,
                 store.load_group_inbound()?,
             )
@@ -1654,6 +1671,8 @@ impl RelayClient {
         settings.typing_indicator = setting_bool(typing_indicator, true);
         settings.notifications_enabled = setting_bool(notifications_enabled, true);
         settings.notification_preview = setting_bool(notification_preview, true);
+        settings.notification_sound = setting_bool(notification_sound, true);
+        settings.language = language.filter(|value| !value.is_empty());
         *write_guard(&self.inner.settings)? = settings;
 
         let mut profiles = read_guard(&self.inner.profiles)?.clone();

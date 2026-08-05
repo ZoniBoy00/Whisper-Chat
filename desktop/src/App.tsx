@@ -6,6 +6,7 @@ import type { UnlistenFn } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { Loader2 } from "lucide-react";
 import { cx } from "./lib/format";
+import { I18nProvider, useI18n } from "./i18n/I18nContext";
 import { Onboarding } from "./components/Onboarding";
 import { MainView } from "./components/MainView";
 import { Splash } from "./components/Splash";
@@ -60,6 +61,7 @@ function WindowRouter() {
 }
 
 function MainApp() {
+  const { t } = useI18n();
   const [loading, setLoading] = useState(true);
   const [identity, setIdentity] = useState<IdentityInfo | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -133,14 +135,14 @@ function MainApp() {
   } else if (error) {
     content = (
       <div className="flex h-screen flex-col items-center justify-center gap-4 bg-wp-bg text-wp-dim">
-        <p className="text-sm">Could not load your identity.</p>
+        <p className="text-sm">{t("app.identity_load_failed")}</p>
         <p className="max-w-md truncate text-xs text-wp-faint">{error}</p>
         <button
           type="button"
           onClick={() => void loadIdentity()}
           className="rounded-xl bg-wp-accent px-4 py-2 text-sm font-semibold text-wp-accent-fg transition hover:bg-wp-accent-strong"
         >
-          Retry
+          {t("app.retry")}
         </button>
       </div>
     );
@@ -160,5 +162,9 @@ function MainApp() {
 }
 
 export default function App() {
-  return <WindowRouter />;
+  return (
+    <I18nProvider>
+      <WindowRouter />
+    </I18nProvider>
+  );
 }

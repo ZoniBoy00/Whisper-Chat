@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { Loader2, UserPlus, X } from "lucide-react";
 import { cx } from "../lib/format";
+import { useI18n } from "../i18n/I18nContext";
 
 interface AddContactDialogProps {
   open: boolean;
@@ -16,6 +17,7 @@ export function AddContactDialog({
   onOpenChange,
   onAdd,
 }: AddContactDialogProps) {
+  const { t } = useI18n();
   const dialogRef = useRef<HTMLDialogElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const [value, setValue] = useState("");
@@ -56,7 +58,7 @@ export function AddContactDialog({
   const submit = async () => {
     const peerId = value.trim().toLowerCase();
     if (!PEER_ID_PATTERN.test(peerId)) {
-      setError("Enter a valid 16-character Whisper ID (hex digits only).");
+      setError(t("addContact.invalid_peer_id"));
       return;
     }
     setAdding(true);
@@ -88,18 +90,16 @@ export function AddContactDialog({
               id="add-contact-title"
               className="font-display text-lg font-semibold tracking-tight text-wp-text"
             >
-              Start a new chat
+              {t("sidebar.start_new_chat")}
             </h2>
             <p className="mt-1 text-sm leading-relaxed text-wp-dim">
-              Paste a friend&apos;s Whisper ID. The session is established with
-              their published pre-keys and every message is end-to-end
-              encrypted.
+              {t("addContact.hint")}
             </p>
           </div>
           <button
             type="button"
             onClick={close}
-            aria-label="Close dialog"
+            aria-label={t("common.close_dialog")}
             className="rounded-lg p-2 text-wp-dim transition hover:bg-wp-panel-3 hover:text-wp-text active:scale-90"
           >
             <X className="h-4 w-4" />
@@ -114,7 +114,7 @@ export function AddContactDialog({
           className="mt-5 flex flex-col gap-3"
         >
           <label htmlFor="add-contact-peer-id" className="sr-only">
-            Whisper ID
+            {t("common.whisper_id")}
           </label>
           <input
             id="add-contact-peer-id"
@@ -152,7 +152,7 @@ export function AddContactDialog({
             ) : (
               <UserPlus className="h-4 w-4" />
             )}
-            {adding ? "Starting session…" : "Start chat"}
+            {adding ? t("addContact.starting_session") : t("addContact.start_chat")}
           </button>
         </form>
       </div>
