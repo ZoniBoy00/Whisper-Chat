@@ -5,6 +5,7 @@ import type {
   ChatMessageEvent,
   ChatState,
   ContactUpdatedEvent,
+  GroupInfo,
   MessageStatusEvent,
   PresenceEvent,
   PresenceInfo,
@@ -58,6 +59,31 @@ export function setRelayUrl(url: string): Promise<void> {
 /** Persist the theme choice. */
 export function setTheme(theme: "dark" | "light"): Promise<void> {
   return invoke("set_theme", { theme });
+}
+
+/** Toggle whether our online status and last-seen are shown to other peers.
+ *  Persisted locally and pushed to the relay so it takes effect immediately. */
+export function setPrivacy(presenceVisible: boolean): Promise<void> {
+  return invoke("set_privacy", { presenceVisible });
+}
+
+/** Boolean preferences a settings tab can toggle without a dedicated command
+ *  each: read receipts, typing indicator and desktop notification options. */
+export interface SettingsPatch {
+  read_receipts?: boolean;
+  typing_indicator?: boolean;
+  notifications_enabled?: boolean;
+  notification_preview?: boolean;
+}
+
+/** Persist a partial update of boolean preferences. */
+export function updateSettings(patch: SettingsPatch): Promise<void> {
+  return invoke("update_settings", { patch });
+}
+
+/** Remove a contact and its message history on this device (client-local). */
+export function removeContact(peerId: string): Promise<void> {
+  return invoke("remove_contact", { peerId });
 }
 
 /** Persist our own display name and announce it to the relay. */
@@ -121,6 +147,41 @@ export function onPresence(
   handler: (event: PresenceEvent) => void
 ): Promise<UnlistenFn> {
   return listen<PresenceEvent>("presence", (event) => handler(event.payload));
+}
+
+/**
+ * Create a group: registers it on the relay, adds `memberIds` to the roster,
+ * builds the Megolm outbound session and shares its session key to every
+ * member over the existing 1:1 encrypted sessions. Resolves with the
+ * relay-assigned group ID.
+ */
+export function createGroup(name: string, memberIds: string[]): Promise<string> {
+  return invoke<string>("create_group", { name, memberIds });
+}
+
+/** Fetch a group's public metadata and member roster (with roles). */
+export function getGroupInfo(groupId: string): Promise<GroupInfo> {
+  return invoke("get_group_info", { groupId });
+}
+
+/** Promote a member to group admin (owner or admin only). */
+export function promoteMember(groupId: string, peerId: string): Promise<void> {
+  return invoke("promote_member", { groupId, peerId });
+}
+
+/** Demote an admin back to a regular member (owner only). */
+export function demoteMember(groupId: string, peerId: string): Promise<void> {
+  return invoke("demote_member", { groupId, peerId });
+}
+
+/** Remove a member from a group (owner only). */
+export function removeMember(groupId: string, peerId: string): Promise<void> {
+  return invoke("remove_member", { groupId, peerId });
+}
+
+/** Remove the caller from a group's roster. */
+export function leaveGroup(groupId: string): Promise<void> {
+  return invoke("leave_group", { groupId });
 }
 
 /** Close the relay connection (used when resetting the identity). */

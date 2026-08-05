@@ -23,7 +23,8 @@ use tokio::sync::{mpsc, oneshot};
 use tokio_tungstenite::tungstenite::Message as WsMessage;
 
 use e2ee_core::{
-    ChatSession, Envelope, EnvelopeContent, Handshake, Identity, Message, PreKeyBundle, ReceiptKind,
+    ChatSession, Envelope, EnvelopeContent, Handshake, Identity, InboundGroup, Message,
+    OutboundGroup, PreKeyBundle, ReceiptKind,
 };
 use vodozemac::olm::OlmMessage;
 
@@ -117,6 +118,18 @@ pub enum RelayError {
     /// The presence request was answered with an error or dropped.
     #[error("presence request failed")]
     PresenceFetchFailed,
+    /// The relay did not answer a group request in time.
+    #[error("timed out waiting for group reply")]
+    GroupTimeout,
+    /// The group request was answered with an error or dropped.
+    #[error("group request failed")]
+    GroupRequestFailed,
+    /// A Megolm group-session operation failed.
+    #[error("group error: {0}")]
+    Group(#[from] e2ee_core::GroupError),
+    /// The group has no outbound session, so this identity cannot send to it.
+    #[error("group {0} has no outbound session")]
+    NoOutboundGroup(String),
     /// The relay replied with an error code.
     #[error("relay error: {0}")]
     Relay(String),
@@ -188,6 +201,11 @@ enum ClientMessage {
     /// single `presence` message.
     #[serde(rename = "get_presence")]
     GetPresence { peer_id: String },
+    /// Toggle whether our online status and last-seen are visible to other
+    /// peers. When hidden, the relay reports us as `online: false` with no
+    /// last-seen in every presence reply and push.
+    #[serde(rename = "set_privacy")]
+    SetPrivacy { presence_visible: bool },
     /// Register (or re-register) a signed username alias with an optional
     /// avatar (base64, ≤2 MB). `signature` is an Ed25519 signature over
     /// `username || 0x00 || curve25519_key` (see e2ee-core profile.rs).
@@ -204,6 +222,34 @@ enum ClientMessage {
     /// Fetch one peer's public profile.
     #[serde(rename = "get_profile")]
     GetProfile { peer_id: String },
+    /// Create a group: the authenticated peer becomes its owner. The Megolm
+    /// session key is shared to members separately over 1:1 envelopes.
+    #[serde(rename = "create_group")]
+    CreateGroup { name: String },
+    /// Add `peer_id` to a group's roster.
+    #[serde(rename = "add_group_member")]
+    AddGroupMember { group_id: String, peer_id: String },
+    /// Remove the caller from a group's roster.
+    #[serde(rename = "leave_group")]
+    LeaveGroup { group_id: String },
+    /// Request a group's public metadata and member roster (with roles).
+    #[serde(rename = "get_group_info")]
+    GetGroupInfo { group_id: String },
+    /// Fan one client-encrypted group envelope out to every group member.
+    #[serde(rename = "send_group_message")]
+    SendGroupMessage {
+        group_id: String,
+        envelope: RelayEnvelope,
+    },
+    /// Promote a member to admin (owner or admin only).
+    #[serde(rename = "promote_member")]
+    PromoteMember { group_id: String, peer_id: String },
+    /// Demote an admin back to a regular member (owner only).
+    #[serde(rename = "demote_member")]
+    DemoteMember { group_id: String, peer_id: String },
+    /// Remove a member from a group (owner only).
+    #[serde(rename = "remove_member")]
+    RemoveMember { group_id: String, peer_id: String },
 }
 
 /// Messages the SERVER sends to the client (matches `server/src/relay.rs`).
@@ -231,6 +277,9 @@ enum ServerMessage {
     /// The caller's display name was updated.
     #[serde(rename = "profile_updated")]
     ProfileUpdated,
+    /// The caller's privacy settings were updated.
+    #[serde(rename = "privacy_updated")]
+    PrivacyUpdated,
     /// The caller's username was registered.
     #[serde(rename = "profile_registered")]
     ProfileRegistered { username: String },
@@ -249,6 +298,41 @@ enum ServerMessage {
         online: bool,
         last_seen: Option<i64>,
     },
+    /// Confirmation that a group was created (`create_group` reply).
+    #[serde(rename = "group_created")]
+    GroupCreated {
+        group_id: String,
+        name: String,
+        members: Vec<String>,
+    },
+    /// Confirmation that a member was added to a group (`add_group_member`
+    /// reply).
+    #[serde(rename = "group_member_added")]
+    GroupMemberAdded { group_id: String, peer_id: String },
+    /// Confirmation that the caller left a group (`leave_group` reply).
+    #[serde(rename = "group_member_left")]
+    GroupMemberLeft { group_id: String, peer_id: String },
+    /// The public metadata + member roster of a group (`get_group_info` reply).
+    /// `members` carries each member's role (owner/admin/member).
+    #[serde(rename = "group_info")]
+    GroupInfo {
+        group_id: String,
+        name: String,
+        owner_peer_id: String,
+        members: Vec<GroupMember>,
+    },
+    /// Confirmation that `peer_id` was promoted to admin (`promote_member`
+    /// reply).
+    #[serde(rename = "group_member_promoted")]
+    GroupMemberPromoted { group_id: String, peer_id: String },
+    /// Confirmation that `peer_id` was demoted to a regular member
+    /// (`demote_member` reply).
+    #[serde(rename = "group_member_demoted")]
+    GroupMemberDemoted { group_id: String, peer_id: String },
+    /// Confirmation that `peer_id` was removed from a group (`remove_member`
+    /// reply).
+    #[serde(rename = "group_member_removed")]
+    GroupMemberRemoved { group_id: String, peer_id: String },
     /// A protocol error code.
     Error { code: String },
 }
@@ -289,6 +373,58 @@ pub struct PeerProfile {
     pub avatar_url: Option<String>,
     #[serde(default)]
     pub curve25519_key: Option<String>,
+}
+
+/// One member of a group roster, with its current role ("owner", "admin" or
+/// "member"). Mirror of the relay's `GroupMember` wire shape.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GroupMember {
+    /// The member's peer ID (fingerprint).
+    pub peer_id: String,
+    /// "owner", "admin" or "member".
+    pub role: String,
+}
+
+/// A group's public metadata as reported to the UI: the name, the owner and
+/// every member with its role. `my_role` is this identity's own role in the
+/// group (`None` while unknown), which drives the permission-gated controls in
+/// the group info panel.
+#[derive(Debug, Clone, Serialize)]
+pub struct GroupInfo {
+    pub group_id: String,
+    pub name: String,
+    pub owner_peer_id: String,
+    pub members: Vec<GroupMember>,
+    pub my_role: Option<String>,
+}
+
+/// Internal, in-memory group state. Not serializable: it owns the (secret)
+/// Megolm outbound session for groups this identity created.
+struct GroupInfoState {
+    /// Public group name.
+    name: String,
+    /// Cached member roster (server-authoritative snapshot).
+    members: Vec<GroupMember>,
+    /// This identity's role in the group, when known.
+    my_role: Option<String>,
+    /// The outbound Megolm session; `Some` only for groups this identity
+    /// created (they are the only sender in the MVP model).
+    outbound: Option<OutboundGroup>,
+}
+
+/// The plaintext JSON of a Megolm session-key share. The creator encrypts it
+/// inside an ordinary 1:1 Double Ratchet message so the relay never sees the
+/// key; the recipient parses it and builds an [`InboundGroup`].
+#[derive(Debug, Deserialize)]
+struct GroupKeyPayload {
+    /// Always "group_key"; distinguishes the share from ordinary text.
+    kind: String,
+    /// The relay-assigned group ID the key belongs to.
+    group_id: String,
+    /// The base64 Megolm session key (secret key material).
+    session_key: String,
+    /// The public group name, used to surface the group in the chat list.
+    group_name: String,
 }
 
 /// A message in a shape the UI can render directly.
@@ -395,15 +531,20 @@ pub struct ChatState {
     pub my_display_name: Option<String>,
     pub connected: bool,
     /// Peer IDs this identity has a conversation with, plus their names.
+    /// Groups appear here too (keyed by their group ID with the group name as
+    /// the display name), so the existing chat list renders them like contacts.
     pub contacts: Vec<ContactInfo>,
-    /// Per-peer message history, oldest first.
+    /// Per-peer (and per-group) message history, oldest first. Group messages
+    /// are keyed by the group ID.
     pub messages: HashMap<String, Vec<UIMessage>>,
     /// Latest known presence per peer (online status + last-seen timestamp).
     pub presence: HashMap<String, PresenceInfo>,
+    /// Every group this identity belongs to, with its roster and roles.
+    pub groups: Vec<GroupInfo>,
 }
 
 /// Persisted user preferences stored in `settings.json`.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Settings {
     /// Relay endpoint to connect to; falls back to the `WHISPER_RELAY_URL` env
     /// var and then [`DEFAULT_RELAY_URL`].
@@ -412,6 +553,61 @@ pub struct Settings {
     /// UI theme ("dark", "light", ...); the UI owns the valid values.
     #[serde(default)]
     pub theme: Option<String>,
+    /// Whether our online status and last-seen are shown to other peers.
+    /// Mirrors the relay-side `set_privacy` preference so the toggle restores
+    /// on restart.
+    #[serde(default = "default_true")]
+    pub presence_visible: bool,
+    /// Whether we send end-to-end read receipts. Off means WE do not emit
+    /// receipts; receipts others send us are still shown (like WhatsApp).
+    #[serde(default = "default_true")]
+    pub read_receipts: bool,
+    /// Whether we broadcast end-to-end typing indicators to the active peer.
+    #[serde(default = "default_true")]
+    pub typing_indicator: bool,
+    /// Whether the UI shows HTML5 desktop notifications for incoming messages
+    /// while the window is unfocused.
+    #[serde(default = "default_true")]
+    pub notifications_enabled: bool,
+    /// Whether desktop notifications include the message text; when off they
+    /// only say "New message from @name".
+    #[serde(default = "default_true")]
+    pub notification_preview: bool,
+}
+
+/// Serde default for the opt-out boolean preferences above.
+fn default_true() -> bool {
+    true
+}
+
+impl Default for Settings {
+    fn default() -> Self {
+        Self {
+            relay_url: None,
+            theme: None,
+            presence_visible: true,
+            read_receipts: true,
+            typing_indicator: true,
+            notifications_enabled: true,
+            notification_preview: true,
+        }
+    }
+}
+
+/// A partial settings update from the UI. `None` leaves the stored value
+/// untouched; each `Some` field overwrites it. Excludes `presence_visible`,
+/// which is persisted through [`RelayClient::set_privacy`] because it also
+/// round-trips to the relay.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct SettingsPatch {
+    #[serde(default)]
+    pub read_receipts: Option<bool>,
+    #[serde(default)]
+    pub typing_indicator: Option<bool>,
+    #[serde(default)]
+    pub notifications_enabled: Option<bool>,
+    #[serde(default)]
+    pub notification_preview: Option<bool>,
 }
 
 /// Thread-safe handle to the relay client, managed as Tauri state.
@@ -477,6 +673,22 @@ struct RelayInner {
     /// each new `typing` receipt bumps the counter so older pending timers
     /// give up instead of flipping the indicator off early.
     typing_timeouts: Mutex<HashMap<String, u64>>,
+    /// Megolm group state: group_id -> name, member roster and (for groups
+    /// this identity created) the outbound session.
+    groups: RwLock<HashMap<String, GroupInfoState>>,
+    /// Megolm inbound sessions for groups this identity joined, keyed by
+    /// group_id. Built from the creator's `session_key` shared over a 1:1
+    /// Double Ratchet envelope.
+    inbound_groups: Mutex<HashMap<String, InboundGroup>>,
+    /// In-flight `create_group` requests (replies are ordered, so FIFO works).
+    pending_group_created: Mutex<VecDeque<oneshot::Sender<GroupCreatedResponse>>>,
+    /// In-flight `add_group_member` requests, resolved in FIFO order.
+    pending_group_member_added: Mutex<VecDeque<oneshot::Sender<GroupMemberAddedResponse>>>,
+    /// In-flight `get_group_info` requests, resolved in FIFO order.
+    pending_group_info: Mutex<VecDeque<oneshot::Sender<GroupInfoResponse>>>,
+    /// In-flight promote/demote/remove/leave confirmations, resolved in FIFO
+    /// order (the relay answers each request in turn).
+    pending_group_op: Mutex<VecDeque<oneshot::Sender<GroupOpResponse>>>,
 }
 
 /// Result channel type for a pre-key fetch: the bundle plus the peer's public
@@ -494,6 +706,19 @@ type SearchResponse = Result<Vec<ProfileSearchResult>, RelayError>;
 
 /// Result channel type for a profile fetch.
 type ProfileResponse = Result<Option<PeerProfile>, RelayError>;
+
+/// Result channel type for a `create_group` request: the relay-assigned group
+/// ID.
+type GroupCreatedResponse = Result<String, RelayError>;
+
+/// Result channel type for an `add_group_member` confirmation.
+type GroupMemberAddedResponse = Result<(), RelayError>;
+
+/// Result channel type for a `get_group_info` request.
+type GroupInfoResponse = Result<GroupInfo, RelayError>;
+
+/// Result channel type for a promote/demote/remove/leave confirmation.
+type GroupOpResponse = Result<(), RelayError>;
 
 impl RelayClient {
     /// Build a client bound to `app`'s identity file in the app data dir.
@@ -524,6 +749,12 @@ impl RelayClient {
                 pending_presence: Mutex::new(VecDeque::new()),
                 presence: RwLock::new(HashMap::new()),
                 typing_timeouts: Mutex::new(HashMap::new()),
+                groups: RwLock::new(HashMap::new()),
+                inbound_groups: Mutex::new(HashMap::new()),
+                pending_group_created: Mutex::new(VecDeque::new()),
+                pending_group_member_added: Mutex::new(VecDeque::new()),
+                pending_group_info: Mutex::new(VecDeque::new()),
+                pending_group_op: Mutex::new(VecDeque::new()),
             }),
         }
     }
@@ -666,6 +897,8 @@ impl RelayClient {
         };
         mutex_guard(&self.inner.identity)?.take();
         mutex_guard(&self.inner.sessions)?.clear();
+        mutex_guard(&self.inner.inbound_groups)?.clear();
+        write_guard(&self.inner.groups)?.clear();
         *write_guard(&self.inner.settings)? = Settings::default();
         *write_guard(&self.inner.profiles)? = Profiles::default();
         write_guard(&self.inner.messages)?.clear();
@@ -825,12 +1058,22 @@ impl RelayClient {
     }
 
     /// Encrypt `text` with the existing session for `peer_id` and send it.
+    ///
+    /// When `peer_id` is a group (an entry in the groups map), the message is
+    /// instead Megolm-encrypted and fanned out to every member via
+    /// `send_group_message`.
     pub async fn send_message(
         &self,
         peer_id: &str,
         text: &str,
         client_id: &str,
     ) -> Result<(), RelayError> {
+        // Group messages are encrypted with the group's Megolm session and
+        // routed through the relay's group fan-out rather than a 1:1 ratchet.
+        if read_guard(&self.inner.groups)?.contains_key(peer_id) {
+            return self.send_group_message(peer_id, text, client_id);
+        }
+
         let my_peer_id = self.my_peer_id()?;
         let (olm, session_id) = {
             let mut sessions = mutex_guard(&self.inner.sessions)?;
@@ -888,8 +1131,84 @@ impl RelayClient {
         Ok(())
     }
 
+    /// Megolm-encrypt `text` with the group's outbound session and fan it out
+    /// to every member via the relay's `send_group_message`.
+    fn send_group_message(
+        &self,
+        group_id: &str,
+        text: &str,
+        client_id: &str,
+    ) -> Result<(), RelayError> {
+        let my_peer_id = self.my_peer_id()?;
+        // Encrypt with the outbound Megolm session. Only the group's creator
+        // holds one in the MVP model, so a member attempting to send fails
+        // with `NoOutboundGroup`.
+        let ciphertext = {
+            let mut groups = write_guard(&self.inner.groups)?;
+            let group = groups
+                .get_mut(group_id)
+                .ok_or_else(|| RelayError::NoOutboundGroup(group_id.to_string()))?;
+            let outbound = group
+                .outbound
+                .as_mut()
+                .ok_or_else(|| RelayError::NoOutboundGroup(group_id.to_string()))?;
+            outbound.encrypt(text)
+        };
+        // The ratchet advanced, so persist the outbound session.
+        self.save_group_sessions()?;
+
+        let wire = Envelope::new(
+            my_peer_id.clone(),
+            group_id.to_string(),
+            EnvelopeContent::Group {
+                group_id: group_id.to_string(),
+                ciphertext,
+            },
+        );
+        let payload = BASE64.encode(serde_json::to_vec(&wire)?);
+        let relay_envelope = RelayEnvelope {
+            sender: my_peer_id.clone(),
+            recipient: group_id.to_string(),
+            payload,
+            seq: 0, // replaced below with the allocated seq
+        };
+
+        let seq = self.next_seq();
+        let msg = self.record_outgoing(group_id, text, client_id)?;
+        self.record_pending_ack(seq, &msg.id)?;
+
+        let mut envelope = relay_envelope;
+        envelope.seq = seq;
+        if let Err(err) = self.send_json(&ClientMessage::SendGroupMessage {
+            group_id: group_id.to_string(),
+            envelope,
+        }) {
+            let _ = mutex_guard(&self.inner.pending_acks)?.remove(&seq);
+            if let Ok(mut messages) = write_guard(&self.inner.messages) {
+                if let Some(msgs) = messages.get_mut(group_id) {
+                    msgs.retain(|m| m.id != msg.id);
+                }
+            }
+            if let Ok(store) = self.store_guard() {
+                if let Some(store) = store.as_ref() {
+                    let _ = store.delete_message(&msg.id);
+                }
+            }
+            return Err(err);
+        }
+
+        let _ = self.inner.app.emit(
+            "chat-message",
+            ChatMessageEvent {
+                peer_id: group_id.to_string(),
+                message: msg,
+            },
+        );
+        Ok(())
+    }
+
     /// Snapshot the state the UI needs: identity, connection, contacts (with
-    /// their display names) and message history.
+    /// their display names), message history and group metadata.
     pub fn get_chat_state(&self) -> Result<ChatState, RelayError> {
         let my_peer_id = self.my_peer_id()?;
         self.ensure_store_open()?;
@@ -905,6 +1224,22 @@ impl RelayClient {
                 display_name: profiles.contacts.get(&peer_id).cloned(),
             })
             .collect();
+        // Expose the group roster (without the secret outbound sessions).
+        let groups = read_guard(&self.inner.groups)?
+            .iter()
+            .map(|(group_id, group)| GroupInfo {
+                group_id: group_id.clone(),
+                name: group.name.clone(),
+                owner_peer_id: group
+                    .members
+                    .iter()
+                    .find(|m| m.role == "owner")
+                    .map(|m| m.peer_id.clone())
+                    .unwrap_or_default(),
+                members: group.members.clone(),
+                my_role: group.my_role.clone(),
+            })
+            .collect();
         Ok(ChatState {
             my_peer_id,
             my_display_name: profiles.my_display_name,
@@ -912,7 +1247,265 @@ impl RelayClient {
             contacts,
             messages,
             presence,
+            groups,
         })
+    }
+
+    /// Create a group on the relay, register its members, build the Megolm
+    /// outbound session and share its `session_key` to every member over the
+    /// existing 1:1 Double Ratchet channel.
+    ///
+    /// Returns the relay-assigned group ID. Key sharing is best-effort per
+    /// member: a member whose pre-keys are unavailable (never connected) is
+    /// skipped so one failure cannot abort group creation.
+    pub async fn create_group(
+        &self,
+        name: &str,
+        member_ids: Vec<String>,
+    ) -> Result<String, RelayError> {
+        let my_peer_id = self.my_peer_id()?;
+        if member_ids.iter().any(|m| m == &my_peer_id) {
+            return Err(RelayError::InvalidPeer(my_peer_id));
+        }
+
+        // 1) Ask the relay for a fresh group and wait for the group_created
+        //    reply carrying the group ID.
+        let group_id = {
+            let (tx, rx) = oneshot::channel();
+            mutex_guard(&self.inner.pending_group_created)?.push_back(tx);
+            if let Err(err) = self.send_json(&ClientMessage::CreateGroup {
+                name: name.to_string(),
+            }) {
+                mutex_guard(&self.inner.pending_group_created)?.pop_back();
+                return Err(err);
+            }
+            tokio::time::timeout(PREKEY_FETCH_TIMEOUT, rx)
+                .await
+                .map_err(|_| RelayError::GroupTimeout)?
+                .map_err(|_| RelayError::GroupRequestFailed)??
+        };
+
+        // 2) Add every member to the roster (owner or member may add, and the
+        //    creator is the owner).
+        for member in &member_ids {
+            let (tx, rx) = oneshot::channel();
+            mutex_guard(&self.inner.pending_group_member_added)?.push_back(tx);
+            if let Err(err) = self.send_json(&ClientMessage::AddGroupMember {
+                group_id: group_id.clone(),
+                peer_id: member.clone(),
+            }) {
+                mutex_guard(&self.inner.pending_group_member_added)?.pop_back();
+                return Err(err);
+            }
+            tokio::time::timeout(PREKEY_FETCH_TIMEOUT, rx)
+                .await
+                .map_err(|_| RelayError::GroupTimeout)?
+                .map_err(|_| RelayError::GroupRequestFailed)??;
+        }
+
+        // 3) Build the Megolm outbound session and keep it in the groups map
+        //    together with the roster we just assembled.
+        let outbound = OutboundGroup::new();
+        let session_key = outbound.session_key();
+        let mut members = vec![GroupMember {
+            peer_id: my_peer_id.clone(),
+            role: "owner".to_string(),
+        }];
+        members.extend(member_ids.iter().map(|peer_id| GroupMember {
+            peer_id: peer_id.clone(),
+            role: "member".to_string(),
+        }));
+        write_guard(&self.inner.groups)?.insert(
+            group_id.clone(),
+            GroupInfoState {
+                name: name.to_string(),
+                members: members.clone(),
+                my_role: Some("owner".to_string()),
+                outbound: Some(outbound),
+            },
+        );
+        // Surface the group in the chat list (the group ID acts as a contact
+        // with the group name as its display name).
+        self.remember_contact_name(&group_id, name)?;
+        self.save_group_sessions()?;
+
+        // 4) Share the session key to every member over 1:1 sessions. Each
+        //    member starts with `start_chat` (which also sends the greeting)
+        //    when no session exists yet.
+        for member in &member_ids {
+            let result = async {
+                if !mutex_guard(&self.inner.sessions)?.contains_key(member) {
+                    self.start_chat(member).await?;
+                }
+                self.send_group_key(member, &group_id, &session_key, name)
+            }
+            .await;
+            if let Err(err) = result {
+                eprintln!("whisper desktop: failed to share group key to {member}: {err}");
+            }
+        }
+
+        Ok(group_id)
+    }
+
+    /// Fetch a group's public metadata and member roster from the relay.
+    pub async fn get_group_info(&self, group_id: &str) -> Result<GroupInfo, RelayError> {
+        let (tx, rx) = oneshot::channel();
+        mutex_guard(&self.inner.pending_group_info)?.push_back(tx);
+        if let Err(err) = self.send_json(&ClientMessage::GetGroupInfo {
+            group_id: group_id.to_string(),
+        }) {
+            mutex_guard(&self.inner.pending_group_info)?.pop_back();
+            return Err(err);
+        }
+
+        let info = tokio::time::timeout(PREKEY_FETCH_TIMEOUT, rx)
+            .await
+            .map_err(|_| RelayError::GroupTimeout)?
+            .map_err(|_| RelayError::GroupRequestFailed)??;
+
+        // Cache the fresh roster locally so the chat list and group panel stay
+        // consistent without a full state refresh.
+        let my_peer_id = self.my_peer_id()?;
+        let my_role = info
+            .members
+            .iter()
+            .find(|m| m.peer_id == my_peer_id)
+            .map(|m| m.role.clone());
+        {
+            let mut groups = write_guard(&self.inner.groups)?;
+            if let Some(group) = groups.get_mut(group_id) {
+                group.name = info.name.clone();
+                group.members = info.members.clone();
+                group.my_role = my_role.clone();
+            }
+        }
+        Ok(GroupInfo { my_role, ..info })
+    }
+
+    /// Promote `peer_id` to a group admin. The relay only allows this for the
+    /// group owner or an existing admin.
+    pub async fn promote_member(&self, group_id: &str, peer_id: &str) -> Result<(), RelayError> {
+        self.group_op(ClientMessage::PromoteMember {
+            group_id: group_id.to_string(),
+            peer_id: peer_id.to_string(),
+        })
+        .await
+    }
+
+    /// Demote `peer_id` from admin back to a member. The relay only allows the
+    /// owner to demote, and never the owner themselves.
+    pub async fn demote_member(&self, group_id: &str, peer_id: &str) -> Result<(), RelayError> {
+        self.group_op(ClientMessage::DemoteMember {
+            group_id: group_id.to_string(),
+            peer_id: peer_id.to_string(),
+        })
+        .await
+    }
+
+    /// Remove `peer_id` from a group. The relay only allows the owner to
+    /// remove members, and never the owner themselves.
+    pub async fn remove_member(&self, group_id: &str, peer_id: &str) -> Result<(), RelayError> {
+        self.group_op(ClientMessage::RemoveMember {
+            group_id: group_id.to_string(),
+            peer_id: peer_id.to_string(),
+        })
+        .await
+    }
+
+    /// Remove the caller from a group's roster.
+    pub async fn leave_group(&self, group_id: &str) -> Result<(), RelayError> {
+        self.group_op(ClientMessage::LeaveGroup {
+            group_id: group_id.to_string(),
+        })
+        .await
+    }
+
+    /// Send a promote/demote/remove/leave request and wait for its
+    /// confirmation, then refresh the cached roster so the UI reflects the new
+    /// membership immediately.
+    async fn group_op(&self, message: ClientMessage) -> Result<(), RelayError> {
+        let (tx, rx) = oneshot::channel();
+        mutex_guard(&self.inner.pending_group_op)?.push_back(tx);
+        if let Err(err) = self.send_json(&message) {
+            mutex_guard(&self.inner.pending_group_op)?.pop_back();
+            return Err(err);
+        }
+        tokio::time::timeout(PREKEY_FETCH_TIMEOUT, rx)
+            .await
+            .map_err(|_| RelayError::GroupTimeout)?
+            .map_err(|_| RelayError::GroupRequestFailed)??;
+        // Refresh the cached roster (best-effort: the group may no longer
+        // exist from our point of view after a leave).
+        if let ClientMessage::LeaveGroup { group_id } = message {
+            self.forget_group(&group_id);
+        } else if let ClientMessage::RemoveMember { group_id, .. } = message {
+            // The removed member is no longer in the roster; refresh the rest.
+            let _ = self.get_group_info(&group_id).await;
+        } else if let ClientMessage::PromoteMember { group_id, .. }
+        | ClientMessage::DemoteMember { group_id, .. } = message
+        {
+            let _ = self.get_group_info(&group_id).await;
+        }
+        Ok(())
+    }
+
+    /// Drop all local group state after leaving a group: the outbound/inbound
+    /// sessions and the contact-list entry. Messages stay in history but the
+    /// group no longer appears as a conversation.
+    fn forget_group(&self, group_id: &str) {
+        if let Ok(mut groups) = write_guard(&self.inner.groups) {
+            groups.remove(group_id);
+        }
+        if let Ok(mut inbound) = mutex_guard(&self.inner.inbound_groups) {
+            inbound.remove(group_id);
+        }
+        if let Ok(mut contacts) = write_guard(&self.inner.contacts) {
+            contacts.retain(|c| c != group_id);
+        }
+        if let Ok(store) = self.store_guard() {
+            if let Some(store) = store.as_ref() {
+                let _ = store.delete_contact(group_id);
+            }
+        }
+        let _ = self.save_group_sessions();
+    }
+
+    /// Encrypt a `group_key` share (the Megolm session key + group name) inside
+    /// the 1:1 session with `peer_id` and send it as an ordinary message. The
+    /// recipient recognises the plaintext JSON and stores the inbound session
+    /// instead of rendering it as a chat message.
+    fn send_group_key(
+        &self,
+        peer_id: &str,
+        group_id: &str,
+        session_key: &str,
+        group_name: &str,
+    ) -> Result<(), RelayError> {
+        let my_peer_id = self.my_peer_id()?;
+        let payload = serde_json::json!({
+            "kind": "group_key",
+            "group_id": group_id,
+            "session_key": session_key,
+            "group_name": group_name,
+        });
+        let (olm, session_id) = {
+            let mut sessions = mutex_guard(&self.inner.sessions)?;
+            let session = sessions
+                .get_mut(peer_id)
+                .ok_or_else(|| RelayError::NoSession(peer_id.to_string()))?;
+            let session_id = session.session_id();
+            let olm = session.encrypt(serde_json::to_vec(&payload)?)?;
+            (olm, session_id)
+        };
+        self.save_sessions()?;
+        let wire = Envelope::new(
+            my_peer_id.clone(),
+            peer_id.to_string(),
+            EnvelopeContent::Message(Message::new(my_peer_id, session_id, olm)),
+        );
+        let seq = self.next_seq();
+        self.send_wire(&wire, seq)
     }
 
     /// Remember an envelope's (sender, seq) pair and report whether it has
@@ -1050,6 +1643,7 @@ impl RelayClient {
             ServerMessage::Acknowledged { seq } => self.handle_ack(seq),
             ServerMessage::PrekeysPublished => Ok(()),
             ServerMessage::ProfileUpdated => Ok(()),
+            ServerMessage::PrivacyUpdated => Ok(()),
             ServerMessage::ProfileRegistered { username } => {
                 if let Some(tx) = mutex_guard(&self.inner.pending_register)?.pop_front() {
                     let _ = tx.send(Ok(username));
@@ -1084,6 +1678,118 @@ impl RelayClient {
                 drop(pending);
                 self.handle_presence(&peer_id, online, last_seen)
             }
+            ServerMessage::GroupCreated {
+                group_id,
+                name,
+                members,
+            } => {
+                if let Some(tx) = mutex_guard(&self.inner.pending_group_created)?.pop_front() {
+                    let _ = tx.send(Ok(group_id.clone()));
+                }
+                // Cache the roster we already know (the creator + every member
+                // we added) so the chat list renders the group immediately.
+                let my_peer_id = self.my_peer_id()?;
+                let roster = members
+                    .into_iter()
+                    .map(|peer_id| GroupMember {
+                        role: if peer_id == my_peer_id {
+                            "owner".to_string()
+                        } else {
+                            "member".to_string()
+                        },
+                        peer_id,
+                    })
+                    .collect::<Vec<_>>();
+                write_guard(&self.inner.groups)?
+                    .entry(group_id.clone())
+                    .or_insert(GroupInfoState {
+                        name,
+                        members: roster,
+                        my_role: Some("owner".to_string()),
+                        outbound: None,
+                    });
+                Ok(())
+            }
+            ServerMessage::GroupMemberAdded { group_id, peer_id } => {
+                if let Some(tx) = mutex_guard(&self.inner.pending_group_member_added)?.pop_front() {
+                    let _ = tx.send(Ok(()));
+                }
+                // Keep the local roster in sync: append the member unless
+                // already present.
+                if let Ok(mut groups) = write_guard(&self.inner.groups) {
+                    if let Some(group) = groups.get_mut(&group_id) {
+                        if !group.members.iter().any(|m| m.peer_id == peer_id) {
+                            group.members.push(GroupMember {
+                                peer_id,
+                                role: "member".to_string(),
+                            });
+                        }
+                    }
+                }
+                Ok(())
+            }
+            ServerMessage::GroupMemberLeft { .. } => {
+                if let Some(tx) = mutex_guard(&self.inner.pending_group_op)?.pop_front() {
+                    let _ = tx.send(Ok(()));
+                }
+                Ok(())
+            }
+            ServerMessage::GroupInfo {
+                group_id,
+                name,
+                owner_peer_id,
+                members,
+            } => {
+                let my_peer_id = self.my_peer_id()?;
+                let my_role = members
+                    .iter()
+                    .find(|m| m.peer_id == my_peer_id)
+                    .map(|m| m.role.clone());
+                // Cache the fresh roster for the chat list / group panel.
+                if let Ok(mut groups) = write_guard(&self.inner.groups) {
+                    groups.entry(group_id.clone()).or_insert(GroupInfoState {
+                        name: name.clone(),
+                        members: members.clone(),
+                        my_role: my_role.clone(),
+                        outbound: None,
+                    });
+                }
+                if let Some(tx) = mutex_guard(&self.inner.pending_group_info)?.pop_front() {
+                    let _ = tx.send(Ok(GroupInfo {
+                        group_id,
+                        name,
+                        owner_peer_id,
+                        members,
+                        my_role,
+                    }));
+                }
+                Ok(())
+            }
+            ServerMessage::GroupMemberPromoted { group_id, peer_id } => {
+                self.apply_group_role(&group_id, &peer_id, "admin")?;
+                if let Some(tx) = mutex_guard(&self.inner.pending_group_op)?.pop_front() {
+                    let _ = tx.send(Ok(()));
+                }
+                Ok(())
+            }
+            ServerMessage::GroupMemberDemoted { group_id, peer_id } => {
+                self.apply_group_role(&group_id, &peer_id, "member")?;
+                if let Some(tx) = mutex_guard(&self.inner.pending_group_op)?.pop_front() {
+                    let _ = tx.send(Ok(()));
+                }
+                Ok(())
+            }
+            ServerMessage::GroupMemberRemoved { group_id, peer_id } => {
+                if let Ok(mut groups) = write_guard(&self.inner.groups) {
+                    if let Some(group) = groups.get_mut(&group_id) {
+                        group.members.retain(|m| m.peer_id != peer_id);
+                    }
+                }
+                if let Some(tx) = mutex_guard(&self.inner.pending_group_op)?.pop_front() {
+                    let _ = tx.send(Ok(()));
+                }
+                Ok(())
+            }
             ServerMessage::Error { code } => {
                 let err = RelayError::Relay(code);
                 // Resolve the oldest outstanding request across every queue.
@@ -1095,10 +1801,39 @@ impl RelayClient {
                     let _ = tx.send(Err(err));
                 } else if let Some(tx) = mutex_guard(&self.inner.pending_profile)?.pop_front() {
                     let _ = tx.send(Err(err));
+                } else if let Some(tx) = mutex_guard(&self.inner.pending_group_created)?.pop_front()
+                {
+                    let _ = tx.send(Err(err));
+                } else if let Some(tx) =
+                    mutex_guard(&self.inner.pending_group_member_added)?.pop_front()
+                {
+                    let _ = tx.send(Err(err));
+                } else if let Some(tx) = mutex_guard(&self.inner.pending_group_info)?.pop_front() {
+                    let _ = tx.send(Err(err));
+                } else if let Some(tx) = mutex_guard(&self.inner.pending_group_op)?.pop_front() {
+                    let _ = tx.send(Err(err));
                 }
                 Ok(())
             }
         }
+    }
+
+    /// Mirror a member's role change into the cached group roster (used when a
+    /// `group_member_promoted` / `group_member_demoted` reply arrives).
+    fn apply_group_role(
+        &self,
+        group_id: &str,
+        peer_id: &str,
+        role: &str,
+    ) -> Result<(), RelayError> {
+        if let Ok(mut groups) = write_guard(&self.inner.groups) {
+            if let Some(group) = groups.get_mut(group_id) {
+                if let Some(member) = group.members.iter_mut().find(|m| m.peer_id == peer_id) {
+                    member.role = role.to_string();
+                }
+            }
+        }
+        Ok(())
     }
 
     /// Mark the message behind a relay `ack` as delivered and notify the UI.
@@ -1185,14 +1920,26 @@ impl RelayClient {
             return Ok(());
         }
 
-        if let Some(message) = self.ingest(wire)? {
-            let _ = self.inner.app.emit(
-                "chat-message",
-                ChatMessageEvent {
-                    peer_id: envelope.sender,
-                    message,
-                },
-            );
+        // Group envelopes decrypt with the group's Megolm session and land in
+        // the group's message thread, not the sender's 1:1 conversation.
+        if let EnvelopeContent::Group { group_id, .. } = &wire.content {
+            if let Some(message) = self.ingest_group(&wire, group_id)? {
+                let _ = self.inner.app.emit(
+                    "chat-message",
+                    ChatMessageEvent {
+                        peer_id: group_id.clone(),
+                        message,
+                    },
+                );
+            }
+            return Ok(());
+        }
+
+        if let Some((peer_id, message)) = self.ingest(wire)? {
+            let _ = self
+                .inner
+                .app
+                .emit("chat-message", ChatMessageEvent { peer_id, message });
         }
         Ok(())
     }
@@ -1201,8 +1948,10 @@ impl RelayClient {
     ///
     /// A handshake establishes the inbound X3DH session using the sender's
     /// identity key embedded in the pre-key message; an ordinary message is
-    /// decrypted with the already-established session.
-    fn ingest(&self, wire: Envelope) -> Result<Option<UIMessage>, RelayError> {
+    /// decrypted with the already-established session. Returns the thread the
+    /// plaintext belongs to (the sender's peer ID) so the caller can emit the
+    /// message under the right conversation key.
+    fn ingest(&self, wire: Envelope) -> Result<Option<(String, UIMessage)>, RelayError> {
         let sender = wire.sender_peer_id;
         match wire.content {
             EnvelopeContent::Handshake(handshake) => {
@@ -1214,7 +1963,7 @@ impl RelayClient {
                 mutex_guard(&self.inner.sessions)?.insert(sender.clone(), inbound.session);
                 let text = String::from_utf8_lossy(&inbound.plaintext).to_string();
                 self.save_sessions()?;
-                Ok(Some(self.record_incoming(&sender, text)?))
+                Ok(Some((sender.clone(), self.record_incoming(&sender, text)?)))
             }
             EnvelopeContent::Message(message) => {
                 let plaintext = {
@@ -1224,6 +1973,17 @@ impl RelayClient {
                         .ok_or_else(|| RelayError::NoSession(sender.clone()))?;
                     session.decrypt(&message.message)?
                 };
+                // Group-key shares travel as an encrypted serialized JSON
+                // payload inside an ordinary message (so the relay only ever
+                // sees ciphertext). They are recognised here and turned into
+                // an inbound Megolm session instead of a chat message.
+                if let Ok(group_key) = serde_json::from_slice::<GroupKeyPayload>(&plaintext) {
+                    if group_key.kind == "group_key" {
+                        self.save_sessions()?;
+                        self.handle_group_key(&group_key)?;
+                        return Ok(None);
+                    }
+                }
                 // Receipts travel as an encrypted serialized
                 // `EnvelopeContent::Receipt` inside an ordinary message, so
                 // the relay only ever sees ciphertext. They are recognised by
@@ -1240,19 +2000,88 @@ impl RelayClient {
                 // Acknowledging the message end-to-end: encrypt a read receipt
                 // with the same (now-advanced) session. Best-effort so a
                 // transient send failure never drops the plaintext message.
-                let _ = self.send_receipt(&sender, ReceiptKind::Read);
-                Ok(Some(self.record_incoming(&sender, text)?))
+                // When read receipts are disabled we do NOT emit one — but
+                // receipts the peer sends us are still shown (like WhatsApp:
+                // the toggle only stops us from sending).
+                if read_guard(&self.inner.settings)?.read_receipts {
+                    let _ = self.send_receipt(&sender, ReceiptKind::Read);
+                }
+                Ok(Some((sender.clone(), self.record_incoming(&sender, text)?)))
             }
             // A bundle is published, never delivered as a chat envelope.
             EnvelopeContent::PreKeyBundle(_) => Ok(None),
             // Defensive: this client always sends receipts encrypted inside a
             // Message, so a bare receipt content is never expected here.
             EnvelopeContent::Receipt { .. } => Ok(None),
-            // Group messaging is not implemented on the desktop client yet, so
-            // a group envelope is dropped (the wire format reserves the
-            // variant in the shared e2ee-core crate).
+            // Group envelopes are routed through `handle_envelope` -> `ingest_group`
+            // before this match, so a bare `Group` here is unexpected.
             EnvelopeContent::Group { .. } => Ok(None),
         }
+    }
+
+    /// Decrypt a Megolm group envelope with the group's inbound session and
+    /// record it in the group's message thread.
+    fn ingest_group(
+        &self,
+        wire: &Envelope,
+        group_id: &str,
+    ) -> Result<Option<UIMessage>, RelayError> {
+        let ciphertext = match &wire.content {
+            EnvelopeContent::Group { ciphertext, .. } => ciphertext.clone(),
+            _ => return Ok(None),
+        };
+        let plaintext = match self.decrypt_group(group_id, &ciphertext) {
+            Some(bytes) => bytes,
+            None => return Ok(None),
+        };
+        let text = String::from_utf8_lossy(&plaintext).to_string();
+        // No end-to-end read receipts for group messages in the MVP model.
+        Ok(Some(self.record_incoming(group_id, text)?))
+    }
+
+    /// Decrypt a Megolm ciphertext with the group's inbound session. Returns
+    /// `None` (and logs) when no inbound session exists yet or the ratchet
+    /// rejects the message — a missing session key must never break the
+    /// inbound pump.
+    fn decrypt_group(&self, group_id: &str, ciphertext: &str) -> Option<Vec<u8>> {
+        let mut inbound = match mutex_guard(&self.inner.inbound_groups) {
+            Ok(g) => g,
+            Err(_) => return None,
+        };
+        let session = match inbound.get_mut(group_id) {
+            Some(session) => session,
+            None => {
+                eprintln!("whisper desktop: no inbound group session for {group_id}");
+                return None;
+            }
+        };
+        match session.decrypt(ciphertext) {
+            Ok(bytes) => Some(bytes),
+            Err(err) => {
+                eprintln!("whisper desktop: failed to decrypt group message: {err}");
+                None
+            }
+        }
+    }
+
+    /// Store a received Megolm `session_key` share as the group's inbound
+    /// session and surface the group in the chat list under its name.
+    fn handle_group_key(&self, payload: &GroupKeyPayload) -> Result<(), RelayError> {
+        let inbound = InboundGroup::new(&payload.session_key)?;
+        mutex_guard(&self.inner.inbound_groups)?.insert(payload.group_id.clone(), inbound);
+        // Register the group so the chat list and header render it by name.
+        write_guard(&self.inner.groups)?
+            .entry(payload.group_id.clone())
+            .or_insert(GroupInfoState {
+                name: payload.group_name.clone(),
+                members: Vec::new(),
+                my_role: None,
+                outbound: None,
+            });
+        // The group ID acts as a contact whose display name is the group name.
+        self.remember_contact_name(&payload.group_id, &payload.group_name)?;
+        self.save_group_sessions()?;
+        Ok(())
     }
 
     // ---------------------------------------------------------------------
@@ -1308,6 +2137,13 @@ impl RelayClient {
             theme,
             my_display_name,
             next_msg_id,
+            presence_visible,
+            read_receipts,
+            typing_indicator,
+            notifications_enabled,
+            notification_preview,
+            stored_group_outbound,
+            stored_group_inbound,
         ) = {
             let store = self.store_guard()?;
             let store = store.as_ref().ok_or(RelayError::StoreNotOpen)?;
@@ -1319,6 +2155,13 @@ impl RelayClient {
                 store.get_setting("theme")?,
                 store.get_setting("my_display_name")?,
                 store.get_setting("next_msg_id")?,
+                store.get_setting("presence_visible")?,
+                store.get_setting("read_receipts")?,
+                store.get_setting("typing_indicator")?,
+                store.get_setting("notifications_enabled")?,
+                store.get_setting("notification_preview")?,
+                store.load_group_outbound()?,
+                store.load_group_inbound()?,
             )
         };
 
@@ -1331,6 +2174,42 @@ impl RelayClient {
             }
         }
         *write_guard(&self.inner.messages)? = stored_messages;
+
+        // Restore Megolm group sessions: outbound for groups this identity
+        // created, inbound for groups it joined via a shared session key. The
+        // group name is stored alongside each pickle so the chat list can
+        // render groups right after startup.
+        {
+            let mut groups = write_guard(&self.inner.groups)?;
+            for (group_id, (name, pickle)) in stored_group_outbound {
+                if let Ok(outbound) = OutboundGroup::from_json(&pickle) {
+                    groups.insert(
+                        group_id,
+                        GroupInfoState {
+                            name,
+                            members: Vec::new(),
+                            my_role: Some("owner".to_string()),
+                            outbound: Some(outbound),
+                        },
+                    );
+                }
+            }
+        }
+        {
+            let mut inbound = mutex_guard(&self.inner.inbound_groups)?;
+            let mut groups = write_guard(&self.inner.groups)?;
+            for (group_id, (name, pickle)) in stored_group_inbound {
+                if let Ok(session) = InboundGroup::from_json(&pickle) {
+                    inbound.insert(group_id.clone(), session);
+                    groups.entry(group_id).or_insert(GroupInfoState {
+                        name,
+                        members: Vec::new(),
+                        my_role: None,
+                        outbound: None,
+                    });
+                }
+            }
+        }
 
         // Contacts come back as rows: the ordered contact list, their learned
         // display names, and the last-seen timestamps that seed the presence
@@ -1358,6 +2237,11 @@ impl RelayClient {
         let mut settings = read_guard(&self.inner.settings)?.clone();
         settings.relay_url = relay_url.filter(|url| !url.is_empty());
         settings.theme = theme.filter(|value| !value.is_empty());
+        settings.presence_visible = setting_bool(presence_visible, true);
+        settings.read_receipts = setting_bool(read_receipts, true);
+        settings.typing_indicator = setting_bool(typing_indicator, true);
+        settings.notifications_enabled = setting_bool(notifications_enabled, true);
+        settings.notification_preview = setting_bool(notification_preview, true);
         *write_guard(&self.inner.settings)? = settings;
 
         let mut profiles = read_guard(&self.inner.profiles)?.clone();
@@ -1398,6 +2282,43 @@ impl RelayClient {
         Ok(())
     }
 
+    /// Persist the Megolm group sessions (outbound + inbound pickles) to the
+    /// store, replacing the previous maps. Group messages themselves live in
+    /// the regular `messages` table keyed by the group ID.
+    fn save_group_sessions(&self) -> Result<(), RelayError> {
+        self.ensure_store_open()?;
+        let mut outbound = HashMap::new();
+        {
+            let groups = read_guard(&self.inner.groups)?;
+            for (group_id, group) in groups.iter() {
+                if let Some(session) = &group.outbound {
+                    if let Ok(json) = session.to_json() {
+                        outbound.insert(group_id.clone(), (group.name.clone(), json));
+                    }
+                }
+            }
+        }
+        let mut inbound = HashMap::new();
+        {
+            let groups = read_guard(&self.inner.groups)?;
+            let inbound_sessions = mutex_guard(&self.inner.inbound_groups)?;
+            for (group_id, session) in inbound_sessions.iter() {
+                if let Ok(json) = session.to_json() {
+                    let name = groups
+                        .get(group_id)
+                        .map(|g| g.name.clone())
+                        .unwrap_or_default();
+                    inbound.insert(group_id.clone(), (name, json));
+                }
+            }
+        }
+        let store_guard = self.store_guard()?;
+        let store = store_guard.as_ref().ok_or(RelayError::StoreNotOpen)?;
+        store.replace_group_outbound(&outbound)?;
+        store.replace_group_inbound(&inbound)?;
+        Ok(())
+    }
+
     // ---------------------------------------------------------------------
     // Settings persistence
     // ---------------------------------------------------------------------
@@ -1422,6 +2343,17 @@ impl RelayClient {
             Some(theme) if !theme.is_empty() => store.set_setting("theme", theme)?,
             _ => store.delete_setting("theme")?,
         }
+        store.set_setting("presence_visible", setting_str(settings.presence_visible))?;
+        store.set_setting("read_receipts", setting_str(settings.read_receipts))?;
+        store.set_setting("typing_indicator", setting_str(settings.typing_indicator))?;
+        store.set_setting(
+            "notifications_enabled",
+            setting_str(settings.notifications_enabled),
+        )?;
+        store.set_setting(
+            "notification_preview",
+            setting_str(settings.notification_preview),
+        )?;
         *write_guard(&self.inner.settings)? = settings.clone();
         Ok(())
     }
@@ -1445,6 +2377,59 @@ impl RelayClient {
         let mut settings = self.get_settings()?;
         settings.theme = Some(theme.to_string());
         self.save_settings(&settings)
+    }
+
+    /// Toggle whether our online status and last-seen are visible to other
+    /// peers. The preference is persisted locally so it restores on restart,
+    /// and sent to the relay (best-effort) so it takes effect for others
+    /// immediately. The relay answers with `privacy_updated`.
+    pub fn set_privacy(&self, presence_visible: bool) -> Result<(), RelayError> {
+        let mut settings = self.get_settings()?;
+        settings.presence_visible = presence_visible;
+        self.save_settings(&settings)?;
+        if self.inner.connected.load(Ordering::SeqCst) {
+            self.send_json(&ClientMessage::SetPrivacy { presence_visible })?;
+        }
+        Ok(())
+    }
+
+    /// Apply a partial boolean-preferences update (read receipts, typing
+    /// indicator, notifications) and persist it. Each `Some` field overwrites
+    /// the stored value; `None` fields are left untouched.
+    pub fn update_settings(&self, patch: &SettingsPatch) -> Result<(), RelayError> {
+        let mut settings = self.get_settings()?;
+        if let Some(value) = patch.read_receipts {
+            settings.read_receipts = value;
+        }
+        if let Some(value) = patch.typing_indicator {
+            settings.typing_indicator = value;
+        }
+        if let Some(value) = patch.notifications_enabled {
+            settings.notifications_enabled = value;
+        }
+        if let Some(value) = patch.notification_preview {
+            settings.notification_preview = value;
+        }
+        self.save_settings(&settings)
+    }
+
+    /// Remove a contact and its message history on THIS device: the contact
+    /// row, the messages and the cached presence. Client-local by design — the
+    /// peer's copy of the conversation and the relay's queued envelopes are
+    /// untouched. The Double Ratchet session is kept so a later message from
+    /// the peer still decrypts (like Signal's "delete conversation"); the
+    /// contact is then re-added by `ensure_contact` automatically.
+    pub fn remove_contact(&self, peer_id: &str) -> Result<(), RelayError> {
+        self.ensure_store_open()?;
+        write_guard(&self.inner.contacts)?.retain(|known| known != peer_id);
+        write_guard(&self.inner.messages)?.remove(peer_id);
+        write_guard(&self.inner.presence)?.remove(peer_id);
+        write_guard(&self.inner.profiles)?.contacts.remove(peer_id);
+        let store_guard = self.store_guard()?;
+        let store = store_guard.as_ref().ok_or(RelayError::StoreNotOpen)?;
+        store.delete_contact(peer_id)?;
+        store.delete_messages_for(peer_id)?;
+        Ok(())
     }
 
     // ---------------------------------------------------------------------
@@ -1492,8 +2477,13 @@ impl RelayClient {
     }
 
     /// Send an end-to-end typing indicator (or the "stopped" signal) to a
-    /// peer, encrypted inside the established session.
+    /// peer, encrypted inside the established session. When the typing
+    /// indicator is disabled in settings this is a no-op — the peer never
+    /// learns that we are typing.
     pub fn send_typing(&self, peer_id: &str, is_typing: bool) -> Result<(), RelayError> {
+        if !read_guard(&self.inner.settings)?.typing_indicator {
+            return Ok(());
+        }
         let kind = if is_typing {
             ReceiptKind::Typing
         } else {
@@ -1859,6 +2849,26 @@ fn now_millis() -> u64 {
         .unwrap_or(0)
 }
 
+/// Parse a persisted boolean setting (`"true"` / `"false"`), falling back to
+/// `default` for missing or unrecognized values. New installs have no rows, so
+/// every preference defaults to enabled.
+fn setting_bool(value: Option<String>, default: bool) -> bool {
+    match value.as_deref() {
+        Some("true") => true,
+        Some("false") => false,
+        _ => default,
+    }
+}
+
+/// Serialize a boolean setting for storage.
+fn setting_str(value: bool) -> &'static str {
+    if value {
+        "true"
+    } else {
+        "false"
+    }
+}
+
 /// Resolve the relay endpoint: settings first, then the `WHISPER_RELAY_URL`
 /// env var, then the built-in default.
 fn resolve_relay_url(settings: &Settings, env_url: Option<&str>) -> String {
@@ -2129,6 +3139,216 @@ mod tests {
         assert_eq!(watch["peer_id"], "bob");
     }
 
+    // -- Group wire format ----------------------------------------------------
+
+    #[test]
+    fn group_client_messages_serialize_to_expected_wire_shape() {
+        let create = serde_json::to_value(ClientMessage::CreateGroup {
+            name: "Squad".into(),
+        })
+        .expect("serialize");
+        assert_eq!(create["type"], "create_group");
+        assert_eq!(create["name"], "Squad");
+
+        let add = serde_json::to_value(ClientMessage::AddGroupMember {
+            group_id: "g-1".into(),
+            peer_id: "bob".into(),
+        })
+        .expect("serialize");
+        assert_eq!(add["type"], "add_group_member");
+        assert_eq!(add["group_id"], "g-1");
+        assert_eq!(add["peer_id"], "bob");
+
+        let info = serde_json::to_value(ClientMessage::GetGroupInfo {
+            group_id: "g-1".into(),
+        })
+        .expect("serialize");
+        assert_eq!(info["type"], "get_group_info");
+
+        let promote = serde_json::to_value(ClientMessage::PromoteMember {
+            group_id: "g-1".into(),
+            peer_id: "bob".into(),
+        })
+        .expect("serialize");
+        assert_eq!(promote["type"], "promote_member");
+
+        let demote = serde_json::to_value(ClientMessage::DemoteMember {
+            group_id: "g-1".into(),
+            peer_id: "bob".into(),
+        })
+        .expect("serialize");
+        assert_eq!(demote["type"], "demote_member");
+
+        let remove = serde_json::to_value(ClientMessage::RemoveMember {
+            group_id: "g-1".into(),
+            peer_id: "bob".into(),
+        })
+        .expect("serialize");
+        assert_eq!(remove["type"], "remove_member");
+
+        let leave = serde_json::to_value(ClientMessage::LeaveGroup {
+            group_id: "g-1".into(),
+        })
+        .expect("serialize");
+        assert_eq!(leave["type"], "leave_group");
+    }
+
+    #[test]
+    fn group_info_server_message_parses_with_roles() {
+        let text = r#"{
+            "type":"group_info",
+            "group_id":"g-1",
+            "name":"Squad",
+            "owner_peer_id":"alice",
+            "members":[
+                {"peer_id":"alice","role":"owner"},
+                {"peer_id":"bob","role":"admin"}
+            ]
+        }"#;
+        match serde_json::from_str::<ServerMessage>(text).expect("parse") {
+            ServerMessage::GroupInfo {
+                group_id,
+                name,
+                owner_peer_id,
+                members,
+            } => {
+                assert_eq!(group_id, "g-1");
+                assert_eq!(name, "Squad");
+                assert_eq!(owner_peer_id, "alice");
+                assert_eq!(members.len(), 2);
+                assert_eq!(members[0].peer_id, "alice");
+                assert_eq!(members[0].role, "owner");
+                assert_eq!(members[1].peer_id, "bob");
+                assert_eq!(members[1].role, "admin");
+            }
+            other => panic!("unexpected variant: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn group_created_and_role_confirmation_messages_parse() {
+        let created: ServerMessage = serde_json::from_str(
+            r#"{"type":"group_created","group_id":"g-1","name":"Squad","members":["alice"]}"#,
+        )
+        .expect("parse");
+        match created {
+            ServerMessage::GroupCreated {
+                group_id,
+                name,
+                members,
+                ..
+            } => {
+                assert_eq!(group_id, "g-1");
+                assert_eq!(name, "Squad");
+                assert_eq!(members, vec!["alice".to_string()]);
+            }
+            other => panic!("unexpected variant: {other:?}"),
+        }
+
+        let promoted: ServerMessage = serde_json::from_str(
+            r#"{"type":"group_member_promoted","group_id":"g-1","peer_id":"bob"}"#,
+        )
+        .expect("parse");
+        match promoted {
+            ServerMessage::GroupMemberPromoted { group_id, peer_id } => {
+                assert_eq!(group_id, "g-1");
+                assert_eq!(peer_id, "bob");
+            }
+            other => panic!("unexpected variant: {other:?}"),
+        }
+
+        let removed: ServerMessage = serde_json::from_str(
+            r#"{"type":"group_member_removed","group_id":"g-1","peer_id":"bob"}"#,
+        )
+        .expect("parse");
+        assert!(matches!(
+            removed,
+            ServerMessage::GroupMemberRemoved { group_id, peer_id }
+                if group_id == "g-1" && peer_id == "bob"
+        ));
+    }
+
+    #[test]
+    fn group_key_payload_parses() {
+        let text =
+            r#"{"kind":"group_key","group_id":"g-1","session_key":"abc","group_name":"Squad"}"#;
+        let payload: GroupKeyPayload = serde_json::from_str(text).expect("parse");
+        assert_eq!(payload.kind, "group_key");
+        assert_eq!(payload.group_id, "g-1");
+        assert_eq!(payload.session_key, "abc");
+        assert_eq!(payload.group_name, "Squad");
+    }
+
+    #[test]
+    fn group_envelope_roundtrips_via_megolm_on_the_wire() {
+        // The creator builds the outbound session and shares its session key
+        // over an end-to-end channel; the recipient rebuilds the inbound side.
+        let mut outbound = OutboundGroup::new();
+        let session_key = outbound.session_key();
+        let mut inbound = InboundGroup::new(&session_key).expect("key must parse");
+        assert_eq!(outbound.session_id(), inbound.session_id());
+
+        // A group envelope carries the Megolm ciphertext keyed by group id,
+        // exactly as `send_group_message` emits it.
+        let ciphertext = outbound.encrypt(b"hello group");
+        let content = EnvelopeContent::Group {
+            group_id: "g-1".to_string(),
+            ciphertext: ciphertext.clone(),
+        };
+        let json = serde_json::to_string(&content).expect("serialize");
+        let restored: EnvelopeContent = serde_json::from_str(&json).expect("deserialize");
+        let restored_cipher = match restored {
+            EnvelopeContent::Group { ciphertext, .. } => ciphertext,
+            other => panic!("unexpected content: {other:?}"),
+        };
+        assert_eq!(restored_cipher, ciphertext);
+
+        // The recipient decrypts with the inbound session built from the key.
+        let plaintext = inbound.decrypt(&restored_cipher).expect("decrypt");
+        assert_eq!(plaintext, b"hello group");
+
+        // A group-key share travels as an ordinary encrypted Message whose
+        // plaintext is the JSON payload.
+        let payload = serde_json::json!({
+            "kind": "group_key",
+            "group_id": "g-1",
+            "session_key": session_key,
+            "group_name": "Squad",
+        });
+        let parsed: GroupKeyPayload = serde_json::from_value(payload).expect("parse");
+        let mut member_inbound =
+            InboundGroup::new(&parsed.session_key).expect("member key must parse");
+        assert_eq!(member_inbound.session_id(), outbound.session_id());
+        let next = outbound.encrypt(b"second message");
+        assert_eq!(
+            member_inbound.decrypt(&next).expect("decrypt"),
+            b"second message"
+        );
+    }
+
+    #[test]
+    fn set_privacy_client_message_serializes() {
+        let hide = serde_json::to_value(ClientMessage::SetPrivacy {
+            presence_visible: false,
+        })
+        .expect("serialize");
+        assert_eq!(hide["type"], "set_privacy");
+        assert_eq!(hide["presence_visible"], false);
+
+        let show = serde_json::to_value(ClientMessage::SetPrivacy {
+            presence_visible: true,
+        })
+        .expect("serialize");
+        assert_eq!(show["presence_visible"], true);
+    }
+
+    #[test]
+    fn privacy_updated_server_message_parses() {
+        let message: ServerMessage =
+            serde_json::from_str(r#"{"type":"privacy_updated"}"#).expect("parse");
+        assert!(matches!(message, ServerMessage::PrivacyUpdated));
+    }
+
     #[test]
     fn presence_info_roundtrips_through_json() {
         let online = PresenceInfo {
@@ -2242,19 +3462,58 @@ mod tests {
             serde_json::from_str(r#"{"theme":"dark"}"#).expect("partial settings must parse");
         assert_eq!(settings.relay_url, None);
         assert_eq!(settings.theme.as_deref(), Some("dark"));
+        // Opt-out preferences default to enabled when the field is missing.
+        assert!(settings.presence_visible);
+        assert!(settings.read_receipts);
+        assert!(settings.typing_indicator);
+        assert!(settings.notifications_enabled);
+        assert!(settings.notification_preview);
+    }
+
+    #[test]
+    fn settings_parse_honours_explicit_opt_out_fields() {
+        let settings: Settings = serde_json::from_str(
+            r#"{"presence_visible":false,"read_receipts":false,"typing_indicator":false,"notifications_enabled":false,"notification_preview":false}"#,
+        )
+        .expect("full settings must parse");
+        assert!(!settings.presence_visible);
+        assert!(!settings.read_receipts);
+        assert!(!settings.typing_indicator);
+        assert!(!settings.notifications_enabled);
+        assert!(!settings.notification_preview);
+    }
+
+    #[test]
+    fn settings_patch_defaults_every_field_to_none() {
+        let patch: SettingsPatch =
+            serde_json::from_str(r#"{"read_receipts":true}"#).expect("partial patch must parse");
+        assert_eq!(patch.read_receipts, Some(true));
+        assert_eq!(patch.typing_indicator, None);
+        assert_eq!(patch.notifications_enabled, None);
+        assert_eq!(patch.notification_preview, None);
+    }
+
+    #[test]
+    fn setting_bool_parses_strings_and_falls_back_to_default() {
+        assert!(setting_bool(Some("true".into()), false));
+        assert!(!setting_bool(Some("false".into()), true));
+        assert!(setting_bool(None, true));
+        assert!(!setting_bool(Some("garbage".into()), false));
+        assert_eq!(setting_str(true), "true");
+        assert_eq!(setting_str(false), "false");
     }
 
     #[test]
     fn relay_url_resolution_prefers_settings_then_env_then_default() {
         let custom = Settings {
             relay_url: Some("ws://custom".into()),
-            theme: None,
+            ..Settings::default()
         };
         assert_eq!(resolve_relay_url(&custom, Some("ws://env")), "ws://custom");
 
         let blank = Settings {
             relay_url: Some(String::new()),
-            theme: None,
+            ..Settings::default()
         };
         assert_eq!(resolve_relay_url(&blank, Some("ws://env")), "ws://env");
         assert_eq!(resolve_relay_url(&blank, None), DEFAULT_RELAY_URL);

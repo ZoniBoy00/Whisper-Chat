@@ -22,6 +22,14 @@ sender and the recipient can read them.
 - **End-to-end encrypted 1:1 messaging** — X3DH key exchange + Double Ratchet
   (via the audited [vodozemac](https://github.com/matrix-org/vodozemac) library).
   Forward and backward secrecy on every message.
+- **End-to-end encrypted groups** — Megolm group encryption with owner/admin
+  roles, signed username aliases and avatars (WhatsApp/Signal-style group UI).
+- **Read receipts, typing & presence** — blue double ticks when a message is
+  read, live "typing…" indicators and Online / Last seen status (WhatsApp-style).
+- **Username & profile system** — register a unique signed username (Ed25519
+  binding), set a display name and avatar, search by username or UID.
+- **Privacy controls** — hide your online status, disable read receipts or
+  typing signals, per-option notification previews.
 - **Zero-knowledge blind relay** — the server only ever sees opaque, encrypted
   envelopes. It holds zero plaintext, zero keys and zero message content.
 - **No phone number required** — identity is a pure cryptographic key pair.
@@ -31,10 +39,13 @@ sender and the recipient can read them.
   `identity_conflict`, `invalid_hello`).
 - **Offline delivery** — SQLite-backed offline queue with a 7-day TTL and
   `fetch_since` sync, so you never miss a message while away.
+- **Encrypted local history** — messages, sessions, contacts and settings
+  persist in an encrypted store (SQLCipher-capable) across restarts.
 - **Rate limiting & DoS guards** — per-IP token bucket (60/min default) and an
   8 MiB envelope size cap.
 - **Modern dark UI** — clean, minimalist, Signal/Telegram-grade desktop shell
-  (Tauri v2 + React + TypeScript + Tailwind + Lucide icons).
+  (Tauri v2 + React + TypeScript + Tailwind + Lucide icons), Discord-style
+  splashscreen and tasteful motion.
 - **Cross-platform future** — Tauri desktop today, Flutter mobile coming (one
   shared Rust crypto core).
 - **Hardened release builds** — `lto="fat"`, `panic="abort"`, `strip=true`
@@ -218,7 +229,8 @@ Licensed under the **MIT License**. Cryptography is provided by
 **MVP (phases 0–5):** workspace + CI, crypto core, relay, desktop shell, E2EE
 1:1 integration, polished UI/UX.
 
-**After MVP (phases 6–9):** groups + disappearing messages (Megolm), encrypted
+**After MVP (phases 6–9):** disappearing messages, encrypted media + calls,
+mobile (Flutter). Groups, presence and privacy controls are already in.
 media + calls (WebRTC/DTLS-SRTP), Flutter mobile, external audit +
 post-quantum (X25519Kyber768).
 

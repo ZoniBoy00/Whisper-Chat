@@ -10,7 +10,10 @@ use tokio::sync::Notify;
 mod relay;
 mod store;
 
-use relay::{ChatState, PeerProfile, PresenceInfo, ProfileSearchResult, RelayClient, Settings};
+use relay::{
+    ChatState, GroupInfo, PeerProfile, PresenceInfo, ProfileSearchResult, RelayClient, Settings,
+    SettingsPatch,
+};
 
 /// Resolve the on-disk location of the persisted identity.
 ///
@@ -238,6 +241,32 @@ async fn set_theme(state: State<'_, RelayClient>, theme: String) -> Result<(), S
     state.set_theme(&theme).map_err(|e| e.to_string())
 }
 
+/// Toggle whether our online status and last-seen are visible to other peers.
+/// Persisted locally and pushed to the relay (best-effort) so it takes effect
+/// immediately.
+#[tauri::command]
+async fn set_privacy(state: State<'_, RelayClient>, presence_visible: bool) -> Result<(), String> {
+    state
+        .set_privacy(presence_visible)
+        .map_err(|e| e.to_string())
+}
+
+/// Apply a partial boolean-preferences update (read receipts, typing
+/// indicator, notifications) and persist it.
+#[tauri::command]
+async fn update_settings(
+    state: State<'_, RelayClient>,
+    patch: SettingsPatch,
+) -> Result<(), String> {
+    state.update_settings(&patch).map_err(|e| e.to_string())
+}
+
+/// Remove a contact and its message history locally (client-side only).
+#[tauri::command]
+async fn remove_contact(state: State<'_, RelayClient>, peer_id: String) -> Result<(), String> {
+    state.remove_contact(&peer_id).map_err(|e| e.to_string())
+}
+
 /// Persist our own public display name and announce it to the relay so other
 /// peers can show it when they look us up.
 #[tauri::command]
@@ -273,6 +302,82 @@ async fn get_presence(
 #[tauri::command]
 async fn watch_presence(state: State<'_, RelayClient>, peer_id: String) -> Result<(), String> {
     state.watch_presence(&peer_id).map_err(|e| e.to_string())
+}
+
+/// Create a group: register it on the relay, add `member_ids` to its roster,
+/// build the Megolm outbound session and share its session key to every
+/// member over the existing 1:1 Double Ratchet channels. Returns the
+/// relay-assigned group ID.
+#[tauri::command]
+async fn create_group(
+    state: State<'_, RelayClient>,
+    name: String,
+    member_ids: Vec<String>,
+) -> Result<String, String> {
+    state
+        .create_group(&name, member_ids)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// Fetch a group's public metadata and member roster (with roles).
+#[tauri::command]
+async fn get_group_info(
+    state: State<'_, RelayClient>,
+    group_id: String,
+) -> Result<GroupInfo, String> {
+    state
+        .get_group_info(&group_id)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// Promote a member to group admin (owner or admin only).
+#[tauri::command]
+async fn promote_member(
+    state: State<'_, RelayClient>,
+    group_id: String,
+    peer_id: String,
+) -> Result<(), String> {
+    state
+        .promote_member(&group_id, &peer_id)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// Demote an admin back to a regular member (owner only).
+#[tauri::command]
+async fn demote_member(
+    state: State<'_, RelayClient>,
+    group_id: String,
+    peer_id: String,
+) -> Result<(), String> {
+    state
+        .demote_member(&group_id, &peer_id)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// Remove a member from a group (owner only).
+#[tauri::command]
+async fn remove_member(
+    state: State<'_, RelayClient>,
+    group_id: String,
+    peer_id: String,
+) -> Result<(), String> {
+    state
+        .remove_member(&group_id, &peer_id)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// Remove the caller from a group's roster.
+#[tauri::command]
+async fn leave_group(state: State<'_, RelayClient>, group_id: String) -> Result<(), String> {
+    state
+        .leave_group(&group_id)
+        .await
+        .map_err(|e| e.to_string())
 }
 
 /// Splash screen handoff. The main window is created hidden so the splash
@@ -343,6 +448,9 @@ pub fn run() {
             get_settings,
             set_relay_url,
             set_theme,
+            set_privacy,
+            update_settings,
+            remove_contact,
             set_display_name,
             send_typing,
             get_presence,
@@ -350,7 +458,13 @@ pub fn run() {
             search_users,
             get_profile,
             set_avatar,
-            watch_presence
+            watch_presence,
+            create_group,
+            get_group_info,
+            promote_member,
+            demote_member,
+            remove_member,
+            leave_group
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

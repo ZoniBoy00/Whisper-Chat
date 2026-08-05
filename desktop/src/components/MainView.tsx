@@ -1,7 +1,8 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type {
   ContactInfo,
   Conversation,
+  GroupInfo,
   Message,
   MessageStatus,
   PresenceInfo,
@@ -9,33 +10,45 @@ import type {
 } from "../types";
 import {
   connectRelay,
+  createGroup,
+  demoteMember,
   getChatState,
+  getGroupInfo,
   getPresence,
   getProfile,
   getSettings,
+  leaveGroup,
   onChatMessage,
   onContactUpdated,
   onMessageStatus,
   onPresence,
   onRelayStatus,
   onTyping,
+  promoteMember,
   publishPrekeys,
   registerProfile,
+  removeContact,
+  removeMember,
   resetRelay,
   sendMessage,
   sendTyping,
   setAvatar,
   setDisplayName as persistDisplayName,
+  setPrivacy,
   setRelayUrl as persistRelayUrl,
   setTheme as persistTheme,
   startChat,
+  updateSettings,
   watchPresence,
 } from "../lib/relay";
-import { shortPeerId } from "../lib/format";
+import { isGroupId, shortPeerId } from "../lib/format";
 import type { UnlistenFn } from "@tauri-apps/api/event";
 import { Sidebar } from "./Sidebar";
 import { ChatView } from "./ChatView";
 import { AddContactDialog } from "./AddContactDialog";
+import { GroupInfoDialog } from "./GroupInfoDialog";
+import { NewGroupDialog } from "./NewGroupDialog";
+import { ProfileDialog } from "./ProfileDialog";
 import { SettingsDialog } from "./SettingsDialog";
 
 type Theme = "dark" | "light";
@@ -43,6 +56,47 @@ type Theme = "dark" | "light";
 /** How often to re-fetch the active peer's presence (pushes are real-time;
  *  the poll only guarantees freshness across reconnects). */
 const PRESENCE_POLL_MS = 30_000;
+
+/**
+ * Show an HTML5 desktop notification for an incoming message. Only called
+ * while the window is unfocused and notifications are enabled. Permission is
+ * requested once per session; if it is not granted the toggle stays on but
+ * nothing is shown (documented in the Notifications settings tab).
+ */
+let notificationPermissionRequested = false;
+
+async function showChatNotification(
+  peerId: string,
+  message: Message,
+  contacts: ContactInfo[],
+  preview: boolean
+): Promise<void> {
+  if (typeof Notification === "undefined") return;
+  if (Notification.permission === "denied") return;
+  if (Notification.permission !== "granted") {
+    if (notificationPermissionRequested) return;
+    notificationPermissionRequested = true;
+    try {
+      const permission = await Notification.requestPermission();
+      if (permission !== "granted") return;
+    } catch {
+      return;
+    }
+  }
+  const contact = contacts.find((c) => c.peer_id === peerId);
+  const name =
+    contact?.display_name ??
+    (contact?.username ? `@${contact.username}` : shortPeerId(peerId, 16));
+  const body = preview
+    ? `${name}: ${message.text}`
+    : `New message from ${name}`;
+  try {
+    new Notification("Whisper", { body });
+  } catch {
+    // The webview may not support the Notification API; the toggle stays on
+    // and nothing is shown.
+  }
+}
 
 interface MainViewProps {
   peerId: string;
@@ -55,19 +109,37 @@ export function MainView({ peerId, onReset }: MainViewProps) {
   // Our own public profile (username + avatar) fetched from the directory.
   const [myProfile, setMyProfile] = useState<ProfileInfo | null>(null);
   const [messages, setMessages] = useState<Record<string, Message[]>>({});
+  const [groups, setGroups] = useState<GroupInfo[]>([]);
   const [connected, setConnected] = useState(false);
   const [connecting, setConnecting] = useState(true);
   const [connectionError, setConnectionError] = useState<string | null>(null);
   const [activePeerId, setActivePeerId] = useState<string | null>(null);
   const [addDialogOpen, setAddDialogOpen] = useState(false);
+  const [newGroupOpen, setNewGroupOpen] = useState(false);
+  const [groupInfoGroupId, setGroupInfoGroupId] = useState<string | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [theme, setTheme] = useState<Theme>("dark");
   const [relayUrl, setRelayUrl] = useState("");
+  // Privacy / notification preferences, hydrated from the settings store on
+  // mount and persisted on change.
+  const [presenceVisible, setPresenceVisible] = useState(true);
+  const [readReceipts, setReadReceipts] = useState(true);
+  const [typingIndicator, setTypingIndicator] = useState(true);
+  const [notificationsEnabled, setNotificationsEnabled] = useState(true);
+  const [notificationPreview, setNotificationPreview] = useState(true);
+  // Peer whose profile dialog is open; null when closed.
+  const [profilePeerId, setProfilePeerId] = useState<string | null>(null);
   // Per-peer typing state fed by the `typing` event (with a 5s auto-timeout
   // on the backend, so it can never get stuck on "on").
   const [typing, setTyping] = useState<Record<string, boolean>>({});
   // Per-peer presence (online status + last-seen), fed by pushes and the poll.
   const [presence, setPresence] = useState<Record<string, PresenceInfo>>({});
+
+  // The chat-message listener is registered once but must read the *current*
+  // notification prefs and contact list, so they live in a ref updated on
+  // every render.
+  const notifyPrefs = useRef({ notificationsEnabled, notificationPreview, contacts });
+  notifyPrefs.current = { notificationsEnabled, notificationPreview, contacts };
 
   const connect = useCallback(async () => {
     setConnecting(true);
@@ -87,6 +159,7 @@ export function MainView({ peerId, onReset }: MainViewProps) {
       const state = await getChatState();
       setContacts(state.contacts);
       setMessages(state.messages);
+      setGroups(state.groups);
       setConnected(state.connected);
       setMyDisplayName(state.my_display_name);
       setPresence(state.presence);
@@ -133,6 +206,11 @@ export function MainView({ peerId, onReset }: MainViewProps) {
           setTheme(settings.theme);
         }
         if (settings.relay_url) setRelayUrl(settings.relay_url);
+        if (settings.presence_visible != null) setPresenceVisible(settings.presence_visible);
+        setReadReceipts(settings.read_receipts ?? true);
+        setTypingIndicator(settings.typing_indicator ?? true);
+        setNotificationsEnabled(settings.notifications_enabled ?? true);
+        setNotificationPreview(settings.notification_preview ?? true);
       } catch {
         // Settings are best-effort; the defaults (dark, default relay) apply.
       }
@@ -178,6 +256,13 @@ export function MainView({ peerId, onReset }: MainViewProps) {
             return { ...prev, [peer_id]: [...list, message] };
           });
           setActivePeerId((prev) => prev ?? peer_id);
+          // Desktop notification: incoming message + window unfocused +
+          // notifications enabled (preview text controlled by the setting).
+          if (message.outgoing) return;
+          const prefs = notifyPrefs.current;
+          if (!prefs.notificationsEnabled) return;
+          if (document.hasFocus()) return;
+          void showChatNotification(peer_id, message, prefs.contacts, prefs.notificationPreview);
         })
       );
       const statusUnlisten = await register(() =>
@@ -387,9 +472,119 @@ export function MainView({ peerId, onReset }: MainViewProps) {
     [refreshOwnProfile]
   );
 
+  // Privacy / notification preference handlers: apply in memory immediately
+  // and persist best-effort (a store failure must never block the toggle).
+  const handlePresenceVisibleChange = useCallback((value: boolean) => {
+    setPresenceVisible(value);
+    void setPrivacy(value).catch(() => {});
+  }, []);
+
+  const handleReadReceiptsChange = useCallback((value: boolean) => {
+    setReadReceipts(value);
+    void updateSettings({ read_receipts: value }).catch(() => {});
+  }, []);
+
+  const handleTypingIndicatorChange = useCallback((value: boolean) => {
+    setTypingIndicator(value);
+    void updateSettings({ typing_indicator: value }).catch(() => {});
+  }, []);
+
+  const handleNotificationsEnabledChange = useCallback((value: boolean) => {
+    setNotificationsEnabled(value);
+    void updateSettings({ notifications_enabled: value }).catch(() => {});
+  }, []);
+
+  const handleNotificationPreviewChange = useCallback((value: boolean) => {
+    setNotificationPreview(value);
+    void updateSettings({ notification_preview: value }).catch(() => {});
+  }, []);
+
+  // Profile dialog wiring: opening focuses the active conversation's peer;
+  // "Message" just closes the dialog (the chat is already open).
+  const handleOpenProfile = useCallback(() => {
+    if (activePeerId) setProfilePeerId(activePeerId);
+  }, [activePeerId]);
+
+  /** Remove a contact and its messages on this device (client-local). The
+   *  Rust backend drops the contact row, history and session; this keeps the
+   *  React state in sync so no refresh is needed. The peer's own copy and any
+   *  relay-queued envelopes are untouched — a later message re-establishes
+   *  the contact. */
+  const handleRemoveContact = useCallback(async (targetPeerId: string) => {
+    try {
+      await removeContact(targetPeerId);
+    } catch {
+      // Client-local best-effort: the in-memory removal below still applies
+      // for this session.
+    }
+    setContacts((prev) => prev.filter((c) => c.peer_id !== targetPeerId));
+    setMessages((prev) => {
+      const next = { ...prev };
+      delete next[targetPeerId];
+      return next;
+    });
+    setActivePeerId((prev) => (prev === targetPeerId ? null : prev));
+    setProfilePeerId(null);
+  }, []);
+
+  // ---- Group chat wiring --------------------------------------------------
+
+  /** Create a group with the given name and members, then resync so the chat
+   *  list shows it immediately. */
+  const handleCreateGroup = useCallback(
+    async (name: string, memberIds: string[]): Promise<string> => {
+      const groupId = await createGroup(name, memberIds);
+      await refresh();
+      setActivePeerId(groupId);
+      return groupId;
+    },
+    [refresh]
+  );
+
+  /** Fetch fresh group metadata (name, roster, roles) for the info panel. */
+  const handleFetchGroupInfo = useCallback(
+    (groupId: string) => getGroupInfo(groupId),
+    []
+  );
+
+  /** Group admin actions: run the relay call, then resync the roster. */
+  const handlePromote = useCallback(
+    async (groupId: string, peerId: string) => {
+      await promoteMember(groupId, peerId);
+      await refresh();
+    },
+    [refresh]
+  );
+
+  const handleDemote = useCallback(
+    async (groupId: string, peerId: string) => {
+      await demoteMember(groupId, peerId);
+      await refresh();
+    },
+    [refresh]
+  );
+
+  const handleRemoveMember = useCallback(
+    async (groupId: string, peerId: string) => {
+      await removeMember(groupId, peerId);
+      await refresh();
+    },
+    [refresh]
+  );
+
+  const handleLeaveGroup = useCallback(
+    async (groupId: string) => {
+      await leaveGroup(groupId);
+      setGroupInfoGroupId(null);
+      await refresh();
+      // Close the conversation if the active chat was the group we left.
+      setActivePeerId((prev) => (prev === groupId ? null : prev));
+    },
+    [refresh]
+  );
+
   const handleAddContact = useCallback(
-    async (peerIdToAdd: string) => {
-      try {
+    async (peerIdToAdd: string) => {      try {
         await startChat(peerIdToAdd);
         setContacts((prev) =>
           prev.some((c) => c.peer_id === peerIdToAdd)
@@ -431,30 +626,44 @@ export function MainView({ peerId, onReset }: MainViewProps) {
   }, [onReset]);
 
   // Conversations ordered by recency of the last message so the chat list
-  // behaves like Signal/WhatsApp: most recent activity first.
-  const conversations: Conversation[] = useMemo(
-    () =>
-      contacts
-        .map((contact) => ({
+  // behaves like Signal/WhatsApp: most recent activity first. Groups appear
+  // in the same list (keyed by their group ID with the group name as the
+  // display name); their letter avatar and member count distinguish them.
+  const conversations: Conversation[] = useMemo(() => {
+    const groupById = new Map(groups.map((g) => [g.group_id, g]));
+    return contacts
+      .map((contact) => {
+        const isGroup = isGroupId(contact.peer_id);
+        const group = isGroup ? groupById.get(contact.peer_id) : undefined;
+        return {
           id: contact.peer_id,
-          name:
-            contact.display_name ?? shortPeerId(contact.peer_id),
-          displayName: contact.display_name,
+          name: isGroup
+            ? group?.name ?? contact.display_name ?? shortPeerId(contact.peer_id)
+            : contact.display_name ?? shortPeerId(contact.peer_id),
+          displayName: isGroup ? null : contact.display_name,
           peerId: contact.peer_id,
-          username: contact.username,
-          avatarUrl: contact.avatar_url,
+          username: isGroup ? undefined : contact.username,
+          avatarUrl: isGroup ? undefined : contact.avatar_url,
+          isGroup,
+          memberCount: group?.members.length,
           messages: messages[contact.peer_id] ?? [],
-        }))
-        .sort((a, b) => {
-          const lastA = a.messages[a.messages.length - 1]?.timestamp ?? 0;
-          const lastB = b.messages[b.messages.length - 1]?.timestamp ?? 0;
-          return lastB - lastA;
-        }),
-    [contacts, messages]
-  );
+        };
+      })
+      .sort((a, b) => {
+        const lastA = a.messages[a.messages.length - 1]?.timestamp ?? 0;
+        const lastB = b.messages[b.messages.length - 1]?.timestamp ?? 0;
+        return lastB - lastA;
+      });
+  }, [contacts, groups, messages]);
 
   const active =
     conversations.find((c) => c.peerId === activePeerId) ?? null;
+
+  // The contact shown in the profile dialog; falls back gracefully to the
+  // peer ID when the conversation was just removed.
+  const profileTarget = profilePeerId
+    ? conversations.find((c) => c.peerId === profilePeerId) ?? null
+    : null;
 
   return (
     <div className="flex h-screen overflow-hidden bg-wp-bg text-wp-text">
@@ -470,6 +679,7 @@ export function MainView({ peerId, onReset }: MainViewProps) {
         relayUrl={relayUrl}
         onSelect={setActivePeerId}
         onAddContact={() => setAddDialogOpen(true)}
+        onNewGroup={() => setNewGroupOpen(true)}
         onStartChat={handleAddContact}
         onOpenSettings={() => setSettingsOpen(true)}
         onReconnect={() => void connect()}
@@ -482,11 +692,47 @@ export function MainView({ peerId, onReset }: MainViewProps) {
         relayUrl={relayUrl}
         onSend={(t) => void handleSend(t)}
         onTypingChange={handleTypingChange}
+        onOpenProfile={handleOpenProfile}
+        onOpenGroupInfo={
+          active?.isGroup ? () => setGroupInfoGroupId(active.peerId) : undefined
+        }
       />
       <AddContactDialog
         open={addDialogOpen}
         onOpenChange={setAddDialogOpen}
         onAdd={handleAddContact}
+      />
+      <NewGroupDialog
+        open={newGroupOpen}
+        onOpenChange={setNewGroupOpen}
+        onCreate={handleCreateGroup}
+        myPeerId={peerId}
+      />
+      <GroupInfoDialog
+        open={groupInfoGroupId !== null}
+        groupId={groupInfoGroupId}
+        onOpenChange={(open) => {
+          if (!open) setGroupInfoGroupId(null);
+        }}
+        onFetchInfo={handleFetchGroupInfo}
+        onPromote={handlePromote}
+        onDemote={handleDemote}
+        onRemove={handleRemoveMember}
+        onLeave={handleLeaveGroup}
+      />
+      <ProfileDialog
+        open={profilePeerId !== null}
+        onOpenChange={(open) => {
+          if (!open) setProfilePeerId(null);
+        }}
+        peerId={profilePeerId ?? ""}
+        relayUrl={relayUrl}
+        fallbackDisplayName={profileTarget?.displayName ?? null}
+        fallbackUsername={profileTarget?.username ?? null}
+        fallbackAvatarUrl={profileTarget?.avatarUrl ?? null}
+        initialPresence={profilePeerId ? presence[profilePeerId] ?? null : null}
+        onMessage={() => setProfilePeerId(null)}
+        onRemoveContact={(id) => void handleRemoveContact(id)}
       />
       <SettingsDialog
         open={settingsOpen}
@@ -503,6 +749,16 @@ export function MainView({ peerId, onReset }: MainViewProps) {
         onRegisterUsername={handleRegisterUsername}
         onSetAvatar={handleSetAvatar}
         onReset={handleReset}
+        presenceVisible={presenceVisible}
+        onPresenceVisibleChange={handlePresenceVisibleChange}
+        readReceipts={readReceipts}
+        onReadReceiptsChange={handleReadReceiptsChange}
+        typingIndicator={typingIndicator}
+        onTypingIndicatorChange={handleTypingIndicatorChange}
+        notificationsEnabled={notificationsEnabled}
+        onNotificationsEnabledChange={handleNotificationsEnabledChange}
+        notificationPreview={notificationPreview}
+        onNotificationPreviewChange={handleNotificationPreviewChange}
       />
     </div>
   );

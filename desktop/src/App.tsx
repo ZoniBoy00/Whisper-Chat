@@ -1,7 +1,11 @@
 import { useCallback, useEffect, useState } from "react";
+import type { ReactNode } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
+import type { UnlistenFn } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { Loader2 } from "lucide-react";
+import { cx } from "./lib/format";
 import { Onboarding } from "./components/Onboarding";
 import { MainView } from "./components/MainView";
 import { Splash } from "./components/Splash";
@@ -59,6 +63,43 @@ function MainApp() {
   const [loading, setLoading] = useState(true);
   const [identity, setIdentity] = useState<IdentityInfo | null>(null);
   const [error, setError] = useState<string | null>(null);
+  // The main window boots hidden behind the splash and is revealed by the Rust
+  // side once `splash-done` fires. `entered` gates a soft fade-in so the app
+  // does not flash onto the screen — it appears the moment the window shows.
+  const [entered, setEntered] = useState(false);
+
+  useEffect(() => {
+    let disposed = false;
+    let timer: number | undefined;
+    const unlisteners: UnlistenFn[] = [];
+    void (async () => {
+      try {
+        // Throws when not running inside a Tauri webview (plain `vite dev`).
+        getCurrentWindow();
+        const unlisten = await listen("splash-done", () => {
+          if (!disposed) setEntered(true);
+        });
+        if (disposed) {
+          unlisten();
+          return;
+        }
+        unlisteners.push(unlisten);
+        // Fallback mirroring the Rust-side timeout: if the splash signal is
+        // missed (e.g. the splash webview failed to boot), reveal anyway.
+        timer = window.setTimeout(() => {
+          if (!disposed) setEntered(true);
+        }, 2600);
+      } catch {
+        // Browser dev has no splash handoff — reveal immediately.
+        if (!disposed) setEntered(true);
+      }
+    })();
+    return () => {
+      disposed = true;
+      if (timer !== undefined) window.clearTimeout(timer);
+      for (const unlisten of unlisteners) unlisten();
+    };
+  }, []);
 
   const loadIdentity = useCallback(async () => {
     try {
@@ -86,12 +127,11 @@ function MainApp() {
     await loadIdentity();
   }, [loadIdentity]);
 
+  let content: ReactNode;
   if (loading) {
-    return <FullScreenLoader />;
-  }
-
-  if (error) {
-    return (
+    content = <FullScreenLoader />;
+  } else if (error) {
+    content = (
       <div className="flex h-screen flex-col items-center justify-center gap-4 bg-wp-bg text-wp-dim">
         <p className="text-sm">Could not load your identity.</p>
         <p className="max-w-md truncate text-xs text-wp-faint">{error}</p>
@@ -104,13 +144,19 @@ function MainApp() {
         </button>
       </div>
     );
+  } else if (!identity?.exists) {
+    content = (
+      <Onboarding
+        onCreated={(peerId) => setIdentity({ peer_id: peerId, exists: true })}
+      />
+    );
+  } else {
+    content = <MainView peerId={identity.peer_id} onReset={() => void handleReset()} />;
   }
 
-  if (!identity?.exists) {
-    return <Onboarding onCreated={(peerId) => setIdentity({ peer_id: peerId, exists: true })} />;
-  }
-
-  return <MainView peerId={identity.peer_id} onReset={() => void handleReset()} />;
+  return (
+    <div className={cx("h-screen", entered && "animate-app-in")}>{content}</div>
+  );
 }
 
 export default function App() {

@@ -4,9 +4,11 @@ import { cx, formatTime } from "../lib/format";
 
 interface MessageBubbleProps {
   message: Message;
+  /** Animate the entrance — only newly appended messages set this. */
+  animate?: boolean;
 }
 
-export function MessageBubble({ message }: MessageBubbleProps) {
+export function MessageBubble({ message, animate = false }: MessageBubbleProps) {
   const { outgoing } = message;
   // Read receipts: "sent" = single gray tick, "delivered" = double gray tick,
   // "read" = double blue tick.
@@ -17,7 +19,11 @@ export function MessageBubble({ message }: MessageBubbleProps) {
 
   return (
     <div
-      className={cx("flex animate-msg-in", outgoing ? "justify-end" : "justify-start")}
+      className={cx(
+        "flex",
+        animate && "animate-msg-in",
+        outgoing ? "justify-end" : "justify-start"
+      )}
     >
       <div
         className={cx(

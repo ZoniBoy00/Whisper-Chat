@@ -546,6 +546,92 @@ async function main() {
   bob5.ws.close();
   await sleep(100);
 
+  // --- Privacy (presence visibility) ---
+
+  // A fresh identity so the shared carol connection used by the later tests
+  // stays intact.
+  const frank = makeIdentity("Test Frank");
+  const frankConn = connect("frank");
+  await frankConn.ready;
+  frankConn.ws.hello(frank);
+  await sleep(100);
+
+  // (a) frank hides his presence while he is ONLINE: get_presence must report
+  //     online:false + last_seen:null.
+  frankConn.ws.sendJson({ type: "set_privacy", presence_visible: false });
+  await waitFor("privacy_updated (hidden)", () =>
+    frankConn.ws.messages.some((m) => m.type === "privacy_updated")
+  );
+  check("privacy: set_privacy(false) acknowledged with privacy_updated", true);
+
+  aliceConn.ws.sendJson({ type: "get_presence", peer_id: frank.peer_id });
+  await waitFor("hidden presence reply", () =>
+    aliceConn.ws.messages.some(
+      (m) => m.type === "presence" && m.peer_id === frank.peer_id
+    )
+  );
+  const hiddenReply = aliceConn.ws.messages
+    .filter((m) => m.type === "presence" && m.peer_id === frank.peer_id)
+    .pop();
+  check(
+    "privacy: hidden peer reports online:false + last_seen:null even while online",
+    hiddenReply &&
+      hiddenReply.online === false &&
+      hiddenReply.last_seen === null
+  );
+
+  // (b) the offline push for a hidden peer must hide last_seen too.
+  aliceConn.ws.sendJson({ type: "watch_presence", peer_id: frank.peer_id });
+  await sleep(100);
+  const frankPresenceBefore = aliceConn.ws.messages.filter(
+    (m) => m.type === "presence" && m.peer_id === frank.peer_id
+  ).length;
+  frankConn.ws.close();
+  await waitFor("hidden offline push", () =>
+    aliceConn.ws.messages.filter(
+      (m) => m.type === "presence" && m.peer_id === frank.peer_id
+    ).length > frankPresenceBefore
+  );
+  const hiddenOffline = aliceConn.ws.messages
+    .filter((m) => m.type === "presence" && m.peer_id === frank.peer_id)
+    .slice(frankPresenceBefore)
+    .pop();
+  check(
+    "privacy: hidden peer's offline push hides last_seen",
+    hiddenOffline &&
+      hiddenOffline.online === false &&
+      hiddenOffline.last_seen === null
+  );
+
+  // (c) re-enabling visibility reports the peer normally again.
+  const frank2 = connect("frank2");
+  await frank2.ready;
+  frank2.ws.hello(frank);
+  await sleep(100);
+  frank2.ws.sendJson({ type: "set_privacy", presence_visible: true });
+  await waitFor("privacy_updated (visible)", () =>
+    frank2.ws.messages.some((m) => m.type === "privacy_updated")
+  );
+  check("privacy: set_privacy(true) acknowledged with privacy_updated", true);
+
+  aliceConn.ws.sendJson({ type: "get_presence", peer_id: frank.peer_id });
+  await waitFor("visible presence reply", () =>
+    aliceConn.ws.messages
+      .filter((m) => m.type === "presence" && m.peer_id === frank.peer_id)
+      .some((m) => m.online === true)
+  );
+  const visibleReply = aliceConn.ws.messages
+    .filter((m) => m.type === "presence" && m.peer_id === frank.peer_id)
+    .pop();
+  check(
+    "privacy: visible peer reports online:true normally",
+    visibleReply &&
+      visibleReply.online === true &&
+      visibleReply.last_seen === null
+  );
+  frank2.ws.close();
+  await sleep(100);
+
   // --- Usernames & profiles ---
 
   // Reconnect bob: bob4 was closed by the presence tests.
@@ -796,16 +882,113 @@ async function main() {
     aliceConn.ws.messages.some((m) => m.type === "group_info")
   );
   const info = aliceConn.ws.messages.filter((m) => m.type === "group_info").pop();
+  // Members are reported as { peer_id, role } objects (owner/admin/member).
+  const infoMemberIds =
+    info && Array.isArray(info.members) ? info.members.map((m) => m.peer_id) : [];
   check(
-    "group: get_group_info returns owner + full member list",
+    "group: get_group_info returns owner + full member list with roles",
     info &&
       info.owner_peer_id === alice.peer_id &&
       info.name === "Ghost Squad" &&
-      Array.isArray(info.members) &&
-      info.members.length === 2 &&
-      info.members.includes(alice.peer_id) &&
-      info.members.includes(bob.peer_id)
+      infoMemberIds.length === 2 &&
+      infoMemberIds.includes(alice.peer_id) &&
+      infoMemberIds.includes(bob.peer_id) &&
+      info.members.some((m) => m.peer_id === alice.peer_id && m.role === "owner") &&
+      info.members.some((m) => m.peer_id === bob.peer_id && m.role === "member")
   );
+
+  // --- Group role management (promote / demote / remove) ---------------------
+  // Alice (owner) promotes Bob to admin. The roster must reflect the new role.
+  aliceConn.ws.sendJson({ type: "promote_member", group_id: groupId, peer_id: bob.peer_id });
+  await waitFor("group_member_promoted", () =>
+    aliceConn.ws.messages.some((m) => m.type === "group_member_promoted")
+  );
+  const promoted = aliceConn.ws.messages
+    .filter((m) => m.type === "group_member_promoted")
+    .pop();
+  check(
+    "group: owner promotes member -> group_member_promoted",
+    promoted && promoted.group_id === groupId && promoted.peer_id === bob.peer_id
+  );
+
+  aliceConn.ws.sendJson({ type: "get_group_info", group_id: groupId });
+  await waitFor("group_info after promote", () =>
+    aliceConn.ws.messages.filter((m) => m.type === "group_info").length >= 2
+  );
+  const infoPromoted = aliceConn.ws.messages.filter((m) => m.type === "group_info").pop();
+  check(
+    "group: promoted member shows role admin in group_info",
+    infoPromoted &&
+      Array.isArray(infoPromoted.members) &&
+      infoPromoted.members.some(
+        (m) => m.peer_id === bob.peer_id && m.role === "admin"
+      ) &&
+      infoPromoted.members.some(
+        (m) => m.peer_id === alice.peer_id && m.role === "owner"
+      )
+  );
+
+  // Bob (now an admin) cannot demote or remove the owner: demote/remove are
+  // owner-only, and the owner can never be touched.
+  bob6.ws.sendJson({ type: "demote_member", group_id: groupId, peer_id: alice.peer_id });
+  await waitFor("demote by admin -> not_owner", () =>
+    bob6.ws.messages.some((m) => m.type === "error" && m.code === "not_owner")
+  );
+  check("group: admin demote -> not_owner (owner-only)", true);
+
+  bob6.ws.sendJson({ type: "remove_member", group_id: groupId, peer_id: alice.peer_id });
+  await waitFor("remove by admin -> not_owner", () =>
+    bob6.ws.messages.some((m) => m.type === "error" && m.code === "not_owner")
+  );
+  check("group: admin remove -> not_owner (owner-only)", true);
+
+  // The owner cannot demote themselves.
+  aliceConn.ws.sendJson({ type: "demote_member", group_id: groupId, peer_id: alice.peer_id });
+  await waitFor("self demote -> not_owner", () =>
+    aliceConn.ws.messages.some((m) => m.type === "error" && m.code === "not_owner")
+  );
+  check("group: owner cannot demote themselves -> not_owner", true);
+
+  // The owner demotes Bob back to a regular member.
+  aliceConn.ws.sendJson({ type: "demote_member", group_id: groupId, peer_id: bob.peer_id });
+  await waitFor("group_member_demoted", () =>
+    aliceConn.ws.messages.some((m) => m.type === "group_member_demoted")
+  );
+  const demoted = aliceConn.ws.messages
+    .filter((m) => m.type === "group_member_demoted")
+    .pop();
+  check(
+    "group: owner demotes admin -> group_member_demoted",
+    demoted && demoted.group_id === groupId && demoted.peer_id === bob.peer_id
+  );
+
+  // A plain member cannot promote anyone: promote needs owner or admin.
+  bob6.ws.sendJson({ type: "promote_member", group_id: groupId, peer_id: alice.peer_id });
+  await waitFor("promote by member -> not_admin", () =>
+    bob6.ws.messages.some((m) => m.type === "error" && m.code === "not_admin")
+  );
+  check("group: member promote -> not_admin (owner/admin only)", true);
+
+  // The owner removes Bob. He is a member again after the demote, so this
+  // verifies the owner-only remove path on a regular member.
+  aliceConn.ws.sendJson({ type: "remove_member", group_id: groupId, peer_id: bob.peer_id });
+  await waitFor("group_member_removed", () =>
+    aliceConn.ws.messages.some((m) => m.type === "group_member_removed")
+  );
+  const removed = aliceConn.ws.messages
+    .filter((m) => m.type === "group_member_removed")
+    .pop();
+  check(
+    "group: owner removes member -> group_member_removed",
+    removed && removed.group_id === groupId && removed.peer_id === bob.peer_id
+  );
+
+  // Re-add Bob so the leave_group test below still has a member to remove.
+  aliceConn.ws.sendJson({ type: "add_group_member", group_id: groupId, peer_id: bob.peer_id });
+  await waitFor("group_member_added (re-add)", () =>
+    aliceConn.ws.messages.filter((m) => m.type === "group_member_added").length >= 2
+  );
+  check("group: re-added member acknowledged", true);
 
   // (d) leave_group removes the member from the roster and revokes sends.
   bob6.ws.sendJson({ type: "leave_group", group_id: groupId });
@@ -816,15 +999,19 @@ async function main() {
 
   aliceConn.ws.sendJson({ type: "get_group_info", group_id: groupId });
   await waitFor("group_info after leave", () =>
-    aliceConn.ws.messages.filter((m) => m.type === "group_info").length >= 2
+    aliceConn.ws.messages.filter((m) => m.type === "group_info").length >= 3
   );
   const infoAfter = aliceConn.ws.messages.filter((m) => m.type === "group_info").pop();
+  const infoAfterMemberIds =
+    infoAfter && Array.isArray(infoAfter.members)
+      ? infoAfter.members.map((m) => m.peer_id)
+      : [];
   check(
     "group: leave_group removes the member from the roster",
     infoAfter &&
-      Array.isArray(infoAfter.members) &&
-      infoAfter.members.length === 1 &&
-      infoAfter.members[0] === alice.peer_id
+      infoAfterMemberIds.length === 1 &&
+      infoAfterMemberIds[0] === alice.peer_id &&
+      infoAfter.members[0].role === "owner"
   );
 
   bob6.ws.sendJson({
