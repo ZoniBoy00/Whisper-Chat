@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { User, Users } from "lucide-react";
 import { cx } from "../lib/format";
 
@@ -14,6 +14,17 @@ interface AvatarProps {
 
 export function Avatar({ name, size = 40, src, variant = "peer" }: AvatarProps) {
   const [imageFailed, setImageFailed] = useState(false);
+  // Bounded retry counter: a transient failure (relay still starting, a profile
+  // blob not yet replicated) is retried a few times before the letter fallback
+  // takes over, so an avatar self-heals instead of staying blank.
+  const [attempt, setAttempt] = useState(0);
+
+  // A new src (a freshly uploaded avatar, or a relay URL that only resolved
+  // after connect) must re-arm the image path — otherwise one transient load
+  // failure pins the letter fallback for the life of the component.
+  useEffect(() => {
+    setImageFailed(false);
+  }, [src, attempt]);
 
   if (src && !imageFailed) {
     return (
@@ -23,7 +34,16 @@ export function Avatar({ name, size = 40, src, variant = "peer" }: AvatarProps) 
         width={size}
         height={size}
         loading="lazy"
-        onError={() => setImageFailed(true)}
+        onError={() => {
+          // Debug aid: surface the exact URL that failed so avatar problems
+          // are diagnosable from the devtools console.
+          console.warn(`[whisper] avatar failed to load: ${src}`);
+          if (attempt < 3) {
+            window.setTimeout(() => setAttempt((count) => count + 1), 1500);
+          } else {
+            setImageFailed(true);
+          }
+        }}
         className="shrink-0 select-none rounded-full object-cover"
         style={{ width: size, height: size }}
       />

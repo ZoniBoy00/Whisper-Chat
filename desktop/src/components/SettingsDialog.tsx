@@ -146,13 +146,13 @@ export function SettingsDialog({
         close();
       }}
     >
-      <div className="w-[min(92vw,28rem)] rounded-2xl bg-wp-panel-2">
-        <div className="flex items-center justify-between gap-4 border-b border-wp-line/10 px-5 py-4">
+      <div className="w-[min(94vw,48rem)] rounded-2xl bg-wp-panel-2">
+        <div className="flex items-center justify-between gap-4 border-b border-wp-line/10 px-6 py-5">
           <div className="flex items-center gap-3">
-            <Settings className="h-4 w-4 text-wp-accent" aria-hidden="true" />
+            <Settings className="h-5 w-5 text-wp-accent" aria-hidden="true" />
             <h2
               id="settings-title"
-              className="font-display text-lg font-semibold tracking-tight text-wp-text"
+              className="font-display text-xl font-semibold tracking-tight text-wp-text"
             >
               {t("common.settings")}
             </h2>

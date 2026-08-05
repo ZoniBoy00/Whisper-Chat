@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ArrowLeftRight,
   Crown,
@@ -11,12 +11,22 @@ import {
   Users,
   X,
 } from "lucide-react";
-import type { GroupInfo, GroupMember } from "../types";
-import { cx, shortPeerId } from "../lib/format";
+import type { ContactInfo, GroupInfo, GroupMember, ProfileInfo } from "../types";
+import { cx, mediaUrl, shortPeerId } from "../lib/format";
+import { getProfile } from "../lib/relay";
 import type { TFunction } from "../i18n/types";
 import { useI18n } from "../i18n/I18nContext";
 import { useToast } from "../hooks/useToast";
 import { Avatar } from "./Avatar";
+
+/** A member's resolved public identity: the best-known name, username and
+ *  avatar path, merged from the roster lookup (contact list + one-time profile
+ *  fetch) with a short peer ID as the ultimate fallback. */
+interface ResolvedMember {
+  display_name: string | null;
+  username: string | null;
+  avatar_url: string | null;
+}
 
 interface GroupInfoDialogProps {
   open: boolean;
@@ -29,7 +39,25 @@ interface GroupInfoDialogProps {
   onRemove: (groupId: string, peerId: string) => Promise<void>;
   onLeave: (groupId: string) => Promise<void>;
   onTransferOwnership: (groupId: string, peerId: string) => Promise<void>;
+  /** Known contact profiles (display name, username, avatar); used to resolve
+   *  roster member names without a per-member round-trip. */
+  contacts: ContactInfo[];
+  /** Relay endpoint; used to resolve `/media/{hash}` member avatar paths. */
+  relayUrl: string;
 }
+
+/**
+ * Module-level member profile cache so re-opening the panel (or reloading the
+ * roster after an admin action) never repeats a `get_profile` round-trip for
+ * the same member. `contacts` data — kept fresh by `contact-updated` events —
+ * takes precedence; this cache only backs members the contact list does not
+ * know yet.
+ */
+const memberProfileCache = new Map<string, ProfileInfo>();
+const memberProfileInflight = new Set<string>();
+/** Members a `get_profile` lookup proved to have no public profile; never
+ *  re-fetched until the dialog's session ends. */
+const memberProfileMissing = new Set<string>();
 
 /** A role badge. The owner badge is yellow/highlighted per WhatsApp/Signal
  *  convention; admins get a subtle shield badge. */
@@ -67,6 +95,8 @@ export function GroupInfoDialog({
   onRemove,
   onLeave,
   onTransferOwnership,
+  contacts,
+  relayUrl,
 }: GroupInfoDialogProps) {
   const { t } = useI18n();
   const { toast } = useToast();
@@ -78,6 +108,81 @@ export function GroupInfoDialog({
   const [confirmingLeave, setConfirmingLeave] = useState(false);
   const [transferTarget, setTransferTarget] = useState("");
   const [confirmingTransfer, setConfirmingTransfer] = useState(false);
+  // Profiles fetched for roster members the contact list does not know yet.
+  const [memberProfiles, setMemberProfiles] = useState<Record<string, ProfileInfo>>({});
+
+  /** Contact data keyed by peer ID for O(1) roster lookups. */
+  const contactsById = useMemo(() => {
+    const map = new Map<string, ContactInfo>();
+    for (const contact of contacts) map.set(contact.peer_id, contact);
+    return map;
+  }, [contacts]);
+
+  /** For roster members whose name the contact list does not know yet, fetch
+   *  their public profile once and cache it. The row renders the short peer ID
+   *  until the profile lands, then upgrades in place. */
+  useEffect(() => {
+    const members = info?.members ?? [];
+    const pending = new Set<string>();
+    for (const member of members) {
+      if (memberProfileCache.has(member.peer_id)) continue;
+      if (memberProfileMissing.has(member.peer_id)) continue;
+      if (contactsById.get(member.peer_id)?.display_name) continue;
+      pending.add(member.peer_id);
+    }
+    if (pending.size === 0) return;
+    let cancelled = false;
+    for (const id of pending) {
+      if (memberProfileInflight.has(id)) continue;
+      memberProfileInflight.add(id);
+      getProfile(id)
+        .then((profile) => {
+          memberProfileCache.set(id, profile);
+          if (!cancelled) {
+            setMemberProfiles((prev) => ({ ...prev, [id]: profile }));
+          }
+        })
+        .catch(() => {
+          // `no_profile` (unregistered) or a transient lookup failure — the
+          // member keeps the short peer ID, and (when provably unregistered)
+          // is not re-fetched on every panel open.
+          memberProfileMissing.add(id);
+        })
+        .finally(() => {
+          memberProfileInflight.delete(id);
+        });
+    }
+    return () => {
+      cancelled = true;
+    };
+  }, [info, contactsById]);
+
+  /** Best-known identity of a roster member: profile fetch first, then the
+   *  contact list, then null (callers fall back to a short peer ID). */
+  const resolveMember = useCallback(
+    (peerId: string): ResolvedMember => {
+      const profile = memberProfiles[peerId] ?? memberProfileCache.get(peerId);
+      const contact = contactsById.get(peerId);
+      return {
+        display_name: profile?.display_name ?? contact?.display_name ?? null,
+        username: profile?.username ?? contact?.username ?? null,
+        avatar_url: profile?.avatar_url ?? contact?.avatar_url ?? null,
+      };
+    },
+    [memberProfiles, contactsById]
+  );
+
+  /** Display label for a member: display name, else @username, else a short
+   *  peer ID — exactly what the transfer select and the roster rows show. */
+  const memberName = useCallback(
+    (peerId: string): string => {
+      const { display_name, username } = resolveMember(peerId);
+      if (display_name) return display_name;
+      if (username) return `@${username}`;
+      return shortPeerId(peerId, 16);
+    },
+    [resolveMember]
+  );
 
   const reload = useCallback(
     async (id: string) => {
@@ -194,7 +299,7 @@ export function GroupInfoDialog({
         close();
       }}
     >
-      <div className="w-[min(92vw,26rem)] rounded-2xl bg-wp-panel-2">
+      <div className="w-[min(94vw,30rem)] rounded-2xl bg-wp-panel-2">
         <div className="flex items-center justify-between gap-4 border-b border-wp-line/10 px-5 py-4">
           <div className="flex items-center gap-3">
             <div className="rounded-xl bg-wp-panel-3 p-2 text-wp-accent">
@@ -234,19 +339,30 @@ export function GroupInfoDialog({
             <ul className="flex flex-col gap-1" aria-label={t("groupInfo.group_members")}>
               {info.members.map((member) => {
                 const busy = busyPeer === member.peer_id;
+                const resolved = resolveMember(member.peer_id);
+                const name = memberName(member.peer_id);
+                const avatarSrc = resolved.avatar_url
+                  ? mediaUrl(relayUrl, resolved.avatar_url)
+                  : null;
                 return (
                   <li
                     key={member.peer_id}
                     className="flex items-center gap-3 rounded-xl px-2 py-2.5 transition hover:bg-wp-panel-3"
                   >
-                    <Avatar name={member.peer_id} size={36} />
+                    <Avatar name={name} size={36} src={avatarSrc} />
                     <div className="min-w-0 flex-1">
-                      <p className="truncate font-mono text-xs text-wp-text">
-                        {member.peer_id}
+                      <p className="truncate text-sm font-medium text-wp-text">
+                        {name}
                       </p>
-                      <p className="truncate font-mono text-[10px] text-wp-faint">
-                        {shortPeerId(member.peer_id, 24)}
-                      </p>
+                      {resolved.username ? (
+                        <p className="truncate font-mono text-xs text-wp-faint">
+                          @{resolved.username}
+                        </p>
+                      ) : (
+                        <p className="truncate font-mono text-[10px] text-wp-faint">
+                          {shortPeerId(member.peer_id, 24)}
+                        </p>
+                      )}
                     </div>
                     <RoleBadge role={member.role} t={t} />
                     {canPromote && member.role === "member" ? (
@@ -352,7 +468,7 @@ export function GroupInfoDialog({
                       .filter((member) => member.role !== "owner")
                       .map((member) => (
                         <option key={member.peer_id} value={member.peer_id}>
-                          {member.peer_id}
+                          {memberName(member.peer_id)}
                         </option>
                       ))}
                   </select>
