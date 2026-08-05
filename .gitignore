@@ -1,5 +1,6 @@
 # Rust
 target/
+target-dev2/
 **/*.rs.bk
 
 # Secrets & env
