@@ -387,10 +387,18 @@ export function MainView({ peerId, onReset }: MainViewProps) {
     setProfilePeerId(targetPeerId);
   }, []);
 
-  /** Open the group info panel for a specific group (context-menu action). */
-  const handleOpenGroupInfoFor = useCallback((groupId: string) => {
-    setGroupInfoGroupId(groupId);
-  }, []);
+  /** Open the group info panel for a specific group (context-menu action).
+   *  Access is verified first: a stale group (left or removed, with a missed
+   *  event) is dropped instead of lingering with every action failing. */
+  const handleOpenGroupInfoFor = useCallback(
+    (groupId: string) => {
+      void (async () => {
+        const ok = await chat.verifyGroupAccess(groupId);
+        if (ok) setGroupInfoGroupId(groupId);
+      })();
+    },
+    [chat.verifyGroupAccess]
+  );
 
   const handleRemoveContact = useCallback(
     (targetPeerId: string) => {
