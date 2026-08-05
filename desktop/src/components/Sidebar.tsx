@@ -492,6 +492,7 @@ export function Sidebar({
           <ContactsView
             contacts={conversations.filter((c) => c.isGroup !== true)}
             presence={presence}
+            relayUrl={relayUrl}
             activeId={activeId}
             onSelect={onSelect}
             onRemoveContact={onRemoveContact}

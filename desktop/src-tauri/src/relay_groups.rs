@@ -420,16 +420,29 @@ impl RelayClient {
     /// setup landed) gets an outbound session established in the background,
     /// so it is ready to send before the first message.
     pub(crate) fn refresh_group_rosters(&self) {
-        let group_ids: Vec<String> = match read_guard(&self.inner.groups) {
+        let mut group_ids: Vec<String> = match read_guard(&self.inner.groups) {
             Ok(groups) => groups.keys().cloned().collect(),
-            Err(_) => return,
+            Err(_) => Vec::new(),
         };
+        // Legacy groups may linger ONLY in the contact list: a group row in
+        // the store without any persisted Megolm sessions is hydrated as a
+        // contact but never enters the groups map, so the map-based loop below
+        // would skip it and a group we left (or were removed from) would stay
+        // visible forever. Group IDs are UUIDs (contain a dash), peer IDs are
+        // 24 hex chars — include any dashed contact too.
+        if let Ok(contacts) = read_guard(&self.inner.contacts) {
+            for peer in contacts.iter() {
+                if peer.contains('-') && !group_ids.contains(peer) {
+                    group_ids.push(peer.clone());
+                }
+            }
+        }
         for group_id in group_ids {
             let client = self.clone();
             let id = group_id;
             tauri::async_runtime::spawn(async move {
                 if let Err(err) = client.refresh_group_roster_and_outbound(&id).await {
-                    eprintln!("whisper desktop: failed to refresh roster for group {id}: {err}");
+                    tracing::warn!(group = %id, error = %err, "failed to refresh group roster");
                 }
             });
         }

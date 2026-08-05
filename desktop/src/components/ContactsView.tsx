@@ -1,6 +1,6 @@
 import { UserX, Users } from "lucide-react";
 import type { Conversation, PresenceInfo } from "../types";
-import { formatLastSeen } from "../lib/format";
+import { formatLastSeen, mediaUrl } from "../lib/format";
 import { useI18n } from "../i18n/I18nContext";
 import { Avatar } from "./Avatar";
 
@@ -9,6 +9,8 @@ interface ContactsViewProps {
   contacts: Conversation[];
   /** Latest known presence per peer (pushes + 30s poll). */
   presence: Record<string, PresenceInfo>;
+  /** Relay endpoint; used to resolve `/media/{hash}` avatar paths. */
+  relayUrl: string;
   activeId: string | null;
   /** Open the chat for a contact. */
   onSelect: (id: string) => void;
@@ -24,6 +26,7 @@ interface ContactsViewProps {
 export function ContactsView({
   contacts,
   presence,
+  relayUrl,
   activeId,
   onSelect,
   onRemoveContact,
@@ -62,7 +65,11 @@ export function ContactsView({
                 onClick={() => onSelect(contact.id)}
                 className="flex min-w-0 flex-1 items-center gap-3 text-left"
               >
-                <Avatar name={contact.name} src={contact.avatarUrl} size={44} />
+                <Avatar
+                  name={contact.name}
+                  src={contact.avatarUrl ? mediaUrl(relayUrl, contact.avatarUrl) : null}
+                  size={44}
+                />
                 <div className="min-w-0 flex-1">
                   <p className="truncate text-sm font-semibold text-wp-text">
                     {contact.name}
