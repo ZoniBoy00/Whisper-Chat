@@ -16,6 +16,10 @@ use super::*;
 impl RelayClient {
     /// Register (or re-register) the caller's signed username alias with the
     /// relay, optionally attaching an avatar. Returns the registered username.
+    ///
+    /// On success the username (and, for an avatar upload, the resulting
+    /// avatar path) is persisted to the local store so the UI can show the
+    /// registered state across restarts — even when the relay is unreachable.
     pub async fn register_profile(
         &self,
         username: &str,
@@ -48,10 +52,49 @@ impl RelayClient {
             return Err(err);
         }
 
-        tokio::time::timeout(PROFILE_FETCH_TIMEOUT, rx)
+        let username = tokio::time::timeout(PROFILE_FETCH_TIMEOUT, rx)
             .await
             .map_err(|_| RelayError::ProfileTimeout)?
-            .map_err(|_| RelayError::ProfileRequestFailed)?
+            .map_err(|_| RelayError::ProfileRequestFailed)??;
+
+        // Persist the registration locally. When an avatar was uploaded we do
+        // not yet know its `/media/{hash}` path (the server replies with just
+        // the username), so fetch our own profile to learn it.
+        if avatar_b64.is_some() {
+            let avatar_url = self
+                .get_profile(&self.my_peer_id()?)
+                .await
+                .ok()
+                .flatten()
+                .and_then(|profile| profile.avatar_url);
+            self.persist_own_profile(&username, avatar_url.as_deref())?;
+        } else {
+            self.persist_own_profile(&username, None)?;
+        }
+        Ok(username)
+    }
+
+    /// Persist our own registered username (and optional avatar path) to the
+    /// store and cache them in memory, so `get_chat_state` reports them on
+    /// every restart.
+    fn persist_own_profile(
+        &self,
+        username: &str,
+        avatar_url: Option<&str>,
+    ) -> Result<(), RelayError> {
+        self.ensure_store_open()?;
+        let store_guard = self.store_guard()?;
+        let store = store_guard.as_ref().ok_or(RelayError::StoreNotOpen)?;
+        store.set_setting("my_username", username)?;
+        match avatar_url {
+            Some(url) if !url.is_empty() => store.set_setting("my_avatar_url", url)?,
+            _ => store.delete_setting("my_avatar_url")?,
+        }
+        let mut profiles = read_guard(&self.inner.profiles)?.clone();
+        profiles.my_username = Some(username.to_string());
+        profiles.my_avatar_url = avatar_url.filter(|url| !url.is_empty()).map(str::to_string);
+        *write_guard(&self.inner.profiles)? = profiles;
+        Ok(())
     }
 
     /// Prefix-search registered usernames and peer IDs.

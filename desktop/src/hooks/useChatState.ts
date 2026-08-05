@@ -1,5 +1,10 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { Dispatch, SetStateAction } from "react";
+import {
+  isPermissionGranted,
+  requestPermission,
+  sendNotification,
+} from "@tauri-apps/plugin-notification";
 import type { UnlistenFn } from "@tauri-apps/api/event";
 import type {
   ContactInfo,
@@ -29,14 +34,40 @@ import {
 } from "../lib/relay";
 import { shortPeerId } from "../lib/format";
 
-/** Only request the HTML5 notification permission once per session. */
+/** Whether the OS-level notification permission has been granted. */
+let notificationPermission = false;
+/** Whether a permission request is already in flight (avoid re-prompting). */
 let notificationPermissionRequested = false;
 
+/** Ensure the OS notification permission is granted, requesting it once per
+ *  session when needed. Returns false when the permission is denied or the
+ *  plugin is unavailable. */
+async function ensureNotificationPermission(): Promise<boolean> {
+  if (notificationPermission) return true;
+  if (notificationPermissionRequested) return false;
+  notificationPermissionRequested = true;
+  try {
+    if (await isPermissionGranted()) {
+      notificationPermission = true;
+      return true;
+    }
+    if (await requestPermission()) {
+      notificationPermission = true;
+      return true;
+    }
+    return false;
+  } catch {
+    return false;
+  }
+}
+
 /**
- * Show an HTML5 desktop notification for an incoming message. Only called
- * while the window is unfocused and notifications are enabled. Permission is
- * requested once per session; if it is not granted the toggle stays on but
- * nothing is shown (documented in the Notifications settings tab).
+ * Show a native desktop notification (via the Tauri notification plugin, not
+ * the HTML5 Notification API which is unreliable inside the webview) for an
+ * incoming message. Only called while the window is unfocused and
+ * notifications are enabled. If the system permission is denied, the toggle
+ * stays on but nothing is shown (documented in the Notifications settings
+ * tab).
  */
 async function showChatNotification(
   peerId: string,
@@ -44,18 +75,7 @@ async function showChatNotification(
   contacts: ContactInfo[],
   preview: boolean
 ): Promise<void> {
-  if (typeof Notification === "undefined") return;
-  if (Notification.permission === "denied") return;
-  if (Notification.permission !== "granted") {
-    if (notificationPermissionRequested) return;
-    notificationPermissionRequested = true;
-    try {
-      const permission = await Notification.requestPermission();
-      if (permission !== "granted") return;
-    } catch {
-      return;
-    }
-  }
+  if (!(await ensureNotificationPermission())) return;
   const contact = contacts.find((c) => c.peer_id === peerId);
   const name =
     contact?.display_name ??
@@ -64,10 +84,10 @@ async function showChatNotification(
     ? `${name}: ${message.text}`
     : `New message from ${name}`;
   try {
-    new Notification("Whisper", { body });
+    sendNotification({ title: "Whisper", body });
   } catch {
-    // The webview may not support the Notification API; the toggle stays on
-    // and nothing is shown.
+    // The plugin may be unavailable in this build; the toggle stays on and
+    // nothing is shown.
   }
 }
 

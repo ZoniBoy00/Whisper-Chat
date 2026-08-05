@@ -30,7 +30,7 @@ export function NotificationsTab({
         onChange={onNotificationsEnabledChange}
         icon={<Bell className="h-4 w-4" />}
         title="Show desktop notifications"
-        description="Shows an HTML5 notification for new messages while the window isn't focused. If the system notification permission was denied, the toggle stays on but nothing is shown."
+        description="Shows a native system notification for new messages while the window isn't focused. If the system notification permission was denied, the toggle stays on but nothing is shown."
       />
       <ToggleRow
         id="setting-notification-preview"

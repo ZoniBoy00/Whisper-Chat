@@ -110,10 +110,6 @@ body {
   background: transparent;
 }
 
-::selection {
-  background: rgba(var(--wp-accent), 0.3);
-}
-
 /* Native dialog used for the "start a new chat" flow. The opening is a soft
    fade + scale; closing animates out before the element is torn down (the
    React side adds `wp-dialog-closing` and defers `dialog.close()`). */
@@ -378,5 +374,14 @@ dialog.wp-dialog::backdrop {
    that a message is being marked/copied (works on dark and light). */
 ::selection {
   background: rgba(var(--wp-accent), 0.35);
-  color: var(--wp-text);
+  color: rgb(var(--wp-text));
+}
+
+/* Chat content is always selectable so messages can be marked and copied.
+   UI chrome (buttons, avatars, sidebar) keeps `user-select: none` for a
+   native app feel, but message text explicitly opts back in — even if a
+   `none` were inherited from an ancestor. */
+.select-chat {
+  user-select: text;
+  -webkit-user-select: text;
 }

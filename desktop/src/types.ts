@@ -80,6 +80,10 @@ export interface PresenceInfo {
 export interface ChatState {
   my_peer_id: string;
   my_display_name: string | null;
+  /** Our own registered public username; null when unset. */
+  my_username: string | null;
+  /** Our own avatar path ("/media/{hash}"); null when unset. */
+  my_avatar_url: string | null;
   connected: boolean;
   contacts: ContactInfo[];
   messages: Record<string, Message[]>;

@@ -164,6 +164,11 @@ impl RelayClient {
             }
         }
 
+        // 5) Refresh the roster from the relay so the member count reflects
+        //    exactly the members the server accepted (best-effort adds may
+        //    have failed above and are not actually in the group).
+        self.spawn_group_info_refresh(&group_id);
+
         Ok(group_id)
     }
 
@@ -178,10 +183,15 @@ impl RelayClient {
             return Err(err);
         }
 
-        let info = tokio::time::timeout(PREKEY_FETCH_TIMEOUT, rx)
-            .await
-            .map_err(|_| RelayError::GroupTimeout)?
-            .map_err(|_| RelayError::GroupRequestFailed)??;
+        let info = match tokio::time::timeout(PREKEY_FETCH_TIMEOUT, rx).await {
+            Err(_) => {
+                // The reply never arrived. Drop the waiter so a late reply can
+                // never misalign the FIFO pending queue for later requests.
+                mutex_guard(&self.inner.pending_group_info)?.pop_front();
+                return Err(RelayError::GroupTimeout);
+            }
+            Ok(inner) => inner.map_err(|_| RelayError::GroupRequestFailed)??,
+        };
 
         // Cache the fresh roster locally so the chat list and group panel stay
         // consistent without a full state refresh.
@@ -288,6 +298,33 @@ impl RelayClient {
             }
         }
         let _ = self.save_group_sessions();
+    }
+
+    /// Kick off a best-effort background `get_group_info` for `group_id` so
+    /// the roster (and therefore the member count shown by the chat list)
+    /// refreshes without waiting for the user to open the group info panel.
+    fn spawn_group_info_refresh(&self, group_id: &str) {
+        let client = self.clone();
+        let id = group_id.to_string();
+        tauri::async_runtime::spawn(async move {
+            if let Err(err) = client.get_group_info(&id).await {
+                eprintln!("whisper desktop: failed to refresh roster for group {id}: {err}");
+            }
+        });
+    }
+
+    /// Background-refresh the member roster of every known group. Called after
+    /// every successful connect so groups restored from the store (whose
+    /// rosters are empty until the first `get_group_info` round-trip) show a
+    /// real member count shortly after startup or reconnect.
+    pub(crate) fn refresh_group_rosters(&self) {
+        let group_ids: Vec<String> = match read_guard(&self.inner.groups) {
+            Ok(groups) => groups.keys().cloned().collect(),
+            Err(_) => return,
+        };
+        for group_id in group_ids {
+            self.spawn_group_info_refresh(&group_id);
+        }
     }
 
     /// Megolm-encrypt `text` with the group's outbound session and fan it out
@@ -469,6 +506,9 @@ impl RelayClient {
         // The group ID acts as a contact whose display name is the group name.
         self.remember_contact_name(&payload.group_id, &payload.group_name)?;
         self.save_group_sessions()?;
+        // The roster is unknown until a get_group_info round-trip; fetch it in
+        // the background so the chat list shows a real member count.
+        self.spawn_group_info_refresh(&payload.group_id);
         Ok(())
     }
 

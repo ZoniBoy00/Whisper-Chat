@@ -158,8 +158,9 @@ pub enum RelayError {
     /// A Megolm group-session operation failed.
     #[error("group error: {0}")]
     Group(#[from] e2ee_core::GroupError),
-    /// The group has no outbound session, so this identity cannot send to it.
-    #[error("group {0} has no outbound session")]
+    /// The group has no outbound Megolm session. In the MVP model only the
+    /// group creator holds one, so a regular member cannot send to the group.
+    #[error("only the group creator can send messages in this version")]
     NoOutboundGroup(String),
     /// The relay replied with an error code.
     #[error("relay error: {0}")]
@@ -526,6 +527,14 @@ pub struct Profiles {
     /// Our own public display name; `None` when unset.
     #[serde(default)]
     pub my_display_name: Option<String>,
+    /// Our own registered public username; `None` when unset. Persisted so the
+    /// UI can show the registered state even when the relay is unreachable.
+    #[serde(default)]
+    pub my_username: Option<String>,
+    /// Our own avatar path ("/media/{hash}"); `None` when unset. Persisted so
+    /// the avatar renders across restarts.
+    #[serde(default)]
+    pub my_avatar_url: Option<String>,
     /// Peer ID -> the display name that peer advertises in pre-key lookups.
     #[serde(default)]
     pub contacts: HashMap<String, String>,
@@ -545,6 +554,10 @@ pub struct ChatState {
     pub my_peer_id: String,
     /// Our own public display name; `None` when unset.
     pub my_display_name: Option<String>,
+    /// Our own registered public username; `None` when unset.
+    pub my_username: Option<String>,
+    /// Our own avatar path ("/media/{hash}"); `None` when unset.
+    pub my_avatar_url: Option<String>,
     pub connected: bool,
     /// Peer IDs this identity has a conversation with, plus their names.
     /// Groups appear here too (keyed by their group ID with the group name as
@@ -827,6 +840,16 @@ impl RelayClient {
                 std::env::var("WHISPER_RELAY_URL").ok().as_deref(),
             )
         };
+        // Persist the *effective* endpoint (settings -> env var -> default) so
+        // the UI can resolve `/media/{hash}` avatar URLs against the relay the
+        // client actually connected to, even when the user never set one.
+        {
+            let mut settings = read_guard(&self.inner.settings)?.clone();
+            if settings.relay_url.as_deref() != Some(url.as_str()) {
+                settings.relay_url = Some(url.clone());
+                self.save_settings(&settings)?;
+            }
+        }
         let (ws_stream, _) = match tokio_tungstenite::connect_async(&url).await {
             Ok(stream) => stream,
             Err(err) => {
@@ -907,6 +930,12 @@ impl RelayClient {
             }
             client.mark_disconnected();
         });
+
+        // After a startup hydration or a reconnect, groups restored from the
+        // store have an empty member roster. Kick off background `get_group_info`
+        // fetches so the chat list shows a real member count (not "0") shortly
+        // after connecting, without the user opening the info panel.
+        self.refresh_group_rosters();
 
         Ok(())
     }
@@ -1173,6 +1202,8 @@ impl RelayClient {
         Ok(ChatState {
             my_peer_id,
             my_display_name: profiles.my_display_name,
+            my_username: profiles.my_username,
+            my_avatar_url: profiles.my_avatar_url,
             connected,
             contacts,
             messages,
@@ -1513,6 +1544,8 @@ impl RelayClient {
             relay_url,
             theme,
             my_display_name,
+            my_username,
+            my_avatar_url,
             next_msg_id,
             presence_visible,
             read_receipts,
@@ -1531,6 +1564,8 @@ impl RelayClient {
                 store.get_setting("relay_url")?,
                 store.get_setting("theme")?,
                 store.get_setting("my_display_name")?,
+                store.get_setting("my_username")?,
+                store.get_setting("my_avatar_url")?,
                 store.get_setting("next_msg_id")?,
                 store.get_setting("presence_visible")?,
                 store.get_setting("read_receipts")?,
@@ -1623,6 +1658,8 @@ impl RelayClient {
 
         let mut profiles = read_guard(&self.inner.profiles)?.clone();
         profiles.my_display_name = my_display_name.filter(|name| !name.is_empty());
+        profiles.my_username = my_username.filter(|name| !name.is_empty());
+        profiles.my_avatar_url = my_avatar_url.filter(|url| !url.is_empty());
         profiles.contacts = contact_names;
         *write_guard(&self.inner.profiles)? = profiles;
 

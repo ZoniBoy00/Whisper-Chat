@@ -27,7 +27,7 @@ impl RelayClient {
     }
 
     /// Persist `settings` to the store and cache them in memory.
-    fn save_settings(&self, settings: &Settings) -> Result<(), RelayError> {
+    pub(crate) fn save_settings(&self, settings: &Settings) -> Result<(), RelayError> {
         self.ensure_store_open()?;
         let store_guard = self.store_guard()?;
         let store = store_guard.as_ref().ok_or(RelayError::StoreNotOpen)?;

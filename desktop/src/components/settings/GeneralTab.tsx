@@ -7,7 +7,6 @@ import {
   Moon,
   Palette,
   Save,
-  Server,
   Sun,
   Trash2,
   Upload,
@@ -57,8 +56,8 @@ interface GeneralTabProps {
   myAvatarUrl: string | null;
   theme: Theme;
   onThemeChange: (theme: Theme) => void;
+  /** Relay endpoint; used to resolve `/media/{hash}` avatar paths. */
   relayUrl: string;
-  onSaveRelayUrl: (url: string) => Promise<void>;
   /** Persist a new display name; empty clears it. */
   onSaveDisplayName: (name: string) => Promise<void>;
   /** Register a public username for our identity. */
@@ -80,7 +79,6 @@ export function GeneralTab({
   theme,
   onThemeChange,
   relayUrl,
-  onSaveRelayUrl,
   onSaveDisplayName,
   onRegisterUsername,
   onSetAvatar,
@@ -88,21 +86,17 @@ export function GeneralTab({
   onBusyChange,
 }: GeneralTabProps) {
   const fileInputRef = useRef<HTMLInputElement>(null);
-  const [relayInput, setRelayInput] = useState(relayUrl);
   const [nameInput, setNameInput] = useState(myDisplayName ?? "");
   const [usernameInput, setUsernameInput] = useState(myUsername ?? "");
   const [editingUsername, setEditingUsername] = useState(false);
   const [registeredFlash, setRegisteredFlash] = useState(false);
   const [avatarPreview, setAvatarPreview] = useState<string | null>(null);
   const [avatarBase64, setAvatarBase64] = useState<string | null>(null);
-  const [saving, setSaving] = useState(false);
   const [savingName, setSavingName] = useState(false);
   const [registering, setRegistering] = useState(false);
   const [savingAvatar, setSavingAvatar] = useState(false);
-  const [saved, setSaved] = useState(false);
   const [savedName, setSavedName] = useState(false);
   const [savedAvatar, setSavedAvatar] = useState(false);
-  const [relayError, setRelayError] = useState<string | null>(null);
   const [nameError, setNameError] = useState<string | null>(null);
   const [usernameErrorText, setUsernameErrorText] = useState<string | null>(null);
   const [avatarError, setAvatarError] = useState<string | null>(null);
@@ -112,24 +106,8 @@ export function GeneralTab({
   // dialog remounts this tab on every open, so the form is always seeded
   // from the latest props.
   useEffect(() => {
-    onBusyChange(saving || savingName || registering || savingAvatar);
-  }, [saving, savingName, registering, savingAvatar, onBusyChange]);
-
-  const handleSaveRelay = async () => {
-    const url = relayInput.trim();
-    if (!url) return;
-    setSaving(true);
-    setRelayError(null);
-    try {
-      await onSaveRelayUrl(url);
-      setSaved(true);
-      window.setTimeout(() => setSaved(false), 2000);
-    } catch (err) {
-      setRelayError(String(err).replace(/^Error:\s*/, ""));
-    } finally {
-      setSaving(false);
-    }
-  };
+    onBusyChange(savingName || registering || savingAvatar);
+  }, [savingName, registering, savingAvatar, onBusyChange]);
 
   const handleReset = () => {
     if (confirmingReset) {
@@ -478,78 +456,6 @@ export function GeneralTab({
               </p>
             ) : null}
           </div>
-        </div>
-      </section>
-
-      {/* Connections */}
-      <section aria-labelledby="settings-connections-title">
-        <SectionHeading
-          id="settings-connections-title"
-          icon={<Server className="h-3.5 w-3.5" />}
-          label="Connections"
-        />
-        <div className="rounded-xl border border-wp-line/10 bg-wp-panel-3 p-4">
-          <label
-            htmlFor="settings-relay-url"
-            className="text-xs font-medium text-wp-dim"
-          >
-            Relay address
-          </label>
-          <div className="mt-2 flex gap-2">
-            <input
-              id="settings-relay-url"
-              type="url"
-              value={relayInput}
-              onChange={(e) => {
-                setRelayInput(e.target.value);
-                setSaved(false);
-              }}
-              placeholder="ws://127.0.0.1:8080/ws"
-              autoComplete="off"
-              spellCheck={false}
-              aria-invalid={relayError ? true : undefined}
-              aria-describedby={
-                relayError ? "settings-relay-error" : "settings-relay-hint"
-              }
-              className="min-w-0 flex-1 rounded-xl bg-wp-panel-2 px-3.5 py-2.5 font-mono text-sm text-wp-text placeholder-wp-faint outline-none transition focus:ring-1 focus:ring-wp-accent/60"
-            />
-            <button
-              type="button"
-              onClick={() => void handleSaveRelay()}
-              disabled={
-                saving ||
-                !relayInput.trim() ||
-                relayInput.trim() === relayUrl
-              }
-              className={cx(
-                "inline-flex shrink-0 items-center gap-2 rounded-xl bg-wp-accent px-4 py-2.5 text-sm font-semibold text-wp-accent-fg transition hover:bg-wp-accent-strong",
-                "disabled:cursor-not-allowed disabled:opacity-50"
-              )}
-            >
-              {saving ? (
-                <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden="true" />
-              ) : (
-                <Save className="h-3.5 w-3.5" aria-hidden="true" />
-              )}
-              {saved ? "Saved" : saving ? "Saving…" : "Save"}
-            </button>
-          </div>
-          <p
-            id="settings-relay-hint"
-            className="mt-2 text-xs leading-snug text-wp-faint"
-          >
-            Default: ws://127.0.0.1:8080/ws. Saving reconnects to the new
-            relay.
-          </p>
-          {relayError ? (
-            <p
-              id="settings-relay-error"
-              role="alert"
-              className="mt-2 text-xs leading-snug text-wp-danger"
-            >
-              {relayError}
-            </p>
-          ) : null}
         </div>
       </section>
 
