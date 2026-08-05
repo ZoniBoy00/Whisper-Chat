@@ -62,6 +62,10 @@ impl Relay {
 
     /// Add `target` to a group's roster. Only the owner or an existing member
     /// may add members.
+    ///
+    /// Contact gate: the added peer must be the adder's ACCEPTED friend. A
+    /// stranger cannot be pulled into a group by anyone — this closes the
+    /// group side of the anti-spam boundary.
     pub(crate) async fn add_group_member(
         &self,
         peer_id: &str,
@@ -90,6 +94,17 @@ impl Relay {
                     peer_id,
                     ServerMessage::Error {
                         code: "not_a_member".into(),
+                    },
+                )
+                .await;
+            return;
+        }
+        if !self.inner.store.are_contacts(peer_id, target) {
+            let _ = self
+                .send(
+                    peer_id,
+                    ServerMessage::Error {
+                        code: "not_contacts".into(),
                     },
                 )
                 .await;
@@ -826,7 +841,7 @@ impl Relay {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::relay::test_utils::{env, online_peer, read_reply};
+    use crate::relay::test_utils::{env, make_contacts, online_peer, read_reply};
     use base64::Engine;
     use sha2::{Digest, Sha256};
 
@@ -890,6 +905,7 @@ mod tests {
         let bob = Identity::new();
         let mut alice_rx = online_peer(&relay, &alice).await;
         let mut bob_rx = online_peer(&relay, &bob).await;
+        make_contacts(&relay, &alice.peer_id(), &bob.peer_id());
 
         relay
             .create_group(&alice.peer_id(), "127.0.0.1", "Squad")
@@ -984,6 +1000,8 @@ mod tests {
         let mut alice_rx = online_peer(&relay, &alice).await;
         let mut bob_rx = online_peer(&relay, &bob).await;
         let mut carol_rx = online_peer(&relay, &carol).await;
+        make_contacts(&relay, &alice.peer_id(), &bob.peer_id());
+        make_contacts(&relay, &alice.peer_id(), &carol.peer_id());
 
         relay
             .create_group(&alice.peer_id(), "127.0.0.1", "Squad")
@@ -1060,6 +1078,7 @@ mod tests {
             )
             .unwrap();
         let mut alice_rx = online_peer(&relay, &alice).await;
+        make_contacts(&relay, &alice.peer_id(), &bob.peer_id());
 
         relay
             .create_group(&alice.peer_id(), "127.0.0.1", "Squad")
@@ -1142,6 +1161,7 @@ mod tests {
         let bob = Identity::new();
         let mut alice_rx = online_peer(&relay, &alice).await;
         let mut bob_rx = online_peer(&relay, &bob).await;
+        make_contacts(&relay, &alice.peer_id(), &bob.peer_id());
 
         relay
             .create_group(&alice.peer_id(), "127.0.0.1", "Squad")
@@ -1181,6 +1201,7 @@ mod tests {
         let bob = Identity::new();
         let mut alice_rx = online_peer(&relay, &alice).await;
         let mut bob_rx = online_peer(&relay, &bob).await;
+        make_contacts(&relay, &alice.peer_id(), &bob.peer_id());
 
         relay
             .create_group(&alice.peer_id(), "127.0.0.1", "Squad")
@@ -1276,7 +1297,9 @@ mod tests {
     // -- Group roles (promote / demote / remove) ------------------------------
 
     /// Build a group owned by `alice` with `bob` (member) and `carol` (member)
-    /// in it; returns the group id.
+    /// in it; returns the group id. `alice` must already be an accepted contact
+    /// of both `bob` and `carol` (the relay refuses to add strangers), so the
+    /// contacts are established first.
     async fn role_group(
         relay: &Relay,
         alice_rx: &mut mpsc::UnboundedReceiver<WsMessage>,
@@ -1284,6 +1307,8 @@ mod tests {
         bob: &Identity,
         carol: &Identity,
     ) -> String {
+        make_contacts(relay, &alice.peer_id(), &bob.peer_id());
+        make_contacts(relay, &alice.peer_id(), &carol.peer_id());
         relay
             .create_group(&alice.peer_id(), "127.0.0.1", "Role Squad")
             .await;
@@ -1781,7 +1806,9 @@ mod tests {
         let carol = Identity::new();
         let mut alice_rx = online_peer(&relay, &alice).await;
         let mut bob_rx = online_peer(&relay, &bob).await;
-        online_peer(&relay, &carol).await;
+        let _carol_rx = online_peer(&relay, &carol).await;
+        make_contacts(&relay, &alice.peer_id(), &bob.peer_id());
+        make_contacts(&relay, &alice.peer_id(), &carol.peer_id());
 
         relay
             .create_group(&alice.peer_id(), "127.0.0.1", "Squad")
@@ -1826,6 +1853,7 @@ mod tests {
         let bob = Identity::new();
         let mut alice_rx = online_peer(&relay, &alice).await;
         let mut bob_rx = online_peer(&relay, &bob).await;
+        make_contacts(&relay, &alice.peer_id(), &bob.peer_id());
 
         relay
             .create_group(&alice.peer_id(), "127.0.0.1", "Squad")
@@ -1867,6 +1895,7 @@ mod tests {
         let relay = Relay::with_parts(
             store,
             dir.clone(),
+            RateLimiter::new(100.0, 0.0),
             RateLimiter::new(100.0, 0.0),
             RateLimiter::new(100.0, 0.0),
         );
@@ -1931,6 +1960,7 @@ mod tests {
         let mut alice_rx = online_peer(&relay, &alice).await;
         let mut bob_rx = online_peer(&relay, &bob).await;
         let mut carol_rx = online_peer(&relay, &carol).await;
+        make_contacts(&relay, &alice.peer_id(), &bob.peer_id());
 
         relay
             .create_group(&alice.peer_id(), "127.0.0.1", "Squad")

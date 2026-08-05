@@ -61,6 +61,25 @@ export interface ContactInfo {
   username?: string | null;
   /** Server avatar path ("/media/{hash}"); null when the peer has none. */
   avatar_url?: string | null;
+  /** Relationship status with this 1:1 peer: "accepted" (friends, chatable)
+   *  or "pending" (a friend request is outstanding). Groups always report
+   *  "accepted"; undefined while unknown. */
+  status?: "accepted" | "pending";
+}
+
+/** One incoming friend request: the requester's peer ID plus the display name
+ *  they advertise (null when unset). */
+export interface FriendRequestIncoming {
+  peer_id: string;
+  display_name: string | null;
+}
+
+/** The full friend-request snapshot returned by `get_friend_requests`. */
+export interface FriendRequests {
+  /** Incoming requests (requester + display name), in arrival order. */
+  incoming: FriendRequestIncoming[];
+  /** Outgoing pending requests: peer IDs we asked who have not answered. */
+  outgoing: string[];
 }
 
 /** Public profile returned by the `get_profile` command (and `search_users`). */
@@ -92,6 +111,10 @@ export interface ChatState {
   presence: Record<string, PresenceInfo>;
   /** Groups this identity belongs to, with their rosters and roles. */
   groups: GroupInfo[];
+  /** Incoming friend requests (requester + display name), in arrival order. */
+  friend_requests_incoming: FriendRequestIncoming[];
+  /** Outgoing pending friend requests: peer IDs we asked, unanswered. */
+  friend_requests_outgoing: string[];
 }
 
 /** Payload of the `chat-message` event emitted for new plaintext. */
@@ -149,6 +172,34 @@ export interface PresenceEvent {
  *  a group (online push). */
 export interface GroupRemovedEvent {
   group_id: string;
+}
+
+/** Payload of the `friend-request` event emitted when a new incoming friend
+ *  request arrives (UI toast + Requests section update). */
+export interface FriendRequestEvent {
+  peer_id: string;
+  /** The requester's public display name; null when they have none. */
+  display_name: string | null;
+}
+
+/** Payload of the `contact-added` event emitted when a peer becomes an
+ *  accepted contact (my outgoing request was accepted, or I accepted
+ *  someone's request). */
+export interface ContactAddedEvent {
+  peer_id: string;
+  display_name?: string | null;
+}
+
+/** Payload of the `friend-request-declined` event emitted when my outgoing
+ *  request was declined. */
+export interface FriendRequestDeclinedEvent {
+  peer_id: string;
+}
+
+/** Payload of the `contact-removed` event emitted when a contact relationship
+ *  ends (either side removed it). */
+export interface ContactRemovedEvent {
+  peer_id: string;
 }
 
 /** Settings snapshot returned by the `get_settings` command. */

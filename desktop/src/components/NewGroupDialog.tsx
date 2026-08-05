@@ -1,6 +1,7 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Loader2, Plus, UserPlus, Users, X } from "lucide-react";
-import { cx, shortPeerId } from "../lib/format";
+import type { ContactInfo } from "../types";
+import { cx, isGroupId, shortPeerId } from "../lib/format";
 import { useI18n } from "../i18n/I18nContext";
 import { useToast } from "../hooks/useToast";
 
@@ -11,6 +12,9 @@ interface NewGroupDialogProps {
   onCreate: (name: string, memberIds: string[]) => Promise<string>;
   /** Our own peer ID, rejected as a member. */
   myPeerId: string;
+  /** Known contacts, used to restrict members to ACCEPTED friends (the relay
+   *  rejects `add_group_member` for non-contacts). */
+  contacts: ContactInfo[];
 }
 
 /** Whisper IDs are 24 lowercase hex characters. */
@@ -21,6 +25,7 @@ export function NewGroupDialog({
   onOpenChange,
   onCreate,
   myPeerId,
+  contacts,
 }: NewGroupDialogProps) {
   const { t } = useI18n();
   const { toast } = useToast();
@@ -32,6 +37,19 @@ export function NewGroupDialog({
   const [error, setError] = useState<string | null>(null);
   const [memberError, setMemberError] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
+
+  /** Accepted 1:1 contacts (not pending requests, not groups, not us) that
+   *  can be added to a new group. */
+  const acceptedContacts = useMemo(
+    () =>
+      contacts.filter(
+        (contact) =>
+          contact.status !== "pending" &&
+          !isGroupId(contact.peer_id) &&
+          contact.peer_id !== myPeerId
+      ),
+    [contacts, myPeerId]
+  );
 
   useEffect(() => {
     const dialog = dialogRef.current;
@@ -54,8 +72,8 @@ export function NewGroupDialog({
     onOpenChange(false);
   };
 
-  const addMember = () => {
-    const peerId = memberInput.trim().toLowerCase();
+  const addMember = (explicitPeerId?: string) => {
+    const peerId = (explicitPeerId ?? memberInput).trim().toLowerCase();
     if (!PEER_ID_PATTERN.test(peerId)) {
       setMemberError(t("newGroup.invalid_peer_id_24"));
       return;
@@ -66,6 +84,12 @@ export function NewGroupDialog({
     }
     if (members.includes(peerId)) {
       setMemberError(t("newGroup.member_already_added"));
+      return;
+    }
+    // The relay only allows ACCEPTED contacts into a group's roster; reject
+    // anyone else up front with a clear message instead of a raw error code.
+    if (!acceptedContacts.some((contact) => contact.peer_id === peerId)) {
+      setMemberError(t("newGroup.not_contact"));
       return;
     }
     setMembers((prev) => [...prev, peerId]);
@@ -199,7 +223,7 @@ export function NewGroupDialog({
               />
               <button
                 type="button"
-                onClick={addMember}
+                onClick={() => addMember()}
                 disabled={!memberInput.trim()}
                 className={cx(
                   "inline-flex shrink-0 items-center gap-1.5 rounded-xl bg-wp-panel-3 px-3.5 py-2.5 text-sm font-semibold text-wp-text transition hover:bg-wp-panel-3",
@@ -210,6 +234,37 @@ export function NewGroupDialog({
                 {t("newGroup.add")}
               </button>
             </div>
+            {acceptedContacts.length > 0 ? (
+              <label className="sr-only" htmlFor="new-group-member-select">
+                {t("newGroup.pick_contact")}
+              </label>
+            ) : null}
+            <select
+              id="new-group-member-select"
+              aria-label={t("newGroup.pick_contact")}
+              onChange={(e) => {
+                if (e.target.value) {
+                  addMember(e.target.value);
+                  e.target.value = "";
+                }
+              }}
+              disabled={acceptedContacts.length === 0}
+              className={cx(
+                "mt-2 w-full rounded-xl bg-wp-panel-3 px-3.5 py-2 text-sm text-wp-text outline-none transition focus:ring-1 focus:ring-wp-accent/60",
+                "disabled:cursor-not-allowed disabled:opacity-40"
+              )}
+            >
+              <option value="">
+                {acceptedContacts.length > 0
+                  ? t("newGroup.pick_contact")
+                  : t("newGroup.no_contacts_to_add")}
+              </option>
+              {acceptedContacts.map((contact) => (
+                <option key={contact.peer_id} value={contact.peer_id}>
+                  {contact.display_name ?? shortPeerId(contact.peer_id, 16)}
+                </option>
+              ))}
+            </select>
             {memberError ? (
               <p
                 id="new-group-member-error"

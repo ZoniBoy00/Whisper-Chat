@@ -15,8 +15,8 @@ mod tray;
 
 use log_buffer::{init_tracing, LogBuffer, LogEntry};
 use relay::{
-    ChatState, GroupInfo, PeerProfile, PresenceInfo, ProfileSearchResult, RelayClient, Settings,
-    SettingsPatch,
+    ChatState, FriendRequests, GroupInfo, PeerProfile, PresenceInfo, ProfileSearchResult,
+    RelayClient, Settings, SettingsPatch,
 };
 use tray::setup_tray;
 
@@ -266,10 +266,58 @@ async fn update_settings(
     state.update_settings(&patch).map_err(|e| e.to_string())
 }
 
-/// Remove a contact and its message history locally (client-side only).
+/// Remove the accepted contact relationship with `peer_id` on both sides. The
+/// relay broadcasts a `contact_removed` push to both peers; the local contact
+/// row, history and presence are dropped immediately.
 #[tauri::command]
 async fn remove_contact(state: State<'_, RelayClient>, peer_id: String) -> Result<(), String> {
-    state.remove_contact(&peer_id).map_err(|e| e.to_string())
+    state
+        .remove_contact(&peer_id)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// Send a friend request to `peer_id`. The peer becomes an accepted contact
+/// once they accept. Rejects locally with `cannot_add_self` when `peer_id` is
+/// our own identity; other failures surface as relay error codes.
+#[tauri::command]
+async fn send_friend_request(state: State<'_, RelayClient>, peer_id: String) -> Result<(), String> {
+    state
+        .send_friend_request(&peer_id)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// Accept a pending incoming friend request from `peer_id`. Both sides become
+/// accepted contacts and the requester receives a `friend_request_accepted`
+/// push.
+#[tauri::command]
+async fn accept_friend_request(
+    state: State<'_, RelayClient>,
+    peer_id: String,
+) -> Result<(), String> {
+    state
+        .accept_friend_request(&peer_id)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// Decline a pending incoming friend request from `peer_id`.
+#[tauri::command]
+async fn decline_friend_request(
+    state: State<'_, RelayClient>,
+    peer_id: String,
+) -> Result<(), String> {
+    state
+        .decline_friend_request(&peer_id)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// Fetch the pending friend-request snapshot (incoming + outgoing).
+#[tauri::command]
+async fn get_friend_requests(state: State<'_, RelayClient>) -> Result<FriendRequests, String> {
+    state.get_friend_requests().await.map_err(|e| e.to_string())
 }
 
 /// Delete one message locally ("delete for me"): the decrypted history in
@@ -669,6 +717,10 @@ pub fn run() {
             set_privacy,
             update_settings,
             remove_contact,
+            send_friend_request,
+            accept_friend_request,
+            decline_friend_request,
+            get_friend_requests,
             delete_message,
             clear_chat_history,
             set_display_name,

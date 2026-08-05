@@ -766,6 +766,7 @@ mod tests {
             dir.clone(),
             RateLimiter::new(100.0, 0.0),
             RateLimiter::new(100.0, 0.0),
+            RateLimiter::new(100.0, 0.0),
         );
         let alice = Identity::new();
         let mut rx = online_peer(&relay, &alice).await;
@@ -847,6 +848,7 @@ mod tests {
         let relay = Relay::with_parts(
             store,
             media_dir,
+            RateLimiter::new(100.0, 0.0),
             RateLimiter::new(100.0, 0.0),
             RateLimiter::new(100.0, 0.0),
         );

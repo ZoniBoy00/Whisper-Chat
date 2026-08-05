@@ -11,11 +11,15 @@
 // being set low. The username/profile tests perform ~12 profile operations
 // from one source IP, the envelope tests burst 20+ acks and the group tests
 // (including ownership transfer, the member-add/removal pushes and the group
-// avatar roundtrip) consume ~26 tokens from the per-IP group bucket, so the
+// avatar roundtrip) consume ~27 tokens from the per-IP group bucket, so the
 // shared budget must hold at least that many: run with WHISPER_RATE_BURST=40
 // (which every bucket falls back to) or set WHISPER_PROFILE_RATE_BURST
 // explicitly. The 120-envelope burst test still overflows a 40-token budget,
 // so rate limiting stays meaningfully exercised.
+//
+// The contact tests befriend ~4 peer pairs (~16 friend-request/accept ops from
+// the per-IP `contacts:<ip>` bucket) and enforce that strangers are refused
+// for 1:1 envelopes, pre-key fetches and group member adds.
 //
 // The presence tests also consume a few tokens from the per-IP buckets.
 
@@ -171,6 +175,66 @@ const waitForCount = async (label, ws, predicate, count, timeoutMs = 5000) => {
   throw new Error(`timeout waiting for ${count} x ${label}`);
 };
 
+// Count messages matching a predicate (or a plain type name) on a socket.
+const count = (ws, predicate) =>
+  typeof predicate === "function"
+    ? ws.messages.filter(predicate).length
+    : ws.messages.filter((m) => m.type === predicate).length;
+
+// Make sure the server has finished processing our hello (and registered us
+// as online) before relying on presence-style pushes: `fetch_since` is only
+// answered after the hello is handled on the same socket, so an `envelopes`
+// reply is proof that our peer is in the online map. Without this wait, a
+// friend-request push sent right after connecting could be dropped because
+// the recipient's hello is still being processed server-side.
+async function ensureHandled(conn, label) {
+  const base = count(conn.ws, "envelopes");
+  conn.ws.sendJson({ type: "fetch_since", since: 0 });
+  await waitFor(`${label} hello handled`, () => count(conn.ws, "envelopes") > base);
+}
+
+// Establish an accepted contact relationship between two online peers.
+// `requester` sends the request, `target` accepts it; both receive the
+// `friend_request_accepted` push. Every wait is count-based so re-befriending
+// an already-paired socket (with old push history) cannot latch prematurely.
+async function befriend(requesterConn, requester, targetConn, target) {
+  await ensureHandled(requesterConn, "requester");
+  await ensureHandled(targetConn, "target");
+  // Take every base count BEFORE the triggering request: the recipient's push
+  // can arrive before the sender's ack, so a late base would already include
+  // the push and the wait would never see a count increase.
+  const sentBase = count(requesterConn.ws, "friend_request_sent");
+  const recvBase = count(
+    targetConn.ws,
+    (m) => m.type === "friend_request_received" && m.peer_id === requester.peer_id
+  );
+  const ackBase = count(targetConn.ws, "friend_request_accepted_ok");
+  const pushBase = count(
+    requesterConn.ws,
+    (m) => m.type === "friend_request_accepted" && m.peer_id === target.peer_id
+  );
+  requesterConn.ws.sendJson({ type: "send_friend_request", peer_id: target.peer_id });
+  await waitFor("friend_request_sent", () =>
+    count(requesterConn.ws, "friend_request_sent") > sentBase
+  );
+  await waitFor("friend_request_received", () =>
+    count(
+      targetConn.ws,
+      (m) => m.type === "friend_request_received" && m.peer_id === requester.peer_id
+    ) > recvBase
+  );
+  targetConn.ws.sendJson({ type: "accept_friend_request", peer_id: requester.peer_id });
+  await waitFor("friend_request_accepted_ok", () =>
+    count(targetConn.ws, "friend_request_accepted_ok") > ackBase
+  );
+  await waitFor("accepted push to requester", () =>
+    count(
+      requesterConn.ws,
+      (m) => m.type === "friend_request_accepted" && m.peer_id === target.peer_id
+    ) > pushBase
+  );
+}
+
 let failures = 0;
 const check = (name, ok) => {
   console.log(`${ok ? "PASS" : "FAIL"}  ${name}`);
@@ -189,6 +253,197 @@ async function main() {
 
   aliceConn.ws.hello(alice);
   bobConn.ws.hello(bob);
+
+  // --- Friend-request flow (establishes the alice <-> bob contact pair) ---
+  // The relay only routes 1:1 envelopes, discloses pre-keys and accepts group
+  // member adds between ACCEPTED contacts, so alice and bob befriend each other
+  // before any envelope is sent. Ensure both hellos are processed first: a
+  // presence-style push sent before the recipient's hello is handled would be
+  // dropped (the recipient is not yet in the online map).
+  await ensureHandled(aliceConn, "alice");
+  await ensureHandled(bobConn, "bob");
+
+  aliceConn.ws.sendJson({ type: "send_friend_request", peer_id: bob.peer_id });
+  await waitFor("friend_request_sent", () =>
+    aliceConn.ws.messages.some((m) => m.type === "friend_request_sent")
+  );
+  check("contacts: send_friend_request acknowledged with friend_request_sent", true);
+
+  await waitFor("friend_request_received push to bob", () =>
+    bobConn.ws.messages.some(
+      (m) => m.type === "friend_request_received" && m.peer_id === alice.peer_id
+    )
+  );
+  const reqPush = bobConn.ws.messages
+    .filter((m) => m.type === "friend_request_received")
+    .pop();
+  check(
+    "contacts: recipient pushed friend_request_received with the requester's display name",
+    reqPush && reqPush.peer_id === alice.peer_id && reqPush.display_name === "Test Alice"
+  );
+
+  bobConn.ws.sendJson({ type: "accept_friend_request", peer_id: alice.peer_id });
+  await waitFor("friend_request_accepted_ok", () =>
+    bobConn.ws.messages.some((m) => m.type === "friend_request_accepted_ok")
+  );
+  check("contacts: accept_friend_request acknowledged with friend_request_accepted_ok", true);
+
+  // Both sides receive a friend_request_accepted push naming their new contact.
+  await waitFor("alice accepted push", () =>
+    aliceConn.ws.messages.some(
+      (m) => m.type === "friend_request_accepted" && m.peer_id === bob.peer_id
+    )
+  );
+  await waitFor("bob accepted push", () =>
+    bobConn.ws.messages.some(
+      (m) => m.type === "friend_request_accepted" && m.peer_id === alice.peer_id
+    )
+  );
+  check("contacts: both peers receive friend_request_accepted push", true);
+
+  // Duplicate requests and self-requests are refused.
+  aliceConn.ws.sendJson({ type: "send_friend_request", peer_id: bob.peer_id });
+  await waitFor("already_contacts", () =>
+    aliceConn.ws.messages.some((m) => m.type === "error" && m.code === "already_contacts")
+  );
+  check("contacts: re-requesting an accepted contact -> already_contacts", true);
+
+  aliceConn.ws.sendJson({ type: "send_friend_request", peer_id: alice.peer_id });
+  await waitFor("cannot_add_self", () =>
+    aliceConn.ws.messages.some((m) => m.type === "error" && m.code === "cannot_add_self")
+  );
+  check("contacts: requesting yourself -> cannot_add_self", true);
+
+  // --- Contact-system enforcement (server-level anti-spam) -------------------
+  // erin is a fresh peer with NO contacts: every 1:1 interaction must be
+  // refused at the relay. carol and dave connect now and are befriended with
+  // the pairs the later tests need (strangers are refused everywhere).
+
+  const carolConn = connect("carol");
+  const daveConn = connect("dave");
+  const erinConn = connect("erin");
+  const erin = makeIdentity();
+  await Promise.all([carolConn.ready, daveConn.ready, erinConn.ready]);
+  carolConn.ws.hello(carol);
+  daveConn.ws.hello(dave);
+  erinConn.ws.hello(erin);
+  await sleep(100);
+
+  await befriend(carolConn, carol, daveConn, dave); // rate-limit burst target
+  await befriend(daveConn, dave, bobConn, bob); // no_prekeys contact lookup
+  await befriend(aliceConn, alice, carolConn, carol); // group member adds
+
+  // (a) fetch_prekeys is contact-gated.
+  erinConn.ws.sendJson({ type: "fetch_prekeys", peer_id: alice.peer_id });
+  await waitFor("not_contacts (prekeys)", () =>
+    erinConn.ws.messages.some((m) => m.type === "error" && m.code === "not_contacts")
+  );
+  check("contacts: non-friend fetch_prekeys -> not_contacts", true);
+
+  // (b) a 1:1 envelope between non-friends is never routed or queued.
+  erinConn.ws.sendJson({
+    type: "envelope",
+    envelope: {
+      sender: erin.peer_id,
+      recipient: alice.peer_id,
+      payload: Buffer.from("spam from erin").toString("base64"),
+      seq: 9001,
+    },
+  });
+  await waitFor("not_contacts (envelope)", () =>
+    erinConn.ws.messages.some((m) => m.type === "error" && m.code === "not_contacts")
+  );
+  check("contacts: non-friend 1:1 envelope -> not_contacts", true);
+  await sleep(200);
+  check(
+    "contacts: non-friend envelope is never delivered",
+    !aliceConn.ws.messages.some((m) => m.type === "envelope" && m.envelope.seq === 9001)
+  );
+
+  // (c) a stranger cannot be added to a group.
+  aliceConn.ws.sendJson({ type: "create_group", name: "Strict Squad" });
+  await waitFor("group_created (strict)", () =>
+    aliceConn.ws.messages.some((m) => m.type === "group_created")
+  );
+  const strictGroupId = aliceConn.ws.messages
+    .filter((m) => m.type === "group_created")
+    .pop().group_id;
+  aliceConn.ws.sendJson({
+    type: "add_group_member",
+    group_id: strictGroupId,
+    peer_id: erin.peer_id,
+  });
+  await waitFor("not_contacts (add_group_member)", () =>
+    aliceConn.ws.messages.some((m) => m.type === "error" && m.code === "not_contacts")
+  );
+  check("contacts: adding a non-friend to a group -> not_contacts", true);
+
+  // (d) decline flow: erin requests alice, alice declines, erin gets the push.
+  erinConn.ws.sendJson({ type: "send_friend_request", peer_id: alice.peer_id });
+  await waitFor("friend_request_sent (erin)", () =>
+    erinConn.ws.messages.some((m) => m.type === "friend_request_sent")
+  );
+  await waitFor("alice receives erin's request", () =>
+    aliceConn.ws.messages.some(
+      (m) => m.type === "friend_request_received" && m.peer_id === erin.peer_id
+    )
+  );
+  aliceConn.ws.sendJson({ type: "decline_friend_request", peer_id: erin.peer_id });
+  await waitFor("friend_request_declined_ok", () =>
+    aliceConn.ws.messages.some((m) => m.type === "friend_request_declined_ok")
+  );
+  check("contacts: decline_friend_request acknowledged", true);
+  await waitFor("erin declined push", () =>
+    erinConn.ws.messages.some(
+      (m) => m.type === "friend_request_declined" && m.peer_id === alice.peer_id
+    )
+  );
+  check("contacts: requester receives friend_request_declined push", true);
+
+  // get_friend_requests after the decline: erin has no pending requests.
+  erinConn.ws.sendJson({ type: "get_friend_requests" });
+  await waitFor("friend_requests reply", () =>
+    erinConn.ws.messages.some((m) => m.type === "friend_requests")
+  );
+  const reqList = erinConn.ws.messages.filter((m) => m.type === "friend_requests").pop();
+  check(
+    "contacts: get_friend_requests returns empty lists after decline",
+    reqList &&
+      Array.isArray(reqList.incoming) &&
+      reqList.incoming.length === 0 &&
+      Array.isArray(reqList.outgoing) &&
+      reqList.outgoing.length === 0
+  );
+
+  // (e) remove_contact severs the relationship; routing is refused again.
+  aliceConn.ws.sendJson({ type: "remove_contact", peer_id: bob.peer_id });
+  await waitFor("contact_removed_ok", () =>
+    aliceConn.ws.messages.some((m) => m.type === "contact_removed_ok")
+  );
+  check("contacts: remove_contact acknowledged with contact_removed_ok", true);
+  await waitFor("bob contact_removed push", () =>
+    bobConn.ws.messages.some(
+      (m) => m.type === "contact_removed" && m.peer_id === alice.peer_id
+    )
+  );
+  check("contacts: removed peer receives contact_removed push", true);
+
+  aliceConn.ws.sendJson({
+    type: "envelope",
+    envelope: {
+      sender: alice.peer_id,
+      recipient: bob.peer_id,
+      payload: Buffer.from("post-remove").toString("base64"),
+      seq: 9002,
+    },
+  });
+  await waitFor("not_contacts after remove", () =>
+    aliceConn.ws.messages.some((m) => m.type === "error" && m.code === "not_contacts")
+  );
+  check("contacts: 1:1 envelope refused after remove_contact", true);
+
+  // Restore alice <-> bob so the routing tests below can run.
+  await befriend(aliceConn, alice, bobConn, bob);
 
   // --- Test 1: live routing ---
   aliceConn.ws.sendJson({
@@ -357,10 +612,7 @@ async function main() {
   );
 
   // --- Test (b): rate limiting per IP ---
-  const carolConn = connect("carol");
-  await carolConn.ready;
-  carolConn.ws.hello(carol);
-  await sleep(100);
+  // carol and dave are already connected (and contacts) from the early section.
 
   // Burst into the bucket: the relay must ack some envelopes and reject the
   // excess with a rate_limited error.
@@ -483,14 +735,16 @@ async function main() {
   // --- Presence tests ---
 
   // (a) get_presence for a peer that never connected: offline, no last_seen.
-  aliceConn.ws.sendJson({ type: "get_presence", peer_id: dave.peer_id });
+  // dave connected earlier in the suite, so probe a genuinely unknown peer.
+  const ghostPresence = makeIdentity();
+  aliceConn.ws.sendJson({ type: "get_presence", peer_id: ghostPresence.peer_id });
   await waitFor("get_presence unknown reply", () =>
     aliceConn.ws.messages.some(
-      (m) => m.type === "presence" && m.peer_id === dave.peer_id
+      (m) => m.type === "presence" && m.peer_id === ghostPresence.peer_id
     )
   );
   const unknownPresence = aliceConn.ws.messages
-    .filter((m) => m.type === "presence" && m.peer_id === dave.peer_id)
+    .filter((m) => m.type === "presence" && m.peer_id === ghostPresence.peer_id)
     .pop();
   check(
     "presence: unknown peer reports online:false and last_seen:null",
@@ -819,9 +1073,11 @@ async function main() {
   //     that bob receives and carol (a non-member) does not.
   aliceConn.ws.sendJson({ type: "create_group", name: "Ghost Squad" });
   await waitFor("group_created", () =>
-    aliceConn.ws.messages.some((m) => m.type === "group_created")
+    aliceConn.ws.messages.some((m) => m.type === "group_created" && m.name === "Ghost Squad")
   );
-  const groupCreated = aliceConn.ws.messages.filter((m) => m.type === "group_created").pop();
+  const groupCreated = aliceConn.ws.messages
+    .filter((m) => m.type === "group_created" && m.name === "Ghost Squad")
+    .pop();
   const groupId = groupCreated && groupCreated.group_id;
   check(
     "group: create_group returns group_id, name and owner member",
@@ -838,9 +1094,13 @@ async function main() {
 
   aliceConn.ws.sendJson({ type: "add_group_member", group_id: groupId, peer_id: bob.peer_id });
   await waitFor("group_member_added", () =>
-    aliceConn.ws.messages.some((m) => m.type === "group_member_added")
+    aliceConn.ws.messages.some(
+      (m) => m.type === "group_member_added" && m.group_id === groupId && m.peer_id === bob.peer_id
+    )
   );
-  const added = aliceConn.ws.messages.filter((m) => m.type === "group_member_added").pop();
+  const added = aliceConn.ws.messages
+    .filter((m) => m.type === "group_member_added" && m.group_id === groupId && m.peer_id === bob.peer_id)
+    .pop();
   check(
     "group: add_group_member acknowledged with the peer id",
     added && added.group_id === groupId && added.peer_id === bob.peer_id
@@ -896,9 +1156,11 @@ async function main() {
   // (c) get_group_info returns the member roster to members.
   aliceConn.ws.sendJson({ type: "get_group_info", group_id: groupId });
   await waitFor("group_info", () =>
-    aliceConn.ws.messages.some((m) => m.type === "group_info")
+    aliceConn.ws.messages.some((m) => m.type === "group_info" && m.group_id === groupId)
   );
-  const info = aliceConn.ws.messages.filter((m) => m.type === "group_info").pop();
+  const info = aliceConn.ws.messages
+    .filter((m) => m.type === "group_info" && m.group_id === groupId)
+    .pop();
   // Members are reported as { peer_id, role } objects (owner/admin/member).
   const infoMemberIds =
     info && Array.isArray(info.members) ? info.members.map((m) => m.peer_id) : [];
@@ -918,10 +1180,12 @@ async function main() {
   // Alice (owner) promotes Bob to admin. The roster must reflect the new role.
   aliceConn.ws.sendJson({ type: "promote_member", group_id: groupId, peer_id: bob.peer_id });
   await waitFor("group_member_promoted", () =>
-    aliceConn.ws.messages.some((m) => m.type === "group_member_promoted")
+    aliceConn.ws.messages.some(
+      (m) => m.type === "group_member_promoted" && m.group_id === groupId && m.peer_id === bob.peer_id
+    )
   );
   const promoted = aliceConn.ws.messages
-    .filter((m) => m.type === "group_member_promoted")
+    .filter((m) => m.type === "group_member_promoted" && m.group_id === groupId && m.peer_id === bob.peer_id)
     .pop();
   check(
     "group: owner promotes member -> group_member_promoted",
@@ -930,9 +1194,11 @@ async function main() {
 
   aliceConn.ws.sendJson({ type: "get_group_info", group_id: groupId });
   await waitFor("group_info after promote", () =>
-    aliceConn.ws.messages.filter((m) => m.type === "group_info").length >= 2
+    aliceConn.ws.messages.filter((m) => m.type === "group_info" && m.group_id === groupId).length >= 2
   );
-  const infoPromoted = aliceConn.ws.messages.filter((m) => m.type === "group_info").pop();
+  const infoPromoted = aliceConn.ws.messages
+    .filter((m) => m.type === "group_info" && m.group_id === groupId)
+    .pop();
   check(
     "group: promoted member shows role admin in group_info",
     infoPromoted &&
@@ -965,10 +1231,12 @@ async function main() {
   // The owner demotes Bob back to a regular member.
   aliceConn.ws.sendJson({ type: "demote_member", group_id: groupId, peer_id: bob.peer_id });
   await waitFor("group_member_demoted", () =>
-    aliceConn.ws.messages.some((m) => m.type === "group_member_demoted")
+    aliceConn.ws.messages.some(
+      (m) => m.type === "group_member_demoted" && m.group_id === groupId && m.peer_id === bob.peer_id
+    )
   );
   const demoted = aliceConn.ws.messages
-    .filter((m) => m.type === "group_member_demoted")
+    .filter((m) => m.type === "group_member_demoted" && m.group_id === groupId && m.peer_id === bob.peer_id)
     .pop();
   check(
     "group: owner demotes admin -> group_member_demoted",
@@ -982,10 +1250,12 @@ async function main() {
   // verifies the owner-only remove path on a regular member.
   aliceConn.ws.sendJson({ type: "remove_member", group_id: groupId, peer_id: bob.peer_id });
   await waitFor("group_member_removed", () =>
-    aliceConn.ws.messages.some((m) => m.type === "group_member_removed")
+    aliceConn.ws.messages.some(
+      (m) => m.type === "group_member_removed" && m.group_id === groupId && m.peer_id === bob.peer_id
+    )
   );
   const removed = aliceConn.ws.messages
-    .filter((m) => m.type === "group_member_removed")
+    .filter((m) => m.type === "group_member_removed" && m.group_id === groupId && m.peer_id === bob.peer_id)
     .pop();
   check(
     "group: owner removes member -> group_member_removed",
@@ -995,7 +1265,9 @@ async function main() {
   // Re-add Bob so the leave_group test below still has a member to remove.
   aliceConn.ws.sendJson({ type: "add_group_member", group_id: groupId, peer_id: bob.peer_id });
   await waitFor("group_member_added (re-add)", () =>
-    aliceConn.ws.messages.filter((m) => m.type === "group_member_added").length >= 2
+    aliceConn.ws.messages.filter(
+      (m) => m.type === "group_member_added" && m.group_id === groupId && m.peer_id === bob.peer_id
+    ).length >= 2
   );
   check("group: re-added member acknowledged", true);
 
@@ -1215,6 +1487,8 @@ async function main() {
   aliceConn.ws.close();
   bob6.ws.close();
   carolConn.ws.close();
+  daveConn.ws.close();
+  erinConn.ws.close();
 
   console.log(failures === 0 ? "\nALL TESTS PASSED" : `\n${failures} TEST(S) FAILED`);
   process.exit(failures === 0 ? 0 : 1);

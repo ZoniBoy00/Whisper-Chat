@@ -9,18 +9,25 @@ import type { UnlistenFn } from "@tauri-apps/api/event";
 import type { TFunction } from "../i18n/types";
 import type {
   ContactInfo,
+  FriendRequestIncoming,
   GroupInfo,
   Message,
   MessageStatus,
   PresenceInfo,
 } from "../types";
 import {
+  acceptFriendRequest as relayAcceptFriendRequest,
   connectRelay,
+  declineFriendRequest as relayDeclineFriendRequest,
   deleteMessage as relayDeleteMessage,
   getChatState,
-  getProfile,
+  getFriendRequests,
   onChatMessage,
+  onContactAdded,
+  onContactRemoved,
   onContactUpdated,
+  onFriendRequest,
+  onFriendRequestDeclined,
   onGroupRemoved,
   onMessageStatus,
   onPresence,
@@ -29,11 +36,12 @@ import {
   leaveGroup as relayLeaveGroup,
   onTyping,
   publishPrekeys,
+  relayErrorCode,
   removeContact as relayRemoveContact,
+  sendFriendRequest as relaySendFriendRequest,
   sendMessage as relaySendMessage,
   sendTyping as relaySendTyping,
   setDisplayName as persistDisplayName,
-  startChat,
   transferOwnership as relayTransferOwnership,
 } from "../lib/relay";
 import { shortPeerId } from "../lib/format";
@@ -111,6 +119,10 @@ interface UseChatStateParams {
 
 export interface ChatStateApi {
   contacts: ContactInfo[];
+  /** Incoming friend requests (requester + display name), in arrival order. */
+  friendRequestsIncoming: FriendRequestIncoming[];
+  /** Outgoing pending friend requests: peer IDs we asked, unanswered. */
+  friendRequestsOutgoing: string[];
   myDisplayName: string | null;
   /** Our own avatar path ("/media/{hash}") from the persisted chat-state
    *  snapshot; null when unset. Reliable without a live relay round-trip. */
@@ -136,7 +148,13 @@ export interface ChatStateApi {
   sendTyping: (peerId: string, isTyping: boolean) => void;
   saveDisplayName: (name: string) => Promise<void>;
   removeContact: (peerId: string) => Promise<void>;
-  addContact: (peerId: string) => Promise<void>;
+  /** Send a friend request; the peer becomes an accepted contact once they
+   *  accept. Failures (relay error codes) propagate to the caller. */
+  sendFriendRequest: (peerId: string) => Promise<void>;
+  /** Accept an incoming friend request; both sides become contacts. */
+  acceptFriendRequest: (peerId: string) => Promise<void>;
+  /** Decline an incoming friend request. */
+  declineFriendRequest: (peerId: string) => Promise<void>;
   updatePresence: (peerId: string, info: PresenceInfo) => void;
   deleteMessage: (peerId: string, messageId: string) => Promise<void>;
   /** Remove the caller from a group and drop it from every local list. */
@@ -160,6 +178,12 @@ export function useChatState({
 }: UseChatStateParams): ChatStateApi {
   const { toast } = useToast();
   const [contacts, setContacts] = useState<ContactInfo[]>([]);
+  const [friendRequestsIncoming, setFriendRequestsIncoming] = useState<
+    FriendRequestIncoming[]
+  >([]);
+  const [friendRequestsOutgoing, setFriendRequestsOutgoing] = useState<string[]>(
+    []
+  );
   const [myDisplayName, setMyDisplayName] = useState<string | null>(null);
   const [myAvatarUrl, setMyAvatarUrl] = useState<string | null>(null);
   const [messages, setMessages] = useState<Record<string, Message[]>>({});
@@ -225,8 +249,24 @@ export function useChatState({
       setMyDisplayName(state.my_display_name);
       setMyAvatarUrl(state.my_avatar_url);
       setPresence(state.presence);
+      setFriendRequestsIncoming(state.friend_requests_incoming);
+      setFriendRequestsOutgoing(state.friend_requests_outgoing);
     } catch {
       // Transient failure; event listeners resync the next state change.
+    }
+  }, []);
+
+  /** Re-fetch the pending friend-request snapshot from the relay. The in-memory
+   *  lists are seeded after every connect and refreshed after every request
+   *  mutation, so the Requests section stays authoritative without waiting for
+   *  a live push. */
+  const loadFriendRequests = useCallback(async () => {
+    try {
+      const requests = await getFriendRequests();
+      setFriendRequestsIncoming(requests.incoming);
+      setFriendRequestsOutgoing(requests.outgoing);
+    } catch {
+      // Best-effort: a live push resyncs the next time the state changes.
     }
   }, []);
 
@@ -306,6 +346,9 @@ export function useChatState({
             setReconnecting(false);
             setReconnectInfo(null);
             void refresh();
+            // Seed the Requests section from the relay (the in-memory lists
+            // reset on every process run).
+            void loadFriendRequests();
           }
         })
       );
@@ -413,6 +456,80 @@ export function useChatState({
           toast(t("toast.group_removed"), "error");
         })
       );
+      const friendRequestUnlisten = await register(() =>
+        onFriendRequest(({ peer_id, display_name }) => {
+          if (disposed) return;
+          // A new incoming request: add it to the Requests section and toast.
+          // A duplicate push (the snapshot reply re-lists it) never adds twice.
+          setFriendRequestsIncoming((prev) =>
+            prev.some((request) => request.peer_id === peer_id)
+              ? prev
+              : [...prev, { peer_id, display_name }]
+          );
+          const name = display_name ?? shortPeerId(peer_id, 16);
+          toast(t("contacts.request_received", { name }), "info");
+        })
+      );
+      const contactAddedUnlisten = await register(() =>
+        onContactAdded(({ peer_id, display_name }) => {
+          if (disposed) return;
+          // A peer became an accepted contact (my outgoing request was
+          // accepted). Resync so the peer appears in the chat list and the
+          // pending lists drop it.
+          void loadFriendRequests();
+          void refresh();
+          const name = display_name ?? shortPeerId(peer_id, 16);
+          toast(t("contacts.you_are_contacts", { name }), "success");
+        })
+      );
+      const requestDeclinedUnlisten = await register(() =>
+        onFriendRequestDeclined(({ peer_id }) => {
+          if (disposed) return;
+          setFriendRequestsOutgoing((prev) =>
+            prev.filter((id) => id !== peer_id)
+          );
+          toast(
+            t("contacts.request_declined", { name: shortPeerId(peer_id, 16) }),
+            "info"
+          );
+        })
+      );
+      const contactRemovedUnlisten = await register(() =>
+        onContactRemoved(({ peer_id }) => {
+          if (disposed) return;
+          // A contact relationship ended (either side removed it): drop the
+          // peer from every local list and close the conversation if it was
+          // open. `removeContact` itself stays optimistic — this push is the
+          // single toast source so both directions report exactly once.
+          setContacts((prev) => prev.filter((c) => c.peer_id !== peer_id));
+          setMessages((prev) => {
+            if (!(peer_id in prev)) return prev;
+            const next = { ...prev };
+            delete next[peer_id];
+            return next;
+          });
+          setPresence((prev) => {
+            if (!(peer_id in prev)) return prev;
+            const next = { ...prev };
+            delete next[peer_id];
+            return next;
+          });
+          setFriendRequestsIncoming((prev) =>
+            prev.filter((request) => request.peer_id !== peer_id)
+          );
+          setFriendRequestsOutgoing((prev) =>
+            prev.filter((id) => id !== peer_id)
+          );
+          setUnread((counts) => {
+            if (!(peer_id in counts)) return counts;
+            const next = { ...counts };
+            delete next[peer_id];
+            return next;
+          });
+          setActivePeerId((prev) => (prev === peer_id ? null : prev));
+          toast(t("contacts.contact_removed"), "info");
+        })
+      );
       if (
         disposed ||
         !chatUnlisten ||
@@ -422,7 +539,11 @@ export function useChatState({
         !typingUnlisten ||
         !contactUpdatedUnlisten ||
         !presenceUnlisten ||
-        !groupRemovedUnlisten
+        !groupRemovedUnlisten ||
+        !friendRequestUnlisten ||
+        !contactAddedUnlisten ||
+        !requestDeclinedUnlisten ||
+        !contactRemovedUnlisten
       ) {
         return;
       }
@@ -432,6 +553,7 @@ export function useChatState({
       void (async () => {
         await connect();
         await refresh();
+        await loadFriendRequests();
       })();
     };
 
@@ -441,7 +563,7 @@ export function useChatState({
       disposed = true;
       for (const unlisten of unlisteners) unlisten();
     };
-  }, [connect, refresh]);
+  }, [connect, refresh, loadFriendRequests]);
 
   const sendMessage = useCallback(async (peerId: string, text: string) => {
     const clientId = crypto.randomUUID();
@@ -464,9 +586,18 @@ export function useChatState({
           (m) => m.id !== clientId
         ),
       }));
-      setConnectionError(String(err));
+      // The relay only routes messages between accepted contacts. A
+      // `not_contacts` rejection means the peer is not (or no longer) a
+      // friend: surface a clear translated toast instead of a raw relay code.
+      // The `contact-removed` push (when the relationship really ended) then
+      // drops the peer from the list, so the open chat is not yanked away here.
+      if (relayErrorCode(err) === "not_contacts") {
+        toast(t("contacts.not_in_contacts"), "error");
+      } else {
+        setConnectionError(String(err));
+      }
     }
-  }, []);
+  }, [toast, t]);
 
   const sendTyping = useCallback((peerId: string, isTyping: boolean) => {
     // Best-effort: without an established session (or while disconnected)
@@ -508,17 +639,17 @@ export function useChatState({
     []
   );
 
-  /** Remove a contact and its messages on this device (client-local). The
-   *  Rust backend drops the contact row, history and session; this keeps the
-   *  React state in sync so no refresh is needed. The peer's own copy and any
-   *  relay-queued envelopes are untouched — a later message re-establishes
-   *  the contact. */
+  /** Remove the accepted contact relationship with `peerId` on both sides
+   *  (server-level). The Rust backend sends `remove_contact`, drops the local
+   *  contact row, history and session, and the relay's `contact_removed` push
+   *  (handled by the listener above) toasts and keeps the other end in sync.
+   *  This keeps the React state in sync so no refresh is needed. */
   const removeContact = useCallback(async (targetPeerId: string) => {
     try {
       await relayRemoveContact(targetPeerId);
     } catch {
-      // Client-local best-effort: the in-memory removal below still applies
-      // for this session.
+      // Best-effort: the in-memory removal below still applies for this
+      // session, and the `contact-removed` push resyncs on the next connect.
     }
     setContacts((prev) => prev.filter((c) => c.peer_id !== targetPeerId));
     setMessages((prev) => {
@@ -526,6 +657,17 @@ export function useChatState({
       delete next[targetPeerId];
       return next;
     });
+    setPresence((prev) => {
+      const next = { ...prev };
+      delete next[targetPeerId];
+      return next;
+    });
+    setFriendRequestsIncoming((prev) =>
+      prev.filter((request) => request.peer_id !== targetPeerId)
+    );
+    setFriendRequestsOutgoing((prev) =>
+      prev.filter((id) => id !== targetPeerId)
+    );
     setActivePeerId((prev) => (prev === targetPeerId ? null : prev));
   }, []);
 
@@ -557,42 +699,38 @@ export function useChatState({
     setActivePeerId((prev) => (prev === groupId ? null : prev));
   }, []);
 
-  const addContact = useCallback(
+  /** Send a friend request to `peerId`. The peer becomes an accepted contact
+   *  once they accept; until then they stay in the Requests section and are
+   *  not chatable. Failures (relay error codes such as `already_contacts`,
+   *  `cannot_add_self`, `not_found`) propagate so the caller can show a
+   *  translated message. */
+  const sendFriendRequest = useCallback(
     async (peerIdToAdd: string) => {
-      try {
-        await startChat(peerIdToAdd);
-      } catch (err) {
-        throw new Error(String(err));
-      }
-      setContacts((prev) =>
-        prev.some((c) => c.peer_id === peerIdToAdd)
-          ? prev
-          : [...prev, { peer_id: peerIdToAdd, display_name: null }]
-      );
-      setActivePeerId(peerIdToAdd);
-      // Best-effort enrichment: pull the peer's public profile (display
-      // name, username, avatar) so the contact renders fully right away.
-      try {
-        const profile = await getProfile(peerIdToAdd);
-        setContacts((prev) =>
-          prev.map((c) =>
-            c.peer_id === peerIdToAdd
-              ? {
-                  ...c,
-                  display_name: profile.display_name,
-                  username: profile.username,
-                  avatar_url: profile.avatar_url,
-                }
-              : c
-          )
-        );
-      } catch {
-        // No registered profile (or lookup unavailable) — display name and
-        // presence still arrive via the usual events.
-      }
-      void refresh();
+      await relaySendFriendRequest(peerIdToAdd);
+      await loadFriendRequests();
     },
-    [refresh]
+    [loadFriendRequests]
+  );
+
+  /** Accept an incoming friend request: both sides become contacts. The relay
+   *  replies with the fresh snapshot (which resyncs the Requests section) and
+   *  pushes `friend_request_accepted` to the requester. */
+  const acceptFriendRequest = useCallback(
+    async (peerId: string) => {
+      await relayAcceptFriendRequest(peerId);
+      await loadFriendRequests();
+    },
+    [loadFriendRequests]
+  );
+
+  /** Decline an incoming friend request: it disappears from the Requests
+   *  section and the requester receives a `friend_request_declined` push. */
+  const declineFriendRequest = useCallback(
+    async (peerId: string) => {
+      await relayDeclineFriendRequest(peerId);
+      await loadFriendRequests();
+    },
+    [loadFriendRequests]
   );
 
   /**
@@ -619,6 +757,8 @@ export function useChatState({
 
   return {
     contacts,
+    friendRequestsIncoming,
+    friendRequestsOutgoing,
     myDisplayName,
     myAvatarUrl,
     messages,
@@ -639,7 +779,9 @@ export function useChatState({
     sendTyping,
     saveDisplayName,
     removeContact,
-    addContact,
+    sendFriendRequest,
+    acceptFriendRequest,
+    declineFriendRequest,
     updatePresence,
     deleteMessage,
     leaveGroup,

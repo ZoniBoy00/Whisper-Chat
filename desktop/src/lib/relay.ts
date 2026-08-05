@@ -4,7 +4,12 @@ import type {
   AppSettings,
   ChatMessageEvent,
   ChatState,
+  ContactAddedEvent,
+  ContactRemovedEvent,
   ContactUpdatedEvent,
+  FriendRequestDeclinedEvent,
+  FriendRequestEvent,
+  FriendRequests,
   GroupInfo,
   GroupRemovedEvent,
   LogEntry,
@@ -103,9 +108,58 @@ export function updateSettings(patch: SettingsPatch): Promise<void> {
   return invoke("update_settings", { patch });
 }
 
-/** Remove a contact and its message history on this device (client-local). */
+/** Remove the accepted contact relationship with `peerId` on both sides. The
+ *  relay broadcasts a `contact_removed` push to both peers; the local contact
+ *  row, history and presence are dropped immediately. */
 export function removeContact(peerId: string): Promise<void> {
   return invoke("remove_contact", { peerId });
+}
+
+/** Send a friend request to `peerId`. The peer becomes an accepted contact
+ *  once they accept. Rejects with a relay error code on failure
+ *  (`already_pending`, `already_contacts`, `cannot_add_self`, `not_found`,
+ *  `rate_limited`). */
+export function sendFriendRequest(peerId: string): Promise<void> {
+  return invoke("send_friend_request", { peerId });
+}
+
+/** Accept a pending incoming friend request from `peerId`. Both sides become
+ *  accepted contacts and the requester receives a `friend_request_accepted`
+ *  push. */
+export function acceptFriendRequest(peerId: string): Promise<void> {
+  return invoke("accept_friend_request", { peerId });
+}
+
+/** Decline a pending incoming friend request from `peerId`. */
+export function declineFriendRequest(peerId: string): Promise<void> {
+  return invoke("decline_friend_request", { peerId });
+}
+
+/** Fetch the pending friend-request snapshot (incoming + outgoing). */
+export function getFriendRequests(): Promise<FriendRequests> {
+  return invoke<FriendRequests>("get_friend_requests");
+}
+
+/**
+ * Extract the relay error code from a Tauri invoke rejection. The Rust side
+ * maps relay error codes to `"relay error: <code>"` strings (occasionally
+ * prefixed with `Error: `), so this picks the `<code>` back out. Returns null
+ * when the error is not a relay code.
+ */
+export function relayErrorCode(err: unknown): string | null {
+  const match = String(err).match(/(?:Error:\s*)?relay error: ([a-z_]+)/i);
+  if (!match) return null;
+  const code = match[1].toLowerCase();
+  return [
+    "not_contacts",
+    "already_pending",
+    "already_contacts",
+    "cannot_add_self",
+    "not_found",
+    "rate_limited",
+  ].includes(code)
+    ? code
+    : null;
 }
 
 /** Delete one message locally ("delete for me"): history + encrypted store on
@@ -337,6 +391,45 @@ export function onGroupRemoved(
   handler: (event: GroupRemovedEvent) => void
 ): Promise<UnlistenFn> {
   return listen<GroupRemovedEvent>("group-removed", (event) =>
+    handler(event.payload)
+  );
+}
+
+/** Subscribe to new incoming friend requests. Returns an unlisten function. */
+export function onFriendRequest(
+  handler: (event: FriendRequestEvent) => void
+): Promise<UnlistenFn> {
+  return listen<FriendRequestEvent>("friend-request", (event) =>
+    handler(event.payload)
+  );
+}
+
+/** Subscribe to `contact-added` pushes (a peer became an accepted contact).
+ *  Returns an unlisten function. */
+export function onContactAdded(
+  handler: (event: ContactAddedEvent) => void
+): Promise<UnlistenFn> {
+  return listen<ContactAddedEvent>("contact-added", (event) =>
+    handler(event.payload)
+  );
+}
+
+/** Subscribe to `friend-request-declined` pushes (my outgoing request was
+ *  declined). Returns an unlisten function. */
+export function onFriendRequestDeclined(
+  handler: (event: FriendRequestDeclinedEvent) => void
+): Promise<UnlistenFn> {
+  return listen<FriendRequestDeclinedEvent>("friend-request-declined", (event) =>
+    handler(event.payload)
+  );
+}
+
+/** Subscribe to `contact-removed` pushes (a contact relationship ended on
+ *  either side). Returns an unlisten function. */
+export function onContactRemoved(
+  handler: (event: ContactRemovedEvent) => void
+): Promise<UnlistenFn> {
+  return listen<ContactRemovedEvent>("contact-removed", (event) =>
     handler(event.payload)
   );
 }
