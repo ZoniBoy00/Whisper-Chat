@@ -121,7 +121,14 @@ export function MainView({ peerId, onReset }: MainViewProps) {
         if (settings.theme === "dark" || settings.theme === "light") {
           setTheme(settings.theme);
         }
-        if (settings.relay_url) setRelayUrl(settings.relay_url);
+        if (settings.relay_url) {
+          setRelayUrl(settings.relay_url);
+        } else {
+          // The relay URL is hardcoded in the client; keep the state in sync
+          // even before the first connect persists the effective endpoint, so
+          // `/media/{hash}` avatar paths always resolve.
+          setRelayUrl("ws://127.0.0.1:8080/ws");
+        }
         if (settings.presence_visible != null) setPresenceVisible(settings.presence_visible);
         setReadReceipts(settings.read_receipts ?? true);
         setTypingIndicator(settings.typing_indicator ?? true);
@@ -155,7 +162,11 @@ export function MainView({ peerId, onReset }: MainViewProps) {
       try {
         const settings = await getSettings();
         if (cancelled) return;
-        if (settings.relay_url) setRelayUrl(settings.relay_url);
+        if (settings.relay_url) {
+          setRelayUrl(settings.relay_url);
+        } else {
+          setRelayUrl("ws://127.0.0.1:8080/ws");
+        }
       } catch {
         // Best-effort: the initial mount already loaded the settings.
       }
