@@ -6,7 +6,9 @@
 
 set -euo pipefail
 
-cd "$(dirname "$0")/../server"
+# Repo root, resolved from the script location (robust regardless of CWD).
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+cd "$ROOT/server"
 
 cargo build --release -p whisper-relay
 
@@ -15,9 +17,11 @@ export WHISPER_DB_PATH="$SCRATCH/smoke.db"
 export WHISPER_RATE_BURST=20
 export WHISPER_RATE_REFILL=0
 
-"$OLDPWD/../target/release/whisper-relay" &
+"$ROOT/target/release/whisper-relay" &
 RELAY_PID=$!
-trap 'kill "$RELAY_PID" 2>/dev/null || true; rm -rf "$SCRATCH"' EXIT
+# Cleanup must never fail the script: on Windows a just-killed relay can still
+# hold the SQLite file for a moment, so the rm is best-effort.
+trap 'kill "$RELAY_PID" 2>/dev/null || true; rm -rf "$SCRATCH" 2>/dev/null || true' EXIT
 
 # Wait for the relay to accept connections.
 for _ in $(seq 1 20); do

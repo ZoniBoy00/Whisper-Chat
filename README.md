@@ -207,8 +207,9 @@ cargo fmt --check
 
 ## Testing & TDD
 
-- **48+ unit tests** across the crypto core (23) and the relay (25)
-- **19+ smoke tests** covering live routing, offline delivery, SQLite
+- **209 unit tests** across the workspace (e2ee-core 48, whisper-desktop 53,
+  whisper-relay 108)
+- **67 smoke tests** covering live routing, offline delivery, SQLite
   persistence, `fetch_since` sync, rate limiting and signed-hello spoofing
   protection
 - **TDD policy:** every crypto change requires tests before merge — tests
