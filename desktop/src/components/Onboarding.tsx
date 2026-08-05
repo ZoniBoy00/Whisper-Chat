@@ -10,6 +10,7 @@ import {
   ShieldCheck,
 } from "lucide-react";
 import { Logo } from "./Logo";
+import { useI18n } from "../i18n/I18nContext";
 
 interface OnboardingProps {
   onCreated: (peerId: string) => void;
@@ -30,6 +31,7 @@ function TrustPoint({ icon, label }: { icon: ReactNode; label: string }) {
 }
 
 export function Onboarding({ onCreated }: OnboardingProps) {
+  const { t } = useI18n();
   const [name, setName] = useState("");
   const [creating, setCreating] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -61,25 +63,24 @@ export function Onboarding({ onCreated }: OnboardingProps) {
         <Logo size={84} />
 
         <h1 className="mt-7 font-display text-4xl font-semibold tracking-tight text-wp-text">
-          Welcome to Whisper
+          {t("onboarding.welcome_title")}
         </h1>
         <p className="mt-3 max-w-md text-base leading-relaxed text-wp-dim">
-          Your conversations are whispers — only you and the recipient can hear
-          them.
+          {t("onboarding.welcome_subtitle")}
         </p>
 
         <div className="mt-9 grid w-full grid-cols-3 gap-3">
           <TrustPoint
             icon={<ShieldCheck className="h-5 w-5" />}
-            label="E2E encrypted"
+            label={t("onboarding.trust_e2e")}
           />
           <TrustPoint
             icon={<ServerOff className="h-5 w-5" />}
-            label="Zero-knowledge"
+            label={t("onboarding.trust_zero_knowledge")}
           />
           <TrustPoint
             icon={<Lock className="h-5 w-5" />}
-            label="Keys on device"
+            label={t("onboarding.trust_keys")}
           />
         </div>
 
@@ -89,13 +90,10 @@ export function Onboarding({ onCreated }: OnboardingProps) {
             className="block text-left"
           >
             <span className="text-sm font-semibold text-wp-text">
-              What should people call you?
+              {t("onboarding.name_label")}
             </span>
             <span className="mt-1 block text-xs leading-relaxed text-wp-dim">
-              Your display name is public profile data — like a WhatsApp
-              profile name. Leave it blank to stay anonymous and be known by
-              your Whisper ID, which you&apos;ll receive after creating your
-              identity.
+              {t("onboarding.name_hint")}
             </span>
           </label>
           <input
@@ -103,7 +101,7 @@ export function Onboarding({ onCreated }: OnboardingProps) {
             type="text"
             value={name}
             onChange={(e) => setName(e.target.value)}
-            placeholder="e.g. Alice"
+            placeholder={t("onboarding.name_placeholder")}
             maxLength={64}
             autoComplete="off"
             spellCheck={false}
@@ -121,7 +119,7 @@ export function Onboarding({ onCreated }: OnboardingProps) {
             ) : (
               <KeyRound className="h-4 w-4" />
             )}
-            {creating ? "Creating your identity…" : "Create Identity"}
+            {creating ? t("onboarding.creating_identity") : t("onboarding.create_identity")}
           </button>
 
           <button
@@ -130,14 +128,12 @@ export function Onboarding({ onCreated }: OnboardingProps) {
             className="inline-flex items-center justify-center gap-2 rounded-xl border border-wp-line/10 bg-wp-panel px-6 py-3.5 text-sm font-semibold text-wp-text transition hover:bg-wp-panel-2"
           >
             <FileKey className="h-4 w-4" />
-            Restore Identity
+            {t("onboarding.restore_identity")}
           </button>
 
           {restoreHint ? (
             <p className="mx-auto max-w-xs animate-pop-in text-xs leading-relaxed text-wp-faint">
-              Restoring from an identity file is coming soon. For now your
-              identity file is stored locally in the app data folder and never
-              leaves this device.
+              {t("onboarding.restore_identity_hint")}
             </p>
           ) : null}
         </div>

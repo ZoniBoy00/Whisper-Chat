@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { Loader2, Plus, UserPlus, Users, X } from "lucide-react";
 import { cx, shortPeerId } from "../lib/format";
+import { useI18n } from "../i18n/I18nContext";
 
 interface NewGroupDialogProps {
   open: boolean;
@@ -20,6 +21,7 @@ export function NewGroupDialog({
   onCreate,
   myPeerId,
 }: NewGroupDialogProps) {
+  const { t } = useI18n();
   const dialogRef = useRef<HTMLDialogElement>(null);
   const nameInputRef = useRef<HTMLInputElement>(null);
   const [name, setName] = useState("");
@@ -53,15 +55,15 @@ export function NewGroupDialog({
   const addMember = () => {
     const peerId = memberInput.trim().toLowerCase();
     if (!PEER_ID_PATTERN.test(peerId)) {
-      setMemberError("Enter a valid 24-character Whisper ID (hex digits only).");
+      setMemberError(t("newGroup.invalid_peer_id_24"));
       return;
     }
     if (peerId === myPeerId) {
-      setMemberError("You are already the owner of this group.");
+      setMemberError(t("newGroup.already_owner"));
       return;
     }
     if (members.includes(peerId)) {
-      setMemberError("That member is already in the list.");
+      setMemberError(t("newGroup.member_already_added"));
       return;
     }
     setMembers((prev) => [...prev, peerId]);
@@ -76,15 +78,15 @@ export function NewGroupDialog({
   const submit = async () => {
     const trimmedName = name.trim();
     if (!trimmedName) {
-      setError("Give the group a name.");
+      setError(t("newGroup.group_name_required"));
       return;
     }
     if (trimmedName.length > 64) {
-      setError("Group names must be 64 characters or fewer.");
+      setError(t("newGroup.group_name_too_long"));
       return;
     }
     if (members.length === 0) {
-      setError("Add at least one member.");
+      setError(t("newGroup.add_member_required"));
       return;
     }
     setCreating(true);
@@ -120,18 +122,17 @@ export function NewGroupDialog({
                 id="new-group-title"
                 className="font-display text-lg font-semibold tracking-tight text-wp-text"
               >
-                New group
+                {t("common.new_group")}
               </h2>
               <p className="mt-0.5 text-sm leading-relaxed text-wp-dim">
-                Members get the group key end-to-end encrypted — Whisper can
-                never read it.
+                {t("newGroup.hint")}
               </p>
             </div>
           </div>
           <button
             type="button"
             onClick={close}
-            aria-label="Close dialog"
+            aria-label={t("common.close_dialog")}
             className="rounded-lg p-2 text-wp-dim transition hover:bg-wp-panel-3 hover:text-wp-text"
           >
             <X className="h-4 w-4" />
@@ -144,7 +145,7 @@ export function NewGroupDialog({
               htmlFor="new-group-name"
               className="text-xs font-medium text-wp-dim"
             >
-              Group name
+              {t("newGroup.group_name")}
             </label>
             <input
               id="new-group-name"
@@ -166,7 +167,7 @@ export function NewGroupDialog({
               htmlFor="new-group-member"
               className="text-xs font-medium text-wp-dim"
             >
-              Add members by Whisper ID
+              {t("newGroup.add_members_by_id")}
             </label>
             <div className="mt-1.5 flex gap-2">
               <input
@@ -202,7 +203,7 @@ export function NewGroupDialog({
                 )}
               >
                 <Plus className="h-4 w-4" aria-hidden="true" />
-                Add
+                {t("newGroup.add")}
               </button>
             </div>
             {memberError ? (
@@ -217,7 +218,7 @@ export function NewGroupDialog({
           </div>
 
           {members.length > 0 ? (
-            <ul className="flex flex-col gap-1.5" aria-label="Selected members">
+            <ul className="flex flex-col gap-1.5" aria-label={t("newGroup.selected_members")}>
               {members.map((peerId) => (
                 <li
                   key={peerId}
@@ -232,7 +233,7 @@ export function NewGroupDialog({
                   <button
                     type="button"
                     onClick={() => removeMember(peerId)}
-                    aria-label={`Remove member ${peerId}`}
+                    aria-label={t("newGroup.remove_member_aria", { peerId })}
                     className="shrink-0 rounded-md p-1 text-wp-dim transition hover:bg-wp-panel-2 hover:text-wp-danger"
                   >
                     <X className="h-3.5 w-3.5" />
@@ -263,7 +264,7 @@ export function NewGroupDialog({
             ) : (
               <UserPlus className="h-4 w-4" />
             )}
-            {creating ? "Creating group…" : "Create group"}
+            {creating ? t("newGroup.creating_group") : t("newGroup.create_group")}
           </button>
         </div>
       </div>

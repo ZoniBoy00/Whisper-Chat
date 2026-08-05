@@ -50,6 +50,14 @@ impl RelayClient {
             "notification_preview",
             setting_str(settings.notification_preview),
         )?;
+        store.set_setting(
+            "notification_sound",
+            setting_str(settings.notification_sound),
+        )?;
+        match &settings.language {
+            Some(lang) if !lang.is_empty() => store.set_setting("language", lang)?,
+            _ => store.delete_setting("language")?,
+        }
         *write_guard(&self.inner.settings)? = settings.clone();
         Ok(())
     }
@@ -105,6 +113,12 @@ impl RelayClient {
         }
         if let Some(value) = patch.notification_preview {
             settings.notification_preview = value;
+        }
+        if let Some(value) = patch.notification_sound {
+            settings.notification_sound = value;
+        }
+        if let Some(value) = patch.language.clone() {
+            settings.language = (!value.is_empty()).then_some(value);
         }
         self.save_settings(&settings)
     }
@@ -264,12 +278,14 @@ mod tests {
         assert!(settings.typing_indicator);
         assert!(settings.notifications_enabled);
         assert!(settings.notification_preview);
+        assert!(settings.notification_sound);
+        assert_eq!(settings.language, None);
     }
 
     #[test]
     fn settings_parse_honours_explicit_opt_out_fields() {
         let settings: Settings = serde_json::from_str(
-            r#"{"presence_visible":false,"read_receipts":false,"typing_indicator":false,"notifications_enabled":false,"notification_preview":false}"#,
+            r#"{"presence_visible":false,"read_receipts":false,"typing_indicator":false,"notifications_enabled":false,"notification_preview":false,"notification_sound":false,"language":"fi"}"#,
         )
         .expect("full settings must parse");
         assert!(!settings.presence_visible);
@@ -277,6 +293,8 @@ mod tests {
         assert!(!settings.typing_indicator);
         assert!(!settings.notifications_enabled);
         assert!(!settings.notification_preview);
+        assert!(!settings.notification_sound);
+        assert_eq!(settings.language.as_deref(), Some("fi"));
     }
 
     #[test]
@@ -287,6 +305,17 @@ mod tests {
         assert_eq!(patch.typing_indicator, None);
         assert_eq!(patch.notifications_enabled, None);
         assert_eq!(patch.notification_preview, None);
+        assert_eq!(patch.notification_sound, None);
+        assert_eq!(patch.language, None);
+    }
+
+    #[test]
+    fn settings_patch_carries_language_and_sound() {
+        let patch: SettingsPatch =
+            serde_json::from_str(r#"{"notification_sound":false,"language":"fi"}"#)
+                .expect("partial patch must parse");
+        assert_eq!(patch.notification_sound, Some(false));
+        assert_eq!(patch.language.as_deref(), Some("fi"));
     }
 
     #[test]

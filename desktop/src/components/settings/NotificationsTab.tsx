@@ -1,4 +1,5 @@
-import { Bell, EyeOff } from "lucide-react";
+import { Bell, EyeOff, Volume2 } from "lucide-react";
+import { useI18n } from "../../i18n/I18nContext";
 import { ToggleRow } from "./controls";
 
 interface NotificationsTabProps {
@@ -7,6 +8,8 @@ interface NotificationsTabProps {
   onNotificationsEnabledChange: (value: boolean) => void;
   notificationPreview: boolean;
   onNotificationPreviewChange: (value: boolean) => void;
+  notificationSound: boolean;
+  onNotificationSoundChange: (value: boolean) => void;
 }
 
 export function NotificationsTab({
@@ -15,7 +18,10 @@ export function NotificationsTab({
   onNotificationsEnabledChange,
   notificationPreview,
   onNotificationPreviewChange,
+  notificationSound,
+  onNotificationSoundChange,
 }: NotificationsTabProps) {
+  const { t } = useI18n();
   return (
     <div
       role="tabpanel"
@@ -29,16 +35,24 @@ export function NotificationsTab({
         checked={notificationsEnabled}
         onChange={onNotificationsEnabledChange}
         icon={<Bell className="h-4 w-4" />}
-        title="Show desktop notifications"
-        description="Shows a native system notification for new messages while the window isn't focused. If the system notification permission was denied, the toggle stays on but nothing is shown."
+        title={t("notifications.desktop_title")}
+        description={t("notifications.desktop_desc")}
       />
       <ToggleRow
         id="setting-notification-preview"
         checked={notificationPreview}
         onChange={onNotificationPreviewChange}
         icon={<EyeOff className="h-4 w-4" />}
-        title="Preview message text in notifications"
-        description="When off, notifications only say \u201cNew message from @name\u201d without the message content."
+        title={t("notifications.preview_title")}
+        description={t("notifications.preview_desc")}
+      />
+      <ToggleRow
+        id="setting-notification-sound"
+        checked={notificationSound}
+        onChange={onNotificationSoundChange}
+        icon={<Volume2 className="h-4 w-4" />}
+        title={t("notifications.sound_title")}
+        description={t("notifications.sound_desc")}
       />
     </div>
   );

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Settings, X } from "lucide-react";
 import type { Theme } from "../types";
+import { useI18n } from "../i18n/I18nContext";
 import { AboutTab } from "./settings/AboutTab";
 import { GeneralTab } from "./settings/GeneralTab";
 import { NotificationsTab } from "./settings/NotificationsTab";
@@ -40,6 +41,9 @@ interface SettingsDialogProps {
   onNotificationsEnabledChange: (value: boolean) => void;
   notificationPreview: boolean;
   onNotificationPreviewChange: (value: boolean) => void;
+  /** Plays a short chime for incoming messages. */
+  notificationSound: boolean;
+  onNotificationSoundChange: (value: boolean) => void;
 }
 
 /** The dialog frame around the settings tabs: native `<dialog>` handling
@@ -70,7 +74,10 @@ export function SettingsDialog({
   onNotificationsEnabledChange,
   notificationPreview,
   onNotificationPreviewChange,
+  notificationSound,
+  onNotificationSoundChange,
 }: SettingsDialogProps) {
+  const { t } = useI18n();
   const dialogRef = useRef<HTMLDialogElement>(null);
   // Incremented on every open; remounts the tab subtree so each tab re-seeds
   // its form from the latest settings (and resets validation/save flashes).
@@ -118,13 +125,13 @@ export function SettingsDialog({
               id="settings-title"
               className="font-display text-lg font-semibold tracking-tight text-wp-text"
             >
-              Settings
+              {t("common.settings")}
             </h2>
           </div>
           <button
             type="button"
             onClick={close}
-            aria-label="Close settings"
+            aria-label={t("common.close_settings")}
             className="rounded-lg p-2 text-wp-dim transition hover:bg-wp-panel-3 hover:text-wp-text"
           >
             <X className="h-4 w-4" aria-hidden="true" />
@@ -164,6 +171,8 @@ export function SettingsDialog({
                 onNotificationsEnabledChange={onNotificationsEnabledChange}
                 notificationPreview={notificationPreview}
                 onNotificationPreviewChange={onNotificationPreviewChange}
+                notificationSound={notificationSound}
+                onNotificationSoundChange={onNotificationSoundChange}
               />
               <AboutTab active={activeTab === "about"} />
             </>

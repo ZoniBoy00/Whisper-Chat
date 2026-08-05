@@ -1,5 +1,6 @@
 import { useEffect } from "react";
 import { emit } from "@tauri-apps/api/event";
+import { useI18n } from "../i18n/I18nContext";
 import { Logo } from "./Logo";
 
 /** How long the splash stays visible before signalling the Rust side. */
@@ -15,6 +16,7 @@ const SPLASH_DONE_EVENT = "splash-done";
  * two-segment loader.
  */
 export function Splash() {
+  const { t } = useI18n();
   useEffect(() => {
     const timer = window.setTimeout(() => {
       void emit(SPLASH_DONE_EVENT).catch(() => {
@@ -57,7 +59,7 @@ export function Splash() {
         className="relative mt-3 animate-fade-in-soft text-xs font-medium uppercase tracking-[0.3em] text-wp-faint"
         style={{ animationDelay: "0.25s" }}
       >
-        End-to-end encrypted
+        {t("splash.tagline")}
       </p>
 
       {/* Two-segment loader: a bright head dragging a long, fading tail. */}

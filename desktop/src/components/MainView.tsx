@@ -5,7 +5,6 @@ import {
   demoteMember,
   getGroupInfo,
   getSettings,
-  leaveGroup,
   promoteMember,
   registerProfile,
   removeMember,
@@ -16,6 +15,8 @@ import {
   updateSettings,
 } from "../lib/relay";
 import { buildConversations } from "../lib/chatList";
+import { loadPinnedChats, persistPinnedChats } from "../lib/pinned";
+import { useI18n } from "../i18n/I18nContext";
 import { useChatState } from "../hooks/useChatState";
 import { useOwnProfile } from "../hooks/useOwnProfile";
 import { usePresencePolling } from "../hooks/usePresencePolling";
@@ -33,6 +34,7 @@ interface MainViewProps {
 }
 
 export function MainView({ peerId, onReset }: MainViewProps) {
+  const { t } = useI18n();
   const [theme, setTheme] = useState<Theme>("dark");
   const [relayUrl, setRelayUrl] = useState("");
   // Privacy / notification preferences, hydrated from the settings store on
@@ -42,6 +44,7 @@ export function MainView({ peerId, onReset }: MainViewProps) {
   const [typingIndicator, setTypingIndicator] = useState(true);
   const [notificationsEnabled, setNotificationsEnabled] = useState(true);
   const [notificationPreview, setNotificationPreview] = useState(true);
+  const [notificationSound, setNotificationSound] = useState(true);
   // Dialog open state for the various overlay panels.
   const [addDialogOpen, setAddDialogOpen] = useState(false);
   const [newGroupOpen, setNewGroupOpen] = useState(false);
@@ -49,8 +52,17 @@ export function MainView({ peerId, onReset }: MainViewProps) {
   const [settingsOpen, setSettingsOpen] = useState(false);
   // Peer whose profile dialog is open; null when closed.
   const [profilePeerId, setProfilePeerId] = useState<string | null>(null);
+  // Pinned conversations (client-side, persisted per identity in localStorage).
+  const [pinnedIds, setPinnedIds] = useState<string[]>(() =>
+    loadPinnedChats(peerId)
+  );
 
-  const chat = useChatState({ notificationsEnabled, notificationPreview });
+  const chat = useChatState({
+    notificationsEnabled,
+    notificationPreview,
+    notificationSound,
+    t,
+  });
   const { myProfile, refreshOwnProfile } = useOwnProfile(peerId, chat.connected);
 
   // Real-time presence pushes come through the `presence` event (registered in
@@ -85,6 +97,7 @@ export function MainView({ peerId, onReset }: MainViewProps) {
         setTypingIndicator(settings.typing_indicator ?? true);
         setNotificationsEnabled(settings.notifications_enabled ?? true);
         setNotificationPreview(settings.notification_preview ?? true);
+        setNotificationSound(settings.notification_sound ?? true);
       } catch {
         // Settings are best-effort; the defaults (dark, default relay) apply.
       }
@@ -152,13 +165,13 @@ export function MainView({ peerId, onReset }: MainViewProps) {
     async (avatarBase64: string) => {
       const username = myProfile?.username;
       if (!username) {
-        throw new Error("Register a username before uploading an avatar.");
+        throw new Error(t("general.register_username_first"));
       }
       await setAvatar(username, avatarBase64);
       // Re-fetch the profile so the avatar_url (and preview) refresh.
       await refreshOwnProfile();
     },
-    [myProfile?.username, refreshOwnProfile]
+    [myProfile?.username, refreshOwnProfile, t]
   );
 
   // Privacy / notification preference handlers: apply in memory immediately
@@ -188,6 +201,11 @@ export function MainView({ peerId, onReset }: MainViewProps) {
     void updateSettings({ notification_preview: value }).catch(() => {});
   }, []);
 
+  const handleNotificationSoundChange = useCallback((value: boolean) => {
+    setNotificationSound(value);
+    void updateSettings({ notification_sound: value }).catch(() => {});
+  }, []);
+
   // Profile dialog wiring: opening focuses the active conversation's peer;
   // "Message" just closes the dialog (the chat is already open).
   const handleOpenProfile = useCallback(() => {
@@ -208,8 +226,14 @@ export function MainView({ peerId, onReset }: MainViewProps) {
     (targetPeerId: string) => {
       setProfilePeerId(null);
       void chat.removeContact(targetPeerId);
+      setPinnedIds((prev) => {
+        if (!prev.includes(targetPeerId)) return prev;
+        const next = prev.filter((id) => id !== targetPeerId);
+        persistPinnedChats(peerId, next);
+        return next;
+      });
     },
-    [chat.removeContact]
+    [chat.removeContact, peerId]
   );
 
   /** "Delete for me" from the message context menu: client-local removal. */
@@ -267,13 +291,16 @@ export function MainView({ peerId, onReset }: MainViewProps) {
 
   const handleLeaveGroup = useCallback(
     async (groupId: string) => {
-      await leaveGroup(groupId);
+      await chat.leaveGroup(groupId);
       setGroupInfoGroupId(null);
-      await chat.refresh();
-      // Close the conversation if the active chat was the group we left.
-      chat.setActivePeerId((prev) => (prev === groupId ? null : prev));
+      setPinnedIds((prev) => {
+        if (!prev.includes(groupId)) return prev;
+        const next = prev.filter((id) => id !== groupId);
+        persistPinnedChats(peerId, next);
+        return next;
+      });
     },
-    [chat.refresh, chat.setActivePeerId]
+    [chat.leaveGroup, peerId]
   );
 
   const handleReset = useCallback(() => {
@@ -282,10 +309,25 @@ export function MainView({ peerId, onReset }: MainViewProps) {
   }, [onReset]);
 
   // Conversations ordered by recency of the last message so the chat list
-  // behaves like Signal/WhatsApp: most recent activity first.
+  // behaves like Signal/WhatsApp: most recent activity first. Pinned chats
+  // (Signal/Telegram style) sort above everything else.
   const conversations = useMemo(
-    () => buildConversations(chat.contacts, chat.groups, chat.messages),
-    [chat.contacts, chat.groups, chat.messages]
+    () => buildConversations(chat.contacts, chat.groups, chat.messages, pinnedIds),
+    [chat.contacts, chat.groups, chat.messages, pinnedIds]
+  );
+
+  /** Pin/unpin a chat; the choice is persisted per identity. */
+  const handleTogglePin = useCallback(
+    (targetPeerId: string) => {
+      setPinnedIds((prev) => {
+        const next = prev.includes(targetPeerId)
+          ? prev.filter((id) => id !== targetPeerId)
+          : [...prev, targetPeerId];
+        persistPinnedChats(peerId, next);
+        return next;
+      });
+    },
+    [peerId]
   );
 
   const active =
@@ -321,6 +363,9 @@ export function MainView({ peerId, onReset }: MainViewProps) {
         onOpenProfile={handleOpenProfileFor}
         onOpenGroupInfo={handleOpenGroupInfoFor}
         onRemoveContact={handleRemoveContact}
+        pinnedIds={pinnedIds}
+        onTogglePin={handleTogglePin}
+        unread={chat.unread}
       />
       <ChatView
         conversation={active}
@@ -396,6 +441,8 @@ export function MainView({ peerId, onReset }: MainViewProps) {
         onNotificationsEnabledChange={handleNotificationsEnabledChange}
         notificationPreview={notificationPreview}
         onNotificationPreviewChange={handleNotificationPreviewChange}
+        notificationSound={notificationSound}
+        onNotificationSoundChange={handleNotificationSoundChange}
       />
     </div>
   );

@@ -6,6 +6,7 @@ import {
   sendNotification,
 } from "@tauri-apps/plugin-notification";
 import type { UnlistenFn } from "@tauri-apps/api/event";
+import type { TFunction } from "../i18n/types";
 import type {
   ContactInfo,
   GroupInfo,
@@ -24,6 +25,7 @@ import {
   onPresence,
   onReconnecting,
   onRelayStatus,
+  leaveGroup as relayLeaveGroup,
   onTyping,
   publishPrekeys,
   removeContact as relayRemoveContact,
@@ -33,6 +35,7 @@ import {
   startChat,
 } from "../lib/relay";
 import { shortPeerId } from "../lib/format";
+import { playNotificationSound } from "../lib/sound";
 
 /** Whether the OS-level notification permission has been granted. */
 let notificationPermission = false;
@@ -73,7 +76,8 @@ async function showChatNotification(
   peerId: string,
   message: Message,
   contacts: ContactInfo[],
-  preview: boolean
+  preview: boolean,
+  t: TFunction
 ): Promise<void> {
   if (!(await ensureNotificationPermission())) return;
   const contact = contacts.find((c) => c.peer_id === peerId);
@@ -82,7 +86,7 @@ async function showChatNotification(
     (contact?.username ? `@${contact.username}` : shortPeerId(peerId, 16));
   const body = preview
     ? `${name}: ${message.text}`
-    : `New message from ${name}`;
+    : t("common.new_message_from", { name });
   try {
     sendNotification({ title: "Whisper", body });
   } catch {
@@ -96,6 +100,10 @@ interface UseChatStateParams {
    *  chat-message listener reads them through a ref updated every render. */
   notificationsEnabled: boolean;
   notificationPreview: boolean;
+  /** Whether a short chime plays for incoming messages. */
+  notificationSound: boolean;
+  /** Translation function for the notification body text. */
+  t: TFunction;
 }
 
 export interface ChatStateApi {
@@ -114,6 +122,8 @@ export interface ChatStateApi {
   presence: Record<string, PresenceInfo>;
   activePeerId: string | null;
   setActivePeerId: Dispatch<SetStateAction<string | null>>;
+  /** Unread incoming-message counts per peer; cleared when opened. */
+  unread: Record<string, number>;
   connect: () => Promise<void>;
   refresh: () => Promise<void>;
   sendMessage: (peerId: string, text: string) => Promise<void>;
@@ -123,6 +133,8 @@ export interface ChatStateApi {
   addContact: (peerId: string) => Promise<void>;
   updatePresence: (peerId: string, info: PresenceInfo) => void;
   deleteMessage: (peerId: string, messageId: string) => Promise<void>;
+  /** Remove the caller from a group and drop it from every local list. */
+  leaveGroup: (groupId: string) => Promise<void>;
 }
 
 /** Owns the chat state (contacts, messages, groups, connection, presence,
@@ -131,6 +143,8 @@ export interface ChatStateApi {
 export function useChatState({
   notificationsEnabled,
   notificationPreview,
+  notificationSound,
+  t,
 }: UseChatStateParams): ChatStateApi {
   const [contacts, setContacts] = useState<ContactInfo[]>([]);
   const [myDisplayName, setMyDisplayName] = useState<string | null>(null);
@@ -146,13 +160,33 @@ export function useChatState({
   const [connectionError, setConnectionError] = useState<string | null>(null);
   const [typing, setTyping] = useState<Record<string, boolean>>({});
   const [presence, setPresence] = useState<Record<string, PresenceInfo>>({});
-  const [activePeerId, setActivePeerId] = useState<string | null>(null);
+  const [activePeerId, setActivePeerIdState] = useState<string | null>(null);
+  const [unread, setUnread] = useState<Record<string, number>>({});
 
   // The chat-message listener is registered once but must read the *current*
   // notification prefs and contact list, so they live in a ref updated on
   // every render.
-  const notifyPrefs = useRef({ notificationsEnabled, notificationPreview, contacts });
-  notifyPrefs.current = { notificationsEnabled, notificationPreview, contacts };
+  const notifyPrefs = useRef({ notificationsEnabled, notificationPreview, notificationSound, contacts, t });
+  notifyPrefs.current = { notificationsEnabled, notificationPreview, notificationSound, contacts, t };
+
+  // The same applies to the active conversation: the message listener needs
+  // it to decide whether an incoming message counts as unread.
+  const activePeerIdRef = useRef<string | null>(null);
+  activePeerIdRef.current = activePeerId;
+
+  /** Switch the active conversation; opening one clears its unread badge. */
+  const setActivePeerId = useCallback<Dispatch<SetStateAction<string | null>>>(
+    (value) => {
+      setActivePeerIdState((prev) => {
+        const next = typeof value === "function" ? value(prev) : value;
+        if (next && next !== prev) {
+          setUnread((counts) => (counts[next] ? { ...counts, [next]: 0 } : counts));
+        }
+        return next;
+      });
+    },
+    []
+  );
 
   const connect = useCallback(async () => {
     setConnecting(true);
@@ -217,13 +251,33 @@ export function useChatState({
             return { ...prev, [peer_id]: [...list, message] };
           });
           setActivePeerId((prev) => prev ?? peer_id);
-          // Desktop notification: incoming message + window unfocused +
-          // notifications enabled (preview text controlled by the setting).
+          // Unread badge: count incoming messages for conversations that are
+          // not the one currently on screen. Opening the chat clears the count
+          // via the wrapped `setActivePeerId`.
+          if (!message.outgoing && activePeerIdRef.current !== peer_id) {
+            setUnread((counts) => ({
+              ...counts,
+              [peer_id]: (counts[peer_id] ?? 0) + 1,
+            }));
+          }
+          // Incoming message feedback: a short chime (when the notification
+          // sound is enabled, regardless of window focus — like WhatsApp) and
+          // a desktop notification when the window is unfocused and desktop
+          // notifications are enabled (preview text controlled by the setting).
           if (message.outgoing) return;
           const prefs = notifyPrefs.current;
+          if (prefs.notificationSound) {
+            playNotificationSound();
+          }
           if (!prefs.notificationsEnabled) return;
           if (document.hasFocus()) return;
-          void showChatNotification(peer_id, message, prefs.contacts, prefs.notificationPreview);
+          void showChatNotification(
+            peer_id,
+            message,
+            prefs.contacts,
+            prefs.notificationPreview,
+            prefs.t
+          );
         })
       );
       const statusUnlisten = await register(() =>
@@ -419,6 +473,34 @@ export function useChatState({
     setActivePeerId((prev) => (prev === targetPeerId ? null : prev));
   }, []);
 
+  /**
+   * Remove the caller from a group. The backend drops the group contact row,
+   * sessions and membership; on success this removes the group from the React
+   * state immediately (not just after a `refresh()` round-trip) so it leaves
+   * the chat list the moment the action succeeds, and closes it if it was the
+   * active conversation. Failures propagate so the dialog can show them — a
+   * group must never vanish locally while the relay still lists us as a
+   * member. The group is left without an owner when the owner leaves — an
+   * acceptable MVP trade-off documented in the UI.
+   */
+  const leaveGroup = useCallback(async (groupId: string) => {
+    await relayLeaveGroup(groupId);
+    setContacts((prev) => prev.filter((c) => c.peer_id !== groupId));
+    setGroups((prev) => prev.filter((g) => g.group_id !== groupId));
+    setMessages((prev) => {
+      const next = { ...prev };
+      delete next[groupId];
+      return next;
+    });
+    setUnread((counts) => {
+      if (!(groupId in counts)) return counts;
+      const next = { ...counts };
+      delete next[groupId];
+      return next;
+    });
+    setActivePeerId((prev) => (prev === groupId ? null : prev));
+  }, []);
+
   const addContact = useCallback(
     async (peerIdToAdd: string) => {
       try {
@@ -471,6 +553,7 @@ export function useChatState({
     presence,
     activePeerId,
     setActivePeerId,
+    unread,
     connect,
     refresh,
     sendMessage,
@@ -480,5 +563,6 @@ export function useChatState({
     addContact,
     updatePresence,
     deleteMessage,
+    leaveGroup,
   };
 }

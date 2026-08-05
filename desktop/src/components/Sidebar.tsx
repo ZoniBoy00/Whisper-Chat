@@ -5,6 +5,7 @@ import {
   MessageCircle,
   MessageCirclePlus,
   MoreVertical,
+  Pin,
   Search,
   SearchX,
   Settings,
@@ -20,6 +21,7 @@ import { cx, formatTime, mediaUrl, shortPeerId } from "../lib/format";
 import { conversationPreview } from "../lib/chatList";
 import { searchUsers } from "../lib/relay";
 import { copyText } from "../lib/clipboard";
+import { useI18n } from "../i18n/I18nContext";
 import { Avatar } from "./Avatar";
 import { CopyButton } from "./CopyButton";
 import { ContextMenu } from "./ContextMenu";
@@ -57,6 +59,12 @@ interface SidebarProps {
   onOpenGroupInfo: (groupId: string) => void;
   /** Remove a 1:1 contact locally (context menu). */
   onRemoveContact: (peerId: string) => void;
+  /** IDs of conversations pinned to the top (client-side). */
+  pinnedIds: string[];
+  /** Toggle whether a conversation is pinned. */
+  onTogglePin: (peerId: string) => void;
+  /** Unread incoming-message counts per peer. */
+  unread: Record<string, number>;
 }
 
 /** Right-click state of a conversation row: menu position + the target. */
@@ -93,7 +101,11 @@ export function Sidebar({
   onOpenProfile,
   onOpenGroupInfo,
   onRemoveContact,
+  pinnedIds,
+  onTogglePin,
+  unread,
 }: SidebarProps) {
+  const { t } = useI18n();
   const [menuOpen, setMenuOpen] = useState(false);
   const [confirming, setConfirming] = useState(false);
   const [rowMenu, setRowMenu] = useState<RowMenuState | null>(null);
@@ -207,7 +219,7 @@ export function Sidebar({
         <Avatar name={myDisplayName ?? undefined} size={40} />
         <div className="min-w-0 flex-1">
           <p className="truncate text-sm font-semibold tracking-tight text-wp-text">
-            {myDisplayName ?? "Your Whisper ID"}
+            {myDisplayName ?? t("common.your_whisper_id")}
           </p>
           <p className="truncate font-mono text-xs text-wp-dim">{peerId}</p>
         </div>
@@ -215,8 +227,8 @@ export function Sidebar({
         <button
           type="button"
           onClick={onOpenSettings}
-          title="Settings"
-          aria-label="Settings"
+          title={t("common.settings")}
+          aria-label={t("common.settings")}
           className="rounded-lg p-1.5 text-wp-dim transition hover:bg-wp-panel-2 hover:text-wp-text active:scale-90"
         >
           <Settings className="h-4 w-4" />
@@ -225,8 +237,8 @@ export function Sidebar({
           <button
             type="button"
             onClick={toggleMenu}
-            title="Identity options"
-            aria-label="Identity options"
+            title={t("sidebar.identity_options")}
+            aria-label={t("sidebar.identity_options")}
             aria-haspopup="true"
             aria-expanded={menuOpen}
             className="rounded-lg p-1.5 text-wp-dim transition hover:bg-wp-panel-2 hover:text-wp-text active:scale-90"
@@ -236,8 +248,7 @@ export function Sidebar({
           {menuOpen ? (
             <div className="absolute right-0 top-10 z-20 w-64 animate-pop-in rounded-xl border border-wp-line/10 bg-wp-panel-2 p-1.5 shadow-xl shadow-black/40">
               <p className="px-3 py-2 text-xs leading-relaxed text-wp-faint">
-                Identity is stored locally in the app data folder. It never
-                leaves this device.
+                {t("sidebar.identity_local_note")}
               </p>
               <div className="my-1 h-px bg-wp-line/10" />
               <button
@@ -251,7 +262,7 @@ export function Sidebar({
                 )}
               >
                 <Trash2 className="h-3.5 w-3.5" />
-                {confirming ? "Click again to confirm" : "Reset identity"}
+                {confirming ? t("common.confirm_again") : t("common.reset_identity")}
               </button>
             </div>
           ) : null}
@@ -261,7 +272,7 @@ export function Sidebar({
       {/* Search */}
       <div className="px-4 pb-3">
         <label className="sr-only" htmlFor="search-conversations">
-          Search by name, @username or Whisper ID
+          {t("sidebar.search_label")}
         </label>
         <div className="flex items-center gap-2 rounded-xl bg-wp-panel-2 px-3 py-2">
           {serverSearching ? (
@@ -274,7 +285,7 @@ export function Sidebar({
             type="search"
             value={query}
             onChange={(e) => setQuery(e.target.value)}
-            placeholder="Search by name, @username or ID"
+            placeholder={t("sidebar.search_placeholder")}
             autoComplete="off"
             spellCheck={false}
             className="w-full bg-transparent text-sm text-wp-text placeholder-wp-faint outline-none"
@@ -293,14 +304,14 @@ export function Sidebar({
       {/* Section header */}
       <div className="flex items-center justify-between px-4 pb-2">
         <p className="text-xs font-semibold uppercase tracking-widest text-wp-faint">
-          Conversations
+          {t("sidebar.conversations")}
         </p>
         <div className="flex items-center gap-1">
           <button
             type="button"
             onClick={onNewGroup}
-            title="New group"
-            aria-label="New group"
+            title={t("common.new_group")}
+            aria-label={t("common.new_group")}
             className="rounded-lg p-1.5 text-wp-dim transition hover:bg-wp-panel-2 hover:text-wp-text"
           >
             <Users className="h-4 w-4" />
@@ -308,8 +319,8 @@ export function Sidebar({
           <button
             type="button"
             onClick={onAddContact}
-            title="Start a new chat"
-            aria-label="Start a new chat"
+            title={t("sidebar.start_new_chat")}
+            aria-label={t("sidebar.start_new_chat")}
             className="rounded-lg p-1.5 text-wp-dim transition hover:bg-wp-panel-2 hover:text-wp-text"
           >
             <SquarePen className="h-4 w-4" />
@@ -331,10 +342,10 @@ export function Sidebar({
               </div>
               <div>
                 <p className="text-sm font-medium text-wp-dim">
-                  No users found
+                  {t("sidebar.no_users_found")}
                 </p>
                 <p className="mt-1 text-sm leading-relaxed text-wp-faint">
-                  No registered usernames or IDs match your search.
+                  {t("sidebar.no_users_found_hint")}
                 </p>
               </div>
             </div>
@@ -342,7 +353,7 @@ export function Sidebar({
             <div>
               <p className="flex items-center gap-1.5 px-3 pb-2 pt-1 text-xs font-semibold uppercase tracking-widest text-wp-faint">
                 <Users className="h-3.5 w-3.5" aria-hidden="true" />
-                Search results
+                {t("sidebar.search_results")}
               </p>
               {serverResults.map((result) => (
                 <button
@@ -359,7 +370,7 @@ export function Sidebar({
                   <div className="min-w-0 flex-1">
                     <div className="flex items-baseline gap-2">
                       <p className="truncate text-sm font-medium text-wp-text">
-                        {result.display_name ?? "Whisper user"}
+                        {result.display_name ?? t("sidebar.whisper_user")}
                       </p>
                       {result.username ? (
                         <p className="truncate font-mono text-xs text-wp-faint">
@@ -383,10 +394,10 @@ export function Sidebar({
             </div>
             <div>
               <p className="text-sm font-medium text-wp-dim">
-                No conversations yet
+                {t("sidebar.no_conversations")}
               </p>
               <p className="mt-1 text-sm leading-relaxed text-wp-faint">
-                Start a chat with a friend by their Whisper ID.
+                {t("sidebar.no_conversations_hint")}
               </p>
             </div>
             <button
@@ -395,7 +406,7 @@ export function Sidebar({
               className="mt-1 inline-flex items-center gap-2 rounded-xl bg-wp-accent px-4 py-2 text-sm font-semibold text-wp-accent-fg transition hover:bg-wp-accent-strong active:scale-95"
             >
               <UserPlus className="h-3.5 w-3.5" />
-              New Chat
+              {t("sidebar.new_chat")}
             </button>
           </div>
         ) : filteredConversations.length === 0 ? (
@@ -405,10 +416,10 @@ export function Sidebar({
             </div>
             <div>
               <p className="text-sm font-medium text-wp-dim">
-                No conversations found
+                {t("sidebar.no_conversations_found")}
               </p>
               <p className="mt-1 text-sm leading-relaxed text-wp-faint">
-                No names or Whisper IDs match your search.
+                {t("sidebar.no_conversations_found_hint")}
               </p>
             </div>
           </div>
@@ -417,6 +428,8 @@ export function Sidebar({
             const last = conversation.messages[conversation.messages.length - 1];
             const active = conversation.id === activeId;
             const isGroup = conversation.isGroup === true;
+            const isPinned = pinnedIds.includes(conversation.peerId);
+            const unreadCount = unread[conversation.peerId] ?? 0;
             const displayName = isGroup
               ? conversation.name
               : conversation.displayName ?? shortPeerId(conversation.peerId, 16);
@@ -466,14 +479,39 @@ export function Sidebar({
                         </p>
                       ) : null}
                     </div>
-                    {last ? (
-                      <span className="shrink-0 text-xs tabular-nums text-wp-faint">
-                        {formatTime(last.timestamp)}
-                      </span>
-                    ) : null}
+                    <div className="flex shrink-0 flex-col items-end gap-1">
+                      <div className="flex items-center gap-1.5">
+                        {isPinned ? (
+                          <Pin
+                            className="h-3 w-3 text-wp-accent"
+                            aria-label={t("sidebar.pinned")}
+                          />
+                        ) : null}
+                        {last ? (
+                          <span className="text-xs tabular-nums text-wp-faint">
+                            {formatTime(last.timestamp)}
+                          </span>
+                        ) : null}
+                      </div>
+                      {unreadCount > 0 ? (
+                        <span
+                          aria-label={t("sidebar.unread_messages", {
+                            n: unreadCount,
+                          })}
+                          className="animate-pop-in inline-flex h-[18px] min-w-[18px] items-center justify-center rounded-full bg-wp-accent px-1 text-[10px] font-bold leading-none text-wp-accent-fg tabular-nums"
+                        >
+                          {unreadCount > 99 ? "99+" : unreadCount}
+                        </span>
+                      ) : null}
+                    </div>
                   </div>
-                  <p className="truncate text-sm text-wp-dim">
-                    {conversationPreview(conversation)}
+                  <p
+                    className={cx(
+                      "truncate text-sm",
+                      unreadCount > 0 ? "font-medium text-wp-text" : "text-wp-dim"
+                    )}
+                  >
+                    {conversationPreview(conversation, t)}
                   </p>
                 </div>
               </button>
@@ -486,15 +524,16 @@ export function Sidebar({
         <ContextMenu
           x={rowMenu.x}
           y={rowMenu.y}
-          label={`Actions for ${rowMenu.conversation.name}`}
+          label={t("sidebar.actions_for", { name: rowMenu.conversation.name })}
           onClose={() => setRowMenu(null)}
           items={(() => {
             const conversation = rowMenu.conversation;
             const isGroup = conversation.isGroup === true;
+            const isPinned = pinnedIds.includes(conversation.peerId);
             const items: ContextMenuItem[] = [
               {
                 id: "view-profile",
-                label: isGroup ? "View Group Info" : "View Profile",
+                label: isGroup ? t("sidebar.view_group_info") : t("sidebar.view_profile"),
                 icon: isGroup ? (
                   <Users className="h-4 w-4" />
                 ) : (
@@ -507,21 +546,29 @@ export function Sidebar({
               },
               {
                 id: "send-message",
-                label: "Send Message",
+                label: t("common.send_message"),
                 icon: <MessageCircle className="h-4 w-4" />,
                 onSelect: () => onSelect(conversation.id),
               },
               {
                 id: "copy-peer-id",
-                label: "Copy Peer ID",
+                label: t("sidebar.copy_peer_id"),
                 icon: <Copy className="h-4 w-4" />,
                 onSelect: () => void copyText(conversation.peerId),
+              },
+              {
+                id: isPinned ? "unpin-chat" : "pin-chat",
+                label: isPinned
+                  ? t("sidebar.unpin_chat")
+                  : t("sidebar.pin_chat"),
+                icon: <Pin className="h-4 w-4" />,
+                onSelect: () => onTogglePin(conversation.peerId),
               },
             ];
             if (!isGroup) {
               items.push({
                 id: "remove-contact",
-                label: "Remove Contact",
+                label: t("common.remove_contact"),
                 danger: true,
                 icon: <UserX className="h-4 w-4" />,
                 onSelect: () => onRemoveContact(conversation.peerId),
@@ -541,10 +588,10 @@ export function Sidebar({
               <span className="relative inline-flex h-2.5 w-2.5 rounded-full bg-wp-accent" />
             </span>
             <span className="text-sm font-semibold tracking-wide text-wp-dim">
-              Connected
+              {t("sidebar.connected")}
             </span>
             <span className="text-xs text-wp-faint">
-              · end-to-end encrypted
+              {t("sidebar.e2ee_suffix")}
             </span>
           </div>
         ) : reconnecting ? (
@@ -556,12 +603,14 @@ export function Sidebar({
             <Loader2 className="h-4 w-4 animate-spin text-wp-accent" />
             <div className="min-w-0">
               <p className="text-sm font-semibold tracking-wide">
-                Reconnecting…
+                {t("sidebar.reconnecting")}
               </p>
               {reconnectInfo ? (
                 <p className="text-xs text-wp-faint">
-                  Attempt {reconnectInfo.attempt} · retrying in{" "}
-                  {Math.max(1, Math.round(reconnectInfo.nextInMs / 1000))}s
+                  {t("sidebar.reconnect_attempt", {
+                    attempt: reconnectInfo.attempt,
+                    seconds: Math.max(1, Math.round(reconnectInfo.nextInMs / 1000)),
+                  })}
                 </p>
               ) : null}
             </div>
@@ -570,7 +619,7 @@ export function Sidebar({
           <div className="flex items-center gap-2.5 text-wp-dim">
             <Loader2 className="h-4 w-4 animate-spin text-wp-faint" />
             <span className="text-sm font-semibold tracking-wide">
-              Connecting…
+              {t("sidebar.connecting")}
             </span>
           </div>
         ) : (
@@ -578,7 +627,7 @@ export function Sidebar({
             <div className="flex items-center gap-2.5 text-wp-dim">
               <span className="h-2.5 w-2.5 rounded-full bg-wp-danger" />
               <span className="text-sm font-semibold tracking-wide">
-                Disconnected
+                {t("sidebar.disconnected")}
               </span>
             </div>
             <button
@@ -586,7 +635,7 @@ export function Sidebar({
               onClick={onReconnect}
               className="rounded-lg bg-wp-panel-2 px-2.5 py-1.5 text-xs font-semibold text-wp-text transition hover:bg-wp-panel-3 active:scale-95"
             >
-              Reconnect
+              {t("sidebar.reconnect")}
             </button>
           </div>
         )}

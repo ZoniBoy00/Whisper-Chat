@@ -1,3 +1,5 @@
+import type { TFunction } from "../i18n/types";
+
 /** Compose a class string from a set of possibly-empty fragments. */
 export function cx(...parts: Array<string | false | null | undefined>): string {
   return parts.filter(Boolean).join(" ");
@@ -49,20 +51,78 @@ export function formatTime(timestamp: number): string {
 
 /**
  * Render a peer's last-seen unix-seconds timestamp as a WhatsApp-style
- * relative string: "just now", "X minute(s) ago", "X hour(s) ago" or
- * "X day(s) ago". Future timestamps (clock skew) clamp to "just now".
+ * relative string in the active UI language: "just now", "X minute(s) ago",
+ * "X hour(s) ago" or "X day(s) ago". Future timestamps (clock skew) clamp to
+ * "just now". The translation function also handles the Finnish partitive
+ * plural forms ("1 minuutti sitten" vs "5 minuuttia sitten").
  */
-export function formatLastSeen(lastSeen: number): string {
+export function formatLastSeen(lastSeen: number, t: TFunction): string {
   const diffSecs = Math.max(0, Math.floor(Date.now() / 1000) - lastSeen);
-  if (diffSecs < 60) return "just now";
+  if (diffSecs < 60) return t("time.just_now");
   const minutes = Math.floor(diffSecs / 60);
   if (minutes < 60) {
-    return `${minutes} minute${minutes === 1 ? "" : "s"} ago`;
+    return t("time.minutes_ago", { n: minutes });
   }
   const hours = Math.floor(minutes / 60);
   if (hours < 24) {
-    return `${hours} hour${hours === 1 ? "" : "s"} ago`;
+    return t("time.hours_ago", { n: hours });
   }
   const days = Math.floor(hours / 24);
-  return `${days} day${days === 1 ? "" : "s"} ago`;
+  return t("time.days_ago", { n: days });
+}
+
+/**
+ * A local calendar key ("YYYY-MM-DD") for a timestamp. Messages sharing a key
+ * belong to the same day, which is what the chat list's date pills split on.
+ */
+export function dayKey(timestamp: number): string {
+  const date = new Date(timestamp);
+  const month = `${date.getMonth() + 1}`.padStart(2, "0");
+  const day = `${date.getDate()}`.padStart(2, "0");
+  return `${date.getFullYear()}-${month}-${day}`;
+}
+
+/**
+ * WhatsApp/Signal-style centered date pill for a message timestamp: "Today",
+ * "Yesterday" or a locale-aware full date for anything older.
+ */
+export function formatDaySeparator(
+  timestamp: number,
+  t: TFunction,
+  language: string
+): string {
+  const today = dayKey(Date.now());
+  const key = dayKey(timestamp);
+  if (key === today) return t("chat.date_today");
+  const yesterday = new Date();
+  yesterday.setDate(yesterday.getDate() - 1);
+  if (key === dayKey(yesterday.getTime())) return t("chat.date_yesterday");
+  const locale = language === "fi" ? "fi-FI" : "en-US";
+  return new Date(timestamp).toLocaleDateString(locale, {
+    year: "numeric",
+    month: "short",
+    day: "numeric",
+  });
+}
+
+/** One non-overlapping, case-insensitive occurrence of `query` in `text`. */
+export interface TextMatch {
+  start: number;
+  end: number;
+}
+
+/** All non-overlapping case-insensitive occurrences of `query` in `text`. */
+export function findMatches(text: string, query: string): TextMatch[] {
+  const needle = query.trim().toLowerCase();
+  if (!needle) return [];
+  const haystack = text.toLowerCase();
+  const matches: TextMatch[] = [];
+  let from = 0;
+  while (from < haystack.length) {
+    const index = haystack.indexOf(needle, from);
+    if (index === -1) break;
+    matches.push({ start: index, end: index + needle.length });
+    from = index + needle.length;
+  }
+  return matches;
 }

@@ -1,4 +1,5 @@
 import { CheckCircle2, EyeOff, MessageSquare } from "lucide-react";
+import { useI18n } from "../../i18n/I18nContext";
 import { ToggleRow } from "./controls";
 
 interface PrivacyTabProps {
@@ -20,6 +21,7 @@ export function PrivacyTab({
   typingIndicator,
   onTypingIndicatorChange,
 }: PrivacyTabProps) {
+  const { t } = useI18n();
   return (
     <div
       role="tabpanel"
@@ -29,32 +31,31 @@ export function PrivacyTab({
       hidden={!active}
     >
       <p className="text-xs leading-relaxed text-wp-faint">
-        Control what others can see about you — everything here is
-        end-to-end protected by the relay.
+        {t("privacy.intro")}
       </p>
       <ToggleRow
         id="setting-presence-visible"
         checked={presenceVisible}
         onChange={onPresenceVisibleChange}
         icon={<EyeOff className="h-4 w-4" />}
-        title="Show online status & last seen"
-        description="When off, others always see you as offline with no last-seen — even while you're here."
+        title={t("privacy.presence_title")}
+        description={t("privacy.presence_desc")}
       />
       <ToggleRow
         id="setting-read-receipts"
         checked={readReceipts}
         onChange={onReadReceiptsChange}
         icon={<CheckCircle2 className="h-4 w-4" />}
-        title="Read receipts"
-        description="When off, we don't send receipts when you read messages. Receipts others send you are still shown — you can't stop others from seeing you've read them."
+        title={t("privacy.receipts_title")}
+        description={t("privacy.receipts_desc")}
       />
       <ToggleRow
         id="setting-typing-indicator"
         checked={typingIndicator}
         onChange={onTypingIndicatorChange}
         icon={<MessageSquare className="h-4 w-4" />}
-        title="Typing indicator"
-        description="When off, the peer never sees that you're typing."
+        title={t("privacy.typing_title")}
+        description={t("privacy.typing_desc")}
       />
     </div>
   );

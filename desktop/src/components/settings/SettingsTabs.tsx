@@ -2,14 +2,22 @@ import { useState } from "react";
 import type { ReactNode } from "react";
 import { Bell, Info, Settings, ShieldCheck } from "lucide-react";
 import { cx } from "../../lib/format";
+import { useI18n } from "../../i18n/I18nContext";
+import type { TranslationKey } from "../../i18n/types";
 
 export type TabId = "general" | "privacy" | "notifications" | "about";
 
-const TABS: { id: TabId; label: string; icon: typeof Settings }[] = [
-  { id: "general", label: "General", icon: Settings },
-  { id: "privacy", label: "Privacy", icon: ShieldCheck },
-  { id: "notifications", label: "Notifications", icon: Bell },
-  { id: "about", label: "About", icon: Info },
+interface TabDef {
+  id: TabId;
+  labelKey: TranslationKey;
+  icon: typeof Settings;
+}
+
+const TABS: TabDef[] = [
+  { id: "general", labelKey: "settings.tab_general", icon: Settings },
+  { id: "privacy", labelKey: "settings.tab_privacy", icon: ShieldCheck },
+  { id: "notifications", labelKey: "settings.tab_notifications", icon: Bell },
+  { id: "about", labelKey: "settings.tab_about", icon: Info },
 ];
 
 interface SettingsTabsProps {
@@ -21,6 +29,7 @@ interface SettingsTabsProps {
 /** Tab strip (WAI-ARIA tabs pattern) + the scrollable panel container. The
  *  selected-tab state lives here so arrow-key navigation stays local. */
 export function SettingsTabs({ children }: SettingsTabsProps) {
+  const { t } = useI18n();
   const [activeTab, setActiveTab] = useState<TabId>("general");
 
   /** Arrow-key navigation for the tab strip (a11y: WAI-ARIA tabs pattern). */
@@ -42,7 +51,7 @@ export function SettingsTabs({ children }: SettingsTabsProps) {
     <>
       <div
         role="tablist"
-        aria-label="Settings sections"
+        aria-label={t("settings.sections_aria")}
         className="flex gap-1 border-b border-wp-line/10 px-4 pt-3"
       >
         {TABS.map((tab) => {
@@ -66,7 +75,7 @@ export function SettingsTabs({ children }: SettingsTabsProps) {
               )}
             >
               <tab.icon className="h-3.5 w-3.5" aria-hidden="true" />
-              {tab.label}
+              {t(tab.labelKey)}
             </button>
           );
         })}

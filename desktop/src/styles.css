@@ -385,3 +385,32 @@ dialog.wp-dialog::backdrop {
   user-select: text;
   -webkit-user-select: text;
 }
+
+/* In-chat message search: every match is tinted with the accent color; the
+   active result (current position in the ↑/↓ navigation) pops fully. */
+mark.chat-mark {
+  background: rgb(var(--wp-accent) / 0.22);
+  color: inherit;
+  border-radius: 3px;
+  padding: 0 1px;
+}
+mark.chat-mark-active {
+  background: rgb(var(--wp-accent));
+  color: rgb(var(--wp-accent-fg));
+  padding: 0 2px;
+}
+
+/* Scroll-to-bottom "New messages" jump pill rises softly into place. */
+@keyframes jump-in {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+.animate-jump-in {
+  animation: jump-in 0.22s cubic-bezier(0.22, 1, 0.36, 1) both;
+}

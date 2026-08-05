@@ -11,6 +11,8 @@ import {
 import type { PresenceInfo, ProfileInfo } from "../types";
 import { cx, formatLastSeen, mediaUrl, shortPeerId } from "../lib/format";
 import { getPresence, getProfile } from "../lib/relay";
+import type { TFunction } from "../i18n/types";
+import { useI18n } from "../i18n/I18nContext";
 import { Avatar } from "./Avatar";
 import { CopyButton } from "./CopyButton";
 
@@ -46,12 +48,12 @@ interface ProfileDialogProps {
 const PROFILE_POLL_MS = 30_000;
 
 /** Render the presence line (WhatsApp-style). */
-function PresenceLine({ presence }: { presence: PresenceInfo | null }) {
+function PresenceLine({ presence, t }: { presence: PresenceInfo | null; t: TFunction }) {
   if (!presence) {
     return (
       <p className="text-xs text-wp-dim">
         <Lock className="mr-1 inline h-3 w-3 text-wp-accent" aria-hidden="true" />
-        End-to-end encrypted
+        {t("common.end_to_end_encrypted")}
       </p>
     );
   }
@@ -59,15 +61,15 @@ function PresenceLine({ presence }: { presence: PresenceInfo | null }) {
     return (
       <p className="inline-flex items-center gap-1.5 text-sm font-semibold text-wp-online">
         <span className="h-2 w-2 rounded-full bg-wp-online" aria-hidden="true" />
-        Online
+        {t("common.online")}
       </p>
     );
   }
   return (
     <p className="text-xs font-medium text-wp-dim">
       {presence.last_seen != null
-        ? `Last seen ${formatLastSeen(presence.last_seen)}`
-        : "Last seen unavailable"}
+        ? `${t("chat.last_seen_prefix")}${formatLastSeen(presence.last_seen, t)}`
+        : t("common.last_seen_unavailable")}
     </p>
   );
 }
@@ -85,6 +87,7 @@ export function ProfileDialog({
   onMessage,
   onRemoveContact,
 }: ProfileDialogProps) {
+  const { t } = useI18n();
   const dialogRef = useRef<HTMLDialogElement>(null);
   // Profile + presence fetched on open and refreshed on a 30s poll so the
   // dialog never shows a stale name or status while it stays open.
@@ -157,7 +160,7 @@ export function ProfileDialog({
           <button
             type="button"
             onClick={close}
-            aria-label="Close profile"
+            aria-label={t("profile.close_profile")}
             className="absolute right-3 top-3 rounded-lg p-2 text-wp-dim transition hover:bg-wp-panel-3 hover:text-wp-text"
           >
             <X className="h-4 w-4" aria-hidden="true" />
@@ -187,24 +190,24 @@ export function ProfileDialog({
               ) : (
                 <ShieldCheck className="h-3 w-3" aria-hidden="true" />
               )}
-              {memberRole === "owner" ? "Owner" : "Admin"}
+              {memberRole === "owner" ? t("common.owner") : t("common.admin")}
             </p>
           ) : null}
 
           <div className="mt-3">
-            <PresenceLine presence={resolvedPresence} />
+            <PresenceLine presence={resolvedPresence} t={t} />
           </div>
         </div>
 
         <div className="space-y-4 border-t border-wp-line/10 px-5 py-5">
           {/* Whisper ID + copy */}
           <div>
-            <p className="text-xs font-medium text-wp-dim">Whisper ID</p>
+            <p className="text-xs font-medium text-wp-dim">{t("common.whisper_id")}</p>
             <div className="mt-1.5 flex items-center gap-2">
               <p className="min-w-0 flex-1 select-all break-all font-mono text-xs leading-relaxed text-wp-text">
                 {peerId}
               </p>
-              <CopyButton value={peerId} label="Copy" />
+              <CopyButton value={peerId} label={t("common.copy")} />
             </div>
           </div>
 
@@ -219,7 +222,7 @@ export function ProfileDialog({
               )}
             >
               <MessageCircle className="h-4 w-4" aria-hidden="true" />
-              Message
+              {t("common.message")}
             </button>
             <button
               type="button"
@@ -244,14 +247,13 @@ export function ProfileDialog({
               ) : (
                 <UserX className="h-4 w-4" aria-hidden="true" />
               )}
-              {confirmingRemove ? "Confirm remove" : "Remove contact"}
+              {confirmingRemove ? t("profile.confirm_remove") : t("common.remove_contact")}
             </button>
           </div>
 
           {confirmingRemove ? (
             <p className="text-xs leading-snug text-wp-faint">
-              Removes this contact and its messages on this device only — the
-              other side and the relay are unaffected. Click again to confirm.
+              {t("profile.remove_contact_hint")}
             </p>
           ) : null}
         </div>

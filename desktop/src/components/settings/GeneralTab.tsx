@@ -3,6 +3,7 @@ import {
   AtSign,
   CheckCircle2,
   KeyRound,
+  Languages,
   Loader2,
   Moon,
   Palette,
@@ -14,6 +15,8 @@ import {
 } from "lucide-react";
 import type { Theme } from "../../types";
 import { cx, mediaUrl } from "../../lib/format";
+import { useI18n } from "../../i18n/I18nContext";
+import type { TFunction } from "../../i18n/types";
 import { Avatar } from "../Avatar";
 import { CopyButton } from "../CopyButton";
 import { SectionHeading } from "./controls";
@@ -30,17 +33,23 @@ const RESERVED_USERNAMES = new Set([
 
 const MAX_AVATAR_BYTES = 2 * 1024 * 1024;
 
+/** Language option labels are proper nouns shown in their own language. */
+const LANGUAGE_OPTIONS: { value: "en" | "fi"; label: string }[] = [
+  { value: "en", label: "English" },
+  { value: "fi", label: "Suomi" },
+];
+
 /** Live-validate a candidate username; returns an error string or null. */
-function usernameError(value: string): string | null {
+function usernameError(value: string, t: TFunction): string | null {
   if (!value) return null;
   if (!/^[a-z0-9_]+$/.test(value)) {
-    return "Usernames use lowercase letters, digits and underscores only.";
+    return t("general.username_chars_error");
   }
   if (value.length < 3 || value.length > 32) {
-    return "Usernames must be 3–32 characters.";
+    return t("general.username_length_error");
   }
   if (RESERVED_USERNAMES.has(value)) {
-    return "That username is reserved.";
+    return t("general.username_reserved_error");
   }
   return null;
 }
@@ -85,6 +94,7 @@ export function GeneralTab({
   onReset,
   onBusyChange,
 }: GeneralTabProps) {
+  const { t, language, setLanguage } = useI18n();
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [nameInput, setNameInput] = useState(myDisplayName ?? "");
   const [usernameInput, setUsernameInput] = useState(myUsername ?? "");
@@ -121,7 +131,7 @@ export function GeneralTab({
   const handleSaveName = async () => {
     const name = nameInput.trim();
     if (name.length > 64) {
-      setNameError("Display name must be 64 characters or fewer.");
+      setNameError(t("general.display_name_too_long"));
       return;
     }
     setSavingName(true);
@@ -139,7 +149,7 @@ export function GeneralTab({
 
   const handleRegisterUsername = async () => {
     const value = usernameInput.trim().toLowerCase();
-    const err = usernameError(value);
+    const err = usernameError(value, t);
     if (err) {
       setUsernameErrorText(err);
       return;
@@ -163,11 +173,11 @@ export function GeneralTab({
     if (!file) return;
     setAvatarError(null);
     if (!/^image\/(png|jpe?g|webp)$/i.test(file.type)) {
-      setAvatarError("Choose a PNG, JPEG or WebP image.");
+      setAvatarError(t("general.avatar_type_error"));
       return;
     }
     if (file.size > MAX_AVATAR_BYTES) {
-      setAvatarError("Avatar must be 2 MB or smaller.");
+      setAvatarError(t("general.avatar_size_error"));
       return;
     }
     const reader = new FileReader();
@@ -202,7 +212,7 @@ export function GeneralTab({
     : myAvatarUrl
       ? mediaUrl(relayUrl, myAvatarUrl)
       : null;
-  const usernameValid = usernameInput.trim() && usernameError(usernameInput.trim()) === null;
+  const usernameValid = usernameInput.trim() && usernameError(usernameInput.trim(), t) === null;
 
   return (
     <div
@@ -217,7 +227,7 @@ export function GeneralTab({
         <SectionHeading
           id="settings-profile-title"
           icon={<User className="h-3.5 w-3.5" />}
-          label="Profile"
+          label={t("general.profile")}
         />
         <div className="space-y-4 rounded-xl border border-wp-line/10 bg-wp-panel-3 p-4">
           <div className="flex items-center gap-4">
@@ -228,13 +238,13 @@ export function GeneralTab({
             />
             <div className="min-w-0 flex-1">
               <p className="text-xs font-medium text-wp-dim">
-                Your Whisper ID
+                {t("common.your_whisper_id")}
               </p>
               <p className="mt-1 select-all break-all font-mono text-sm text-wp-text">
                 {peerId}
               </p>
             </div>
-            <CopyButton value={peerId} label="Copy" />
+            <CopyButton value={peerId} label={t("common.copy")} />
           </div>
 
           {/* Username */}
@@ -243,7 +253,7 @@ export function GeneralTab({
               htmlFor="settings-username"
               className="text-xs font-medium text-wp-dim"
             >
-              Username
+              {t("general.username")}
             </label>
             {myUsername && !editingUsername ? (
               <div className="mt-2 flex items-center gap-2">
@@ -256,7 +266,7 @@ export function GeneralTab({
                     role="status"
                   >
                     <CheckCircle2 className="h-3.5 w-3.5" aria-hidden="true" />
-                    Registered
+                    {t("general.registered")}
                   </p>
                 ) : null}
                 <button
@@ -264,15 +274,15 @@ export function GeneralTab({
                   onClick={() => setEditingUsername(true)}
                   className="ml-auto shrink-0 rounded-lg border border-wp-line/10 bg-wp-panel-2 px-3 py-1.5 text-xs font-semibold text-wp-text transition hover:bg-wp-panel-3"
                 >
-                  Change
+                  {t("general.change")}
                 </button>
               </div>
             ) : (
               <>
                 <p className="mt-1 text-xs leading-relaxed text-wp-faint">
                   {myUsername
-                    ? "Pick a new public handle."
-                    : "Choose your username — people can find you by it."}
+                    ? t("general.pick_new_handle")
+                    : t("general.choose_username")}
                 </p>
                 <div className="mt-2 flex gap-2">
                   <input
@@ -284,10 +294,10 @@ export function GeneralTab({
                       // types so feedback arrives before they hit Register.
                       const value = e.target.value.toLowerCase();
                       setUsernameInput(value);
-                      setUsernameErrorText(usernameError(value));
+                      setUsernameErrorText(usernameError(value, t));
                       setRegisteredFlash(false);
                     }}
-                    placeholder="e.g. alice_42"
+                    placeholder={t("general.username_placeholder")}
                     maxLength={32}
                     autoComplete="off"
                     spellCheck={false}
@@ -317,16 +327,14 @@ export function GeneralTab({
                     ) : (
                       <AtSign className="h-3.5 w-3.5" aria-hidden="true" />
                     )}
-                    {registering ? "Registering…" : "Register"}
+                    {registering ? t("general.registering") : t("general.register")}
                   </button>
                 </div>
                 <p
                   id="settings-username-hint"
                   className="mt-2 text-xs leading-snug text-wp-faint"
                 >
-                  3–32 characters, lowercase letters, digits and
-                  underscores. Reserved: admin, whisper, support, mod,
-                  system, root.
+                  {t("general.username_hint")}
                 </p>
                 {usernameErrorText ? (
                   <p
@@ -343,9 +351,9 @@ export function GeneralTab({
 
           {/* Avatar */}
           <div>
-            <p className="text-xs font-medium text-wp-dim">Avatar</p>
+            <p className="text-xs font-medium text-wp-dim">{t("general.avatar")}</p>
             <p className="mt-1 text-xs leading-snug text-wp-faint">
-              Shown next to your messages. PNG, JPEG or WebP, up to 2 MB.
+              {t("general.avatar_hint")}
             </p>
             <div className="mt-2 flex items-center gap-2">
               <button
@@ -354,7 +362,7 @@ export function GeneralTab({
                 className="inline-flex shrink-0 items-center gap-2 rounded-xl bg-wp-panel-2 px-4 py-2.5 text-sm font-semibold text-wp-text transition hover:bg-wp-panel-3"
               >
                 <Upload className="h-3.5 w-3.5" aria-hidden="true" />
-                {avatarPreview ? "Choose another" : "Upload avatar"}
+                {avatarPreview ? t("general.choose_another") : t("general.upload_avatar")}
               </button>
               <input
                 ref={fileInputRef}
@@ -383,7 +391,7 @@ export function GeneralTab({
                   ) : (
                     <Save className="h-3.5 w-3.5" aria-hidden="true" />
                   )}
-                  {savedAvatar ? "Saved" : savingAvatar ? "Saving…" : "Save"}
+                  {savedAvatar ? t("general.saved") : savingAvatar ? t("general.saving") : t("general.save")}
                 </button>
               ) : null}
             </div>
@@ -403,7 +411,7 @@ export function GeneralTab({
               htmlFor="settings-display-name"
               className="text-xs font-medium text-wp-dim"
             >
-              Display name
+              {t("general.display_name")}
             </label>
             <div className="mt-2 flex gap-2">
               <input
@@ -414,7 +422,7 @@ export function GeneralTab({
                   setNameInput(e.target.value);
                   setSavedName(false);
                 }}
-                placeholder="What should people call you?"
+                placeholder={t("general.what_should_people_call_you")}
                 maxLength={64}
                 autoComplete="off"
                 spellCheck={false}
@@ -436,15 +444,14 @@ export function GeneralTab({
                 ) : (
                   <Save className="h-3.5 w-3.5" aria-hidden="true" />
                 )}
-                {savedName ? "Saved" : savingName ? "Saving…" : "Save"}
+                {savedName ? t("general.saved") : savingName ? t("general.saving") : t("general.save")}
               </button>
             </div>
             <p
               id="settings-name-hint"
               className="mt-2 text-xs leading-snug text-wp-faint"
             >
-              Public profile data — shown to people who start a chat with
-              you. 64 characters max.
+              {t("general.display_name_hint")}
             </p>
             {nameError ? (
               <p
@@ -464,14 +471,14 @@ export function GeneralTab({
         <SectionHeading
           id="settings-appearance-title"
           icon={<Palette className="h-3.5 w-3.5" />}
-          label="Appearance"
+          label={t("general.appearance")}
         />
         <div className="rounded-xl border border-wp-line/10 bg-wp-panel-3 p-4">
           <div className="flex items-center justify-between gap-4">
             <div>
-              <p className="text-xs font-medium text-wp-text">Theme</p>
+              <p className="text-xs font-medium text-wp-text">{t("general.theme")}</p>
               <p className="mt-0.5 text-xs leading-snug text-wp-faint">
-                Dark is the default; your choice is remembered.
+                {t("general.theme_hint")}
               </p>
             </div>
             <div className="flex shrink-0 gap-1 rounded-xl bg-wp-panel-2 p-1">
@@ -487,7 +494,7 @@ export function GeneralTab({
                 )}
               >
                 <Moon className="h-3.5 w-3.5" aria-hidden="true" />
-                Dark
+                {t("general.dark")}
               </button>
               <button
                 type="button"
@@ -501,8 +508,38 @@ export function GeneralTab({
                 )}
               >
                 <Sun className="h-3.5 w-3.5" aria-hidden="true" />
-                Light
+                {t("general.light")}
               </button>
+            </div>
+          </div>
+
+          <div className="my-4 h-px bg-wp-line/10" />
+
+          <div className="flex items-center justify-between gap-4">
+            <div>
+              <p className="text-xs font-medium text-wp-text">{t("general.language")}</p>
+              <p className="mt-0.5 text-xs leading-snug text-wp-faint">
+                {t("general.language_hint")}
+              </p>
+            </div>
+            <div className="flex shrink-0 gap-1 rounded-xl bg-wp-panel-2 p-1">
+              {LANGUAGE_OPTIONS.map((option) => (
+                <button
+                  key={option.value}
+                  type="button"
+                  aria-pressed={language === option.value}
+                  onClick={() => setLanguage(option.value)}
+                  className={cx(
+                    "inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-semibold transition",
+                    language === option.value
+                      ? "bg-wp-accent text-wp-accent-fg"
+                      : "text-wp-dim hover:text-wp-text"
+                  )}
+                >
+                  <Languages className="h-3.5 w-3.5" aria-hidden="true" />
+                  {option.label}
+                </button>
+              ))}
             </div>
           </div>
         </div>
@@ -513,12 +550,11 @@ export function GeneralTab({
         <SectionHeading
           id="settings-identity-title"
           icon={<KeyRound className="h-3.5 w-3.5" />}
-          label="Identity"
+          label={t("general.identity")}
         />
         <div className="rounded-xl border border-wp-line/10 bg-wp-panel-3 p-4">
           <p className="text-xs leading-relaxed text-wp-dim">
-            Keys never leave this device. Resetting creates a fresh identity
-            with a brand-new peer ID.
+            {t("general.identity_reset_hint")}
           </p>
           <button
             type="button"
@@ -531,7 +567,7 @@ export function GeneralTab({
             )}
           >
             <Trash2 className="h-3.5 w-3.5" aria-hidden="true" />
-            {confirmingReset ? "Click again to confirm" : "Reset identity"}
+            {confirmingReset ? t("common.confirm_again") : t("common.reset_identity")}
           </button>
         </div>
       </section>
