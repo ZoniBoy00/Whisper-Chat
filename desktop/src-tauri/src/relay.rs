@@ -24,6 +24,8 @@
 //! - [`relay_presence`]: presence queries, watches and the presence event stream.
 //! - [`relay_settings`]: settings persistence, privacy toggles, receipts and typing.
 
+#[path = "relay_contacts.rs"]
+mod relay_contacts;
 #[path = "relay_groups.rs"]
 mod relay_groups;
 #[path = "relay_presence.rs"]
@@ -155,6 +157,12 @@ pub enum RelayError {
     /// The group request was answered with an error or dropped.
     #[error("group request failed")]
     GroupRequestFailed,
+    /// The relay did not answer a friend-request command in time.
+    #[error("timed out waiting for friend request reply")]
+    ContactTimeout,
+    /// The friend-request command was answered with an error or dropped.
+    #[error("friend request failed")]
+    ContactRequestFailed,
     /// A Megolm group-session operation failed.
     #[error("group error: {0}")]
     Group(#[from] e2ee_core::GroupError),
@@ -296,6 +304,31 @@ enum ClientMessage {
     /// Only the owner or an admin may change the avatar.
     #[serde(rename = "set_group_avatar")]
     SetGroupAvatar { group_id: String, avatar: String },
+    /// Send a friend request to `peer_id`. The relay stores the pending request
+    /// and pushes `friend_request_received` to the target; the sender is
+    /// answered with a `friend_requests` snapshot (or an `error` code such as
+    /// `already_pending`, `already_contacts` or `cannot_add_self`).
+    #[serde(rename = "send_friend_request")]
+    SendFriendRequest { peer_id: String },
+    /// Accept a pending incoming friend request from `peer_id`. Both sides
+    /// become accepted contacts and the requester receives a
+    /// `friend_request_accepted` push. The caller is answered with a
+    /// `friend_requests` snapshot.
+    #[serde(rename = "accept_friend_request")]
+    AcceptFriendRequest { peer_id: String },
+    /// Decline a pending incoming friend request from `peer_id`. The requester
+    /// receives a `friend_request_declined` push. The caller is answered with a
+    /// `friend_requests` snapshot.
+    #[serde(rename = "decline_friend_request")]
+    DeclineFriendRequest { peer_id: String },
+    /// Fetch the full friend-request snapshot (incoming + outgoing). The relay
+    /// replies with a `friend_requests` message.
+    #[serde(rename = "get_friend_requests")]
+    GetFriendRequests,
+    /// Remove the accepted contact relationship with `peer_id` on both sides.
+    /// The relay pushes `contact_removed` to both peers.
+    #[serde(rename = "remove_contact")]
+    RemoveContact { peer_id: String },
 }
 
 /// Messages the SERVER sends to the client (matches `server/src/relay.rs`).
@@ -395,6 +428,51 @@ enum ServerMessage {
     /// reply).
     #[serde(rename = "group_avatar_set")]
     GroupAvatarSet { group_id: String },
+    /// A new incoming friend request from `peer_id`, carrying the requester's
+    /// public display name (`null` when they have not set one). Pushed to the
+    /// request target. `display_name` defaults to `None` so older pushes
+    /// without the field still parse.
+    #[serde(rename = "friend_request_received")]
+    FriendRequestReceived {
+        peer_id: String,
+        #[serde(default)]
+        display_name: Option<String>,
+    },
+    /// Confirmation that a friend request was sent (`send_friend_request`
+    /// reply to the requester).
+    #[serde(rename = "friend_request_sent")]
+    FriendRequestSent,
+    /// A pending OUTGOING request was accepted: `peer_id` is now a contact.
+    /// Pushed to BOTH the requester and the acceptor, so each adds the peer
+    /// to its contact list.
+    #[serde(rename = "friend_request_accepted")]
+    FriendRequestAccepted { peer_id: String },
+    /// Confirmation that a pending request was accepted (`accept_friend_request`
+    /// reply to the acceptor).
+    #[serde(rename = "friend_request_accepted_ok")]
+    FriendRequestAcceptedOk,
+    /// A pending OUTGOING request was declined. Pushed to the requester.
+    #[serde(rename = "friend_request_declined")]
+    FriendRequestDeclined { peer_id: String },
+    /// Confirmation that a pending request was declined (`decline_friend_request`
+    /// reply to the decliner).
+    #[serde(rename = "friend_request_declined_ok")]
+    FriendRequestDeclinedOk,
+    /// The accepted contact relationship with `peer_id` ended (either side
+    /// removed it). Pushed to BOTH peers, so both drop the contact locally.
+    #[serde(rename = "contact_removed")]
+    ContactRemoved { peer_id: String },
+    /// Confirmation that a contact was removed (`remove_contact` reply to the
+    /// caller).
+    #[serde(rename = "contact_removed_ok")]
+    ContactRemovedOk,
+    /// The full friend-request snapshot: reply to `get_friend_requests`.
+    #[serde(rename = "friend_requests")]
+    FriendRequests {
+        incoming: Vec<FriendRequestIncoming>,
+        #[serde(default)]
+        outgoing: Vec<String>,
+    },
     /// A protocol error code.
     Error { code: String },
 }
@@ -599,6 +677,65 @@ pub struct ContactInfo {
     /// Server avatar path ("/media/{hash}"); `None` when not known.
     #[serde(default)]
     pub avatar_url: Option<String>,
+    /// Relationship status with this 1:1 peer: "accepted" (friends, chatable)
+    /// or "pending" (a friend request is outstanding). Groups always report
+    /// "accepted". `None` while unknown (e.g. a peer added by a live event
+    /// before any snapshot).
+    #[serde(default)]
+    pub status: Option<String>,
+}
+
+/// One incoming friend request as reported by the relay: the requester's peer
+/// ID plus the public display name they advertise (`None` when unset).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FriendRequestIncoming {
+    pub peer_id: String,
+    #[serde(default)]
+    pub display_name: Option<String>,
+}
+
+/// The full friend-request snapshot (the `get_friend_requests` reply). Incoming
+/// requests carry the requester's display name; outgoing is a list of peer IDs
+/// whose acceptance is still pending.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct FriendRequests {
+    #[serde(default)]
+    pub incoming: Vec<FriendRequestIncoming>,
+    #[serde(default)]
+    pub outgoing: Vec<String>,
+}
+
+/// Payload of the `friend-request` event emitted when a new incoming friend
+/// request arrives, so the UI can toast and refresh its Requests section.
+#[derive(Debug, Clone, Serialize)]
+pub struct FriendRequestEvent {
+    pub peer_id: String,
+    #[serde(default)]
+    pub display_name: Option<String>,
+}
+
+/// Payload of the `contact-added` event emitted when a peer becomes an
+/// accepted contact: my outgoing request was accepted, or I accepted
+/// someone's incoming request.
+#[derive(Debug, Clone, Serialize)]
+pub struct ContactAddedEvent {
+    pub peer_id: String,
+    #[serde(default)]
+    pub display_name: Option<String>,
+}
+
+/// Payload of the `friend-request-declined` event emitted when my outgoing
+/// request was declined, so the UI can drop it from the Requests section.
+#[derive(Debug, Clone, Serialize)]
+pub struct FriendRequestDeclinedEvent {
+    pub peer_id: String,
+}
+
+/// Payload of the `contact-removed` event emitted when a contact relationship
+/// ends (either side removed it). The UI drops the peer locally and toasts.
+#[derive(Debug, Clone, Serialize)]
+pub struct ContactRemovedEvent {
+    pub peer_id: String,
 }
 
 /// Snapshot of everything the UI needs to render the chat surface.
@@ -623,6 +760,12 @@ pub struct ChatState {
     pub presence: HashMap<String, PresenceInfo>,
     /// Every group this identity belongs to, with its roster and roles.
     pub groups: Vec<GroupInfo>,
+    /// Incoming friend requests (requester + display name), in arrival order.
+    /// Drives the Sidebar's Requests section.
+    pub friend_requests_incoming: Vec<FriendRequestIncoming>,
+    /// Outgoing (pending) friend requests: peer IDs we asked who have not
+    /// answered yet.
+    pub friend_requests_outgoing: Vec<String>,
 }
 
 /// Persisted user preferences stored in `settings.json`.
@@ -827,6 +970,17 @@ struct RelayInner {
     /// In-flight promote/demote/remove/leave confirmations, resolved in FIFO
     /// order (the relay answers each request in turn).
     pending_group_op: Mutex<VecDeque<oneshot::Sender<GroupOpResponse>>>,
+    /// Incoming friend requests, in arrival order, with the requester's public
+    /// display name when known. Fed by `friend_request_received` pushes and
+    /// `friend_requests` snapshots.
+    friend_requests_incoming: RwLock<Vec<FriendRequestIncoming>>,
+    /// Outgoing pending friend requests: peer IDs we asked who have not
+    /// answered yet.
+    friend_requests_outgoing: RwLock<Vec<String>>,
+    /// In-flight friend-request commands (send/accept/decline/get), resolved
+    /// in FIFO order. The relay answers each one with a `friend_requests`
+    /// snapshot (or an `error` code), so FIFO alignment holds.
+    pending_contact_ops: Mutex<VecDeque<oneshot::Sender<ContactOpResponse>>>,
 }
 
 /// Result channel type for a pre-key fetch: the bundle plus the peer's public
@@ -857,6 +1011,10 @@ type GroupInfoResponse = Result<GroupInfo, RelayError>;
 
 /// Result channel type for a promote/demote/remove/leave confirmation.
 type GroupOpResponse = Result<(), RelayError>;
+
+/// Result channel type for a friend-request command: the `friend_requests`
+/// snapshot the relay answers with.
+type ContactOpResponse = Result<FriendRequests, RelayError>;
 
 impl RelayClient {
     /// Build a client bound to `app`'s identity file in the app data dir.
@@ -896,6 +1054,9 @@ impl RelayClient {
                 pending_group_member_added: Mutex::new(VecDeque::new()),
                 pending_group_info: Mutex::new(VecDeque::new()),
                 pending_group_op: Mutex::new(VecDeque::new()),
+                friend_requests_incoming: RwLock::new(Vec::new()),
+                friend_requests_outgoing: RwLock::new(Vec::new()),
+                pending_contact_ops: Mutex::new(VecDeque::new()),
             }),
         }
     }
@@ -1105,6 +1266,8 @@ impl RelayClient {
         write_guard(&self.inner.messages)?.clear();
         write_guard(&self.inner.contacts)?.clear();
         write_guard(&self.inner.presence)?.clear();
+        write_guard(&self.inner.friend_requests_incoming)?.clear();
+        write_guard(&self.inner.friend_requests_outgoing)?.clear();
         // Close the store and drop the database file so a fresh identity
         // starts with a clean, empty history.
         *write_guard(&self.inner.store)? = None;
@@ -1296,7 +1459,8 @@ impl RelayClient {
     }
 
     /// Snapshot the state the UI needs: identity, connection, contacts (with
-    /// their display names), message history and group metadata.
+    /// their display names and relationship status), message history, group
+    /// metadata and the pending friend-request lists.
     pub fn get_chat_state(&self) -> Result<ChatState, RelayError> {
         let my_peer_id = self.my_peer_id()?;
         self.ensure_store_open()?;
@@ -1305,12 +1469,26 @@ impl RelayClient {
         let messages = read_guard(&self.inner.messages)?.clone();
         let presence = read_guard(&self.inner.presence)?.clone();
         let connected = self.inner.connected.load(Ordering::SeqCst);
+        let friend_requests_incoming = read_guard(&self.inner.friend_requests_incoming)?.clone();
+        let friend_requests_outgoing = read_guard(&self.inner.friend_requests_outgoing)?.clone();
+        // A peer with an outstanding request (either direction) is not
+        // chatable yet, so its status reads "pending" instead of "accepted".
+        let pending: HashSet<String> = friend_requests_incoming
+            .iter()
+            .map(|request| request.peer_id.clone())
+            .chain(friend_requests_outgoing.iter().cloned())
+            .collect();
         let contacts = contacts
             .into_iter()
             .map(|peer_id| ContactInfo {
                 peer_id: peer_id.clone(),
                 display_name: profiles.contacts.get(&peer_id).cloned(),
                 avatar_url: profiles.contact_avatars.get(&peer_id).cloned(),
+                status: Some(if pending.contains(&peer_id) {
+                    "pending".to_string()
+                } else {
+                    "accepted".to_string()
+                }),
             })
             .collect();
         // Expose the group roster (without the secret outbound sessions).
@@ -1340,6 +1518,8 @@ impl RelayClient {
             messages,
             presence,
             groups,
+            friend_requests_incoming,
+            friend_requests_outgoing,
         })
     }
 
@@ -1456,6 +1636,24 @@ impl RelayClient {
                 new_owner_peer_id,
             } => self.handle_ownership_transferred(&group_id, &new_owner_peer_id),
             ServerMessage::GroupAvatarSet { group_id } => self.handle_group_avatar_set(&group_id),
+            ServerMessage::FriendRequestReceived {
+                peer_id,
+                display_name,
+            } => self.handle_friend_request_received(&peer_id, display_name),
+            ServerMessage::FriendRequestSent => self.handle_friend_request_ack(),
+            ServerMessage::FriendRequestAccepted { peer_id } => {
+                self.handle_friend_request_accepted(&peer_id)
+            }
+            ServerMessage::FriendRequestAcceptedOk => self.handle_friend_request_ack(),
+            ServerMessage::FriendRequestDeclined { peer_id } => {
+                self.handle_friend_request_declined(&peer_id)
+            }
+            ServerMessage::FriendRequestDeclinedOk => self.handle_friend_request_ack(),
+            ServerMessage::ContactRemoved { peer_id } => self.handle_contact_removed(&peer_id),
+            ServerMessage::ContactRemovedOk => self.handle_friend_request_ack(),
+            ServerMessage::FriendRequests { incoming, outgoing } => {
+                self.handle_friend_requests(incoming, outgoing)
+            }
             ServerMessage::Error { code } => {
                 let err = RelayError::Relay(code);
                 // Resolve the oldest outstanding request across every queue.
@@ -1477,6 +1675,8 @@ impl RelayClient {
                 } else if let Some(tx) = mutex_guard(&self.inner.pending_group_info)?.pop_front() {
                     let _ = tx.send(Err(err));
                 } else if let Some(tx) = mutex_guard(&self.inner.pending_group_op)?.pop_front() {
+                    let _ = tx.send(Err(err));
+                } else if let Some(tx) = mutex_guard(&self.inner.pending_contact_ops)?.pop_front() {
                     let _ = tx.send(Err(err));
                 }
                 Ok(())
@@ -1910,28 +2110,6 @@ impl RelayClient {
     // Local data operations
     // ---------------------------------------------------------------------
 
-    /// Remove a contact and its message history on THIS device: the contact
-    /// row, the messages and the cached presence. Client-local by design — the
-    /// peer's copy of the conversation and the relay's queued envelopes are
-    /// untouched. The Double Ratchet session is kept so a later message from
-    /// the peer still decrypts (like Signal's "delete conversation"); the
-    /// contact is then re-added by `ensure_contact` automatically.
-    pub fn remove_contact(&self, peer_id: &str) -> Result<(), RelayError> {
-        self.ensure_store_open()?;
-        write_guard(&self.inner.contacts)?.retain(|known| known != peer_id);
-        write_guard(&self.inner.messages)?.remove(peer_id);
-        write_guard(&self.inner.presence)?.remove(peer_id);
-        write_guard(&self.inner.profiles)?.contacts.remove(peer_id);
-        write_guard(&self.inner.profiles)?
-            .contact_avatars
-            .remove(peer_id);
-        let store_guard = self.store_guard()?;
-        let store = store_guard.as_ref().ok_or(RelayError::StoreNotOpen)?;
-        store.delete_contact(peer_id)?;
-        store.delete_messages_for(peer_id)?;
-        Ok(())
-    }
-
     /// Wipe the entire message history on THIS device: every decrypted message
     /// in memory and every row in the encrypted store. Contacts, sessions,
     /// groups and settings are deliberately kept — only the conversation
@@ -1963,6 +2141,8 @@ impl RelayClient {
         write_guard(&self.inner.messages)?.clear();
         write_guard(&self.inner.contacts)?.clear();
         write_guard(&self.inner.presence)?.clear();
+        write_guard(&self.inner.friend_requests_incoming)?.clear();
+        write_guard(&self.inner.friend_requests_outgoing)?.clear();
         *write_guard(&self.inner.store)? = None;
         if let Ok(mut seen) = self.inner.seen_envelopes.lock() {
             seen.clear();

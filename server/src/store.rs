@@ -181,7 +181,19 @@ impl Store {
                 PRIMARY KEY (group_id, peer_id)
             );
             CREATE INDEX IF NOT EXISTS idx_group_members_group_id
-                ON group_members (group_id);",
+                ON group_members (group_id);
+            CREATE TABLE IF NOT EXISTS contacts (
+                peer_a     TEXT NOT NULL,
+                peer_b     TEXT NOT NULL,
+                status     TEXT NOT NULL DEFAULT 'pending',
+                requester  TEXT NOT NULL,
+                created_at INTEGER NOT NULL,
+                PRIMARY KEY (peer_a, peer_b)
+            );
+            CREATE INDEX IF NOT EXISTS idx_contacts_peer_a
+                ON contacts (peer_a);
+            CREATE INDEX IF NOT EXISTS idx_contacts_peer_b
+                ON contacts (peer_b);",
         )?;
 
         // Migration: databases created before the group-roles feature lack the
@@ -746,6 +758,163 @@ impl Store {
             )
             .expect("valid statement");
         stmt.query_map(params![group_id], |r| r.get(0))
+            .expect("query ok")
+            .filter_map(|r| r.ok())
+            .collect()
+    }
+
+    // -- Contacts --------------------------------------------------------------
+
+    /// Normalize a peer pair so `peer_a < peer_b` (lexicographic order).
+    /// Every contact relationship lives on a single row regardless of who
+    /// initiated it; the `requester` column records the direction.
+    fn normalize_pair(a: &str, b: &str) -> (String, String) {
+        if a < b {
+            (a.to_string(), b.to_string())
+        } else {
+            (b.to_string(), a.to_string())
+        }
+    }
+
+    /// Store a pending friend request from `requester` to `target`.
+    ///
+    /// Idempotent upsert on the normalized pair: re-sending replaces the
+    /// previous row's `requester` and timestamp. An existing ACCEPTED
+    /// relationship is never downgraded back to pending by this method (the
+    /// relay rejects duplicate requests before reaching it, so this is a
+    /// defense-in-depth safeguard).
+    pub fn upsert_friend_request(&self, requester: &str, target: &str) -> SqlResult<()> {
+        let (a, b) = Self::normalize_pair(requester, target);
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "INSERT INTO contacts (peer_a, peer_b, status, requester, created_at)
+             VALUES (?1, ?2, 'pending', ?3, ?4)
+             ON CONFLICT(peer_a, peer_b) DO UPDATE SET
+                 requester = excluded.requester,
+                 created_at = excluded.created_at,
+                 status = CASE WHEN contacts.status = 'accepted'
+                               THEN 'accepted' ELSE 'pending' END",
+            params![a, b, requester, unix_now()],
+        )?;
+        Ok(())
+    }
+
+    /// Accept a pending friend request between `a` and `b`: the pair becomes
+    /// accepted contacts. A no-op when the pair has no row.
+    pub fn accept_friend(&self, a: &str, b: &str) -> SqlResult<()> {
+        let (a, b) = Self::normalize_pair(a, b);
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "UPDATE contacts SET status = 'accepted' WHERE peer_a = ?1 AND peer_b = ?2",
+            params![a, b],
+        )?;
+        Ok(())
+    }
+
+    /// Decline a pending friend request between `a` and `b`: the row is
+    /// removed entirely.
+    pub fn decline_friend(&self, a: &str, b: &str) -> SqlResult<()> {
+        self.remove_contact(a, b)
+    }
+
+    /// Remove a contact relationship between `a` and `b` entirely.
+    pub fn remove_contact(&self, a: &str, b: &str) -> SqlResult<()> {
+        let (a, b) = Self::normalize_pair(a, b);
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "DELETE FROM contacts WHERE peer_a = ?1 AND peer_b = ?2",
+            params![a, b],
+        )?;
+        Ok(())
+    }
+
+    /// Whether `a` and `b` are ACCEPTED contacts of each other. A pending
+    /// request does not count.
+    pub fn are_contacts(&self, a: &str, b: &str) -> bool {
+        let (a, b) = Self::normalize_pair(a, b);
+        let conn = self.conn.lock().unwrap();
+        conn.query_row(
+            "SELECT 1 FROM contacts WHERE peer_a = ?1 AND peer_b = ?2 AND status = 'accepted'",
+            params![a, b],
+            |_| Ok(()),
+        )
+        .optional()
+        .unwrap_or(None)
+        .is_some()
+    }
+
+    /// The relationship between `a` and `b`, if any: `(status, requester)`.
+    pub fn contact_status(&self, a: &str, b: &str) -> Option<(String, String)> {
+        let (a, b) = Self::normalize_pair(a, b);
+        let conn = self.conn.lock().unwrap();
+        conn.query_row(
+            "SELECT status, requester FROM contacts WHERE peer_a = ?1 AND peer_b = ?2",
+            params![a, b],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .optional()
+        .unwrap_or(None)
+    }
+
+    /// Pending friend requests directed at `peer`: `(requester, display_name)`
+    /// pairs. The requester's display name comes from the public profile
+    /// (JOINed here, so a single query needs no re-entrant lock).
+    pub fn list_incoming(&self, peer: &str) -> Vec<(String, Option<String>)> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn
+            .prepare(
+                "SELECT c.requester, u.display_name
+                 FROM contacts c
+                 LEFT JOIN users u ON u.peer_id = c.requester
+                 WHERE c.status = 'pending'
+                   AND c.requester != ?1
+                   AND ?1 IN (c.peer_a, c.peer_b)
+                 ORDER BY c.created_at",
+            )
+            .expect("valid statement");
+        stmt.query_map(params![peer], |r| Ok((r.get(0)?, r.get(1)?)))
+            .expect("query ok")
+            .filter_map(|r| r.ok())
+            .collect()
+    }
+
+    /// Pending friend requests initiated by `peer`: the target peer IDs.
+    pub fn list_outgoing(&self, peer: &str) -> Vec<String> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn
+            .prepare(
+                "SELECT CASE WHEN peer_a = ?1 THEN peer_b ELSE peer_a END
+                 FROM contacts c
+                 WHERE c.status = 'pending'
+                   AND c.requester = ?1
+                   AND ?1 IN (c.peer_a, c.peer_b)
+                 ORDER BY c.created_at",
+            )
+            .expect("valid statement");
+        stmt.query_map(params![peer], |r| r.get(0))
+            .expect("query ok")
+            .filter_map(|r| r.ok())
+            .collect()
+    }
+
+    /// Every ACCEPTED contact peer ID of `peer`.
+    ///
+    /// Currently exercised by tests; the relay answers contact queries through
+    /// `are_contacts` and the pending-request lists, so no production caller
+    /// consumes the full contact list yet.
+    #[cfg(test)]
+    pub fn list_contacts(&self, peer: &str) -> Vec<String> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn
+            .prepare(
+                "SELECT CASE WHEN peer_a = ?1 THEN peer_b ELSE peer_a END
+                 FROM contacts c
+                 WHERE c.status = 'accepted'
+                   AND ?1 IN (c.peer_a, c.peer_b)
+                 ORDER BY c.created_at",
+            )
+            .expect("valid statement");
+        stmt.query_map(params![peer], |r| r.get(0))
             .expect("query ok")
             .filter_map(|r| r.ok())
             .collect()
@@ -1755,5 +1924,120 @@ mod tests {
             "Squad"
         );
         std::fs::remove_file(&path).ok();
+    }
+
+    // -- Contacts ---------------------------------------------------------------
+
+    #[test]
+    fn friend_request_normalizes_pair_order() {
+        let store = Store::open_in_memory().unwrap();
+        // "z" requests "a": the row must be stored lower-first (a, z).
+        store.upsert_friend_request("z", "a").unwrap();
+        let (status, requester) = store
+            .contact_status("a", "z")
+            .expect("the normalized pair must resolve");
+        assert_eq!(status, "pending");
+        assert_eq!(requester, "z");
+        // The same pair queried in the other order resolves to the same row.
+        let (status, requester) = store.contact_status("z", "a").unwrap();
+        assert_eq!(status, "pending");
+        assert_eq!(requester, "z");
+    }
+
+    #[test]
+    fn accept_friend_marks_relationship_accepted() {
+        let store = Store::open_in_memory().unwrap();
+        store.upsert_friend_request("a", "b").unwrap();
+        assert!(!store.are_contacts("a", "b"), "pending is not a contact");
+        store.accept_friend("a", "b").unwrap();
+        assert!(store.are_contacts("a", "b"));
+        assert_eq!(
+            store.contact_status("b", "a").unwrap().0,
+            "accepted",
+            "acceptance is direction-agnostic on the normalized row"
+        );
+    }
+
+    #[test]
+    fn are_contacts_requires_accepted_status() {
+        let store = Store::open_in_memory().unwrap();
+        assert!(!store.are_contacts("a", "b"));
+        store.upsert_friend_request("a", "b").unwrap();
+        assert!(
+            !store.are_contacts("a", "b"),
+            "a pending request is not a contact"
+        );
+        store.decline_friend("a", "b").unwrap();
+        assert!(!store.are_contacts("a", "b"));
+    }
+
+    #[test]
+    fn decline_friend_removes_the_request() {
+        let store = Store::open_in_memory().unwrap();
+        store.upsert_friend_request("a", "b").unwrap();
+        assert!(store.contact_status("a", "b").is_some());
+        store.decline_friend("a", "b").unwrap();
+        assert_eq!(store.contact_status("a", "b"), None);
+        assert!(!store.are_contacts("a", "b"));
+    }
+
+    #[test]
+    fn remove_contact_deletes_the_relationship() {
+        let store = Store::open_in_memory().unwrap();
+        store.upsert_friend_request("a", "b").unwrap();
+        store.accept_friend("a", "b").unwrap();
+        assert!(store.are_contacts("a", "b"));
+        store.remove_contact("b", "a").unwrap();
+        assert!(!store.are_contacts("a", "b"));
+        assert_eq!(store.contact_status("a", "b"), None);
+    }
+
+    #[test]
+    fn re_requesting_an_accepted_pair_keeps_it_accepted() {
+        let store = Store::open_in_memory().unwrap();
+        store.upsert_friend_request("a", "b").unwrap();
+        store.accept_friend("a", "b").unwrap();
+        // A stray duplicate upsert must never downgrade accepted back to pending.
+        store.upsert_friend_request("a", "b").unwrap();
+        assert!(
+            store.are_contacts("a", "b"),
+            "accepted relationships survive duplicate upserts"
+        );
+    }
+
+    #[test]
+    fn list_incoming_returns_requesters_with_display_names() {
+        let store = Store::open_in_memory().unwrap();
+        store.upsert_friend_request("zoe", "alice").unwrap();
+        store.upsert_friend_request("bob", "alice").unwrap();
+        store.set_display_name("zoe", "Zoe Zed").unwrap();
+        store.set_display_name("bob", "Bob Builder").unwrap();
+
+        let mut incoming = store.list_incoming("alice");
+        incoming.sort();
+        assert_eq!(
+            incoming,
+            vec![
+                ("bob".to_string(), Some("Bob Builder".to_string())),
+                ("zoe".to_string(), Some("Zoe Zed".to_string())),
+            ]
+        );
+        // A request initiated BY alice is outgoing, not incoming.
+        store.upsert_friend_request("alice", "carol").unwrap();
+        assert_eq!(store.list_incoming("alice").len(), 2);
+        assert_eq!(store.list_outgoing("alice"), vec!["carol".to_string()]);
+    }
+
+    #[test]
+    fn list_contacts_returns_accepted_peers_only() {
+        let store = Store::open_in_memory().unwrap();
+        store.upsert_friend_request("a", "b").unwrap();
+        store.accept_friend("a", "b").unwrap();
+        store.upsert_friend_request("a", "c").unwrap(); // stays pending
+        store.upsert_friend_request("d", "a").unwrap(); // stays pending
+
+        let mut contacts = store.list_contacts("a");
+        contacts.sort();
+        assert_eq!(contacts, vec!["b".to_string()]);
     }
 }

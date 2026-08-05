@@ -78,9 +78,13 @@ impl Relay {
     }
 
     /// Return the pre-key bundle another peer published, or `no_prekeys` when
-    /// none is stored. Pre-key fetches are public directory lookups: any
-    /// authenticated peer may query any other peer. Fetching is rate limited
-    /// per source IP under the `prekey:<ip>` bucket like publishing.
+    /// none is stored. Pre-key fetches are rate limited per source IP under the
+    /// `prekey:<ip>` bucket like publishing.
+    ///
+    /// Contact gate: a bundle is only disclosed to an ACCEPTED contact (or the
+    /// owner fetching their own bundle). This closes the directory-lookup side
+    /// of the anti-spam boundary — a stranger can never harvest another peer's
+    /// public key material.
     pub(crate) async fn fetch_prekeys(&self, peer_id: &str, ip: &str, target: &str) {
         if !self.inner.limiter.try_take(&format!("prekey:{ip}")) {
             tracing::warn!(ip = %ip, "pre-key rate limit exceeded");
@@ -89,6 +93,19 @@ impl Relay {
                     peer_id,
                     ServerMessage::Error {
                         code: "rate_limited".into(),
+                    },
+                )
+                .await;
+            return;
+        }
+
+        if target != peer_id && !self.inner.store.are_contacts(peer_id, target) {
+            tracing::warn!(peer = %peer_id, target = %target, "pre-key fetch between non-contacts refused");
+            let _ = self
+                .send(
+                    peer_id,
+                    ServerMessage::Error {
+                        code: "not_contacts".into(),
                     },
                 )
                 .await;
@@ -214,6 +231,18 @@ mod tests {
             .write()
             .await
             .insert("requester".into(), out_tx);
+        // A pre-key fetch is a contact-gated lookup: the requester must be an
+        // accepted contact of the owner.
+        relay
+            .inner
+            .store
+            .upsert_friend_request("requester", &owner_id)
+            .unwrap();
+        relay
+            .inner
+            .store
+            .accept_friend("requester", &owner_id)
+            .unwrap();
 
         relay
             .fetch_prekeys("requester", "127.0.0.1", &owner_id)

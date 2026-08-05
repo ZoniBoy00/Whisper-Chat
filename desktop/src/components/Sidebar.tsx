@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState } from "react";
 import {
+  Check,
   Copy,
+  Hourglass,
   Loader2,
   LogOut,
   MessageCircle,
@@ -16,11 +18,17 @@ import {
   UserRound,
   UserX,
   Users,
+  X,
 } from "lucide-react";
-import type { Conversation, PresenceInfo, ProfileInfo } from "../types";
+import type {
+  Conversation,
+  FriendRequestIncoming,
+  PresenceInfo,
+  ProfileInfo,
+} from "../types";
 import { cx, formatTime, mediaUrl, shortPeerId } from "../lib/format";
 import { conversationPreview } from "../lib/chatList";
-import { searchUsers } from "../lib/relay";
+import { relayErrorCode, searchUsers } from "../lib/relay";
 import { copyText } from "../lib/clipboard";
 import { useI18n } from "../i18n/I18nContext";
 import { Avatar } from "./Avatar";
@@ -35,6 +43,10 @@ interface SidebarProps {
   /** Our own avatar path ("/media/{hash}"); null when unset. */
   myAvatarUrl: string | null;
   conversations: Conversation[];
+  /** Incoming friend requests (requester + display name), in arrival order. */
+  friendRequestsIncoming: FriendRequestIncoming[];
+  /** Outgoing pending friend requests: peer IDs we asked, unanswered. */
+  friendRequestsOutgoing: string[];
   /** Latest known presence per peer, fed by pushes and the 30s poll. */
   presence: Record<string, PresenceInfo>;
   activeId: string | null;
@@ -53,6 +65,10 @@ interface SidebarProps {
   onNewGroup: () => void;
   /** Start a chat directly with a peer (from a directory search result). */
   onStartChat: (peerId: string) => Promise<void>;
+  /** Accept an incoming friend request. */
+  onAcceptRequest: (peerId: string) => Promise<void>;
+  /** Decline an incoming friend request. */
+  onDeclineRequest: (peerId: string) => Promise<void>;
   onOpenSettings: () => void;
   onReconnect: () => void;
   onReset: () => void;
@@ -89,6 +105,8 @@ export function Sidebar({
   myDisplayName,
   myAvatarUrl,
   conversations,
+  friendRequestsIncoming,
+  friendRequestsOutgoing,
   presence,
   activeId,
   connected,
@@ -101,6 +119,8 @@ export function Sidebar({
   onAddContact,
   onNewGroup,
   onStartChat,
+  onAcceptRequest,
+  onDeclineRequest,
   onOpenSettings,
   onReconnect,
   onReset,
@@ -215,7 +235,25 @@ export function Sidebar({
       setQuery("");
       setServerResults(null);
     } catch (err) {
-      setSearchAddError(String(err).replace(/^Error:\s*/, ""));
+      switch (relayErrorCode(err)) {
+        case "already_contacts":
+          setSearchAddError(t("contacts.already_contacts"));
+          break;
+        case "already_pending":
+          setSearchAddError(t("contacts.already_pending"));
+          break;
+        case "cannot_add_self":
+          setSearchAddError(t("contacts.cannot_add_self"));
+          break;
+        case "not_found":
+          setSearchAddError(t("contacts.not_found"));
+          break;
+        case "rate_limited":
+          setSearchAddError(t("contacts.rate_limited"));
+          break;
+        default:
+          setSearchAddError(String(err).replace(/^Error:\s*/, ""));
+      }
     }
   };
 
@@ -338,6 +376,81 @@ export function Sidebar({
           </button>
         </div>
       </div>
+
+      {/* Pending friend requests: incoming (accept/decline) + outgoing
+          (waiting on the other side). A pending peer is not chatable — they
+          only appear here until the request is accepted. */}
+      {friendRequestsIncoming.length > 0 || friendRequestsOutgoing.length > 0 ? (
+        <div className="border-b border-wp-line/10 px-2 pb-2">
+          <p className="px-3 pb-1.5 text-xs font-semibold uppercase tracking-widest text-wp-accent">
+            {t("contacts.title")}
+          </p>
+          <div className="flex flex-col gap-0.5" aria-label={t("contacts.title")}>
+            {friendRequestsIncoming.map((request) => {
+              const name = request.display_name ?? shortPeerId(request.peer_id, 16);
+              return (
+                <div
+                  key={request.peer_id}
+                  className="flex items-center gap-2.5 rounded-xl px-3 py-2 transition hover:bg-wp-panel-2"
+                >
+                  <Avatar name={request.display_name ?? undefined} size={36} />
+                  <div className="min-w-0 flex-1">
+                    <p className="truncate text-sm font-medium text-wp-text">
+                      {name}
+                    </p>
+                    <p className="truncate font-mono text-xs text-wp-faint">
+                      {shortPeerId(request.peer_id, 16)}
+                    </p>
+                  </div>
+                  <div className="flex shrink-0 items-center gap-0.5">
+                    <button
+                      type="button"
+                      onClick={() => void onAcceptRequest(request.peer_id)}
+                      title={t("contacts.accept")}
+                      aria-label={t("contacts.accept_aria", { name })}
+                      className="rounded-lg p-1.5 text-wp-dim transition hover:bg-wp-panel-3 hover:text-wp-online"
+                    >
+                      <Check className="h-4 w-4" />
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => void onDeclineRequest(request.peer_id)}
+                      title={t("contacts.decline")}
+                      aria-label={t("contacts.decline_aria", { name })}
+                      className="rounded-lg p-1.5 text-wp-dim transition hover:bg-wp-panel-3 hover:text-wp-danger"
+                    >
+                      <X className="h-4 w-4" />
+                    </button>
+                  </div>
+                </div>
+              );
+            })}
+            {friendRequestsOutgoing.map((peerId) => {
+              const name = shortPeerId(peerId, 16);
+              return (
+                <div
+                  key={peerId}
+                  className="flex items-center gap-2.5 rounded-xl px-3 py-2"
+                >
+                  <Avatar name={undefined} size={36} />
+                  <div className="min-w-0 flex-1">
+                    <p className="truncate text-sm font-medium text-wp-dim">
+                      {name}
+                    </p>
+                    <p className="truncate font-mono text-xs text-wp-faint">
+                      {shortPeerId(peerId, 16)}
+                    </p>
+                  </div>
+                  <span className="inline-flex shrink-0 items-center gap-1 rounded-full bg-wp-panel-3 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-wp-dim">
+                    <Hourglass className="h-3 w-3" aria-hidden="true" />
+                    {t("contacts.pending")}
+                  </span>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      ) : null}
 
       {/* Conversation list / directory results */}
       <div className="flex-1 overflow-y-auto px-2 pb-2">

@@ -140,12 +140,36 @@ export const translations = {
     "composer.enter_for_newline": "Enter for a new line · Ctrl+Enter to send",
 
     // ---- Add-contact dialog ----------------------------------------------
+    "addContact.title": "Add contact",
     "addContact.hint":
-      "Paste a friend\u2019s Whisper ID. The session is established with their published pre-keys and every message is end-to-end encrypted.",
+      "Enter a friend\u2019s Whisper ID to send them a friend request. Once they accept, you can message each other end-to-end encrypted.",
     "addContact.invalid_peer_id":
-      "Enter a valid 16-character Whisper ID (hex digits only).",
-    "addContact.starting_session": "Starting session\u2026",
-    "addContact.start_chat": "Start chat",
+      "Enter a valid 24-character Whisper ID (hex digits only).",
+    "addContact.sending": "Sending\u2026",
+    "addContact.send_request": "Send request",
+    "addContact.request_sent_title": "Request sent",
+    "addContact.request_sent_hint":
+      "Waiting for {peerId} to accept. You\u2019ll be notified when they do.",
+    "addContact.done": "Done",
+
+    // ---- Contacts / friend requests --------------------------------------
+    "contacts.title": "Requests",
+    "contacts.accept": "Accept",
+    "contacts.accept_aria": "Accept {name}\u2019s friend request",
+    "contacts.decline": "Decline",
+    "contacts.decline_aria": "Decline {name}\u2019s friend request",
+    "contacts.pending": "Pending",
+    "contacts.request_sent": "Request sent",
+    "contacts.already_contacts": "You\u2019re already contacts",
+    "contacts.already_pending": "A request is already pending",
+    "contacts.not_in_contacts": "You must be contacts first",
+    "contacts.you_are_contacts": "You are now contacts with {name}",
+    "contacts.request_received": "New friend request from {name}",
+    "contacts.request_declined": "{name} declined your friend request",
+    "contacts.contact_removed": "Contact removed",
+    "contacts.cannot_add_self": "You can\u2019t add yourself as a contact",
+    "contacts.not_found": "No user found with that Whisper ID",
+    "contacts.rate_limited": "Too many requests \u2014 try again later",
 
     // ---- Profile dialog --------------------------------------------------
     "profile.close_profile": "Close profile",
@@ -173,8 +197,9 @@ export const translations = {
     "groupInfo.close_group_info": "Close group info",
     "groupInfo.add_member": "Add member",
     "groupInfo.add_member_hint":
-      "Add a member by their Whisper ID. Every existing member shares their encryption key with them end-to-end.",
-    "groupInfo.add_member_placeholder": "e.g. 3f2a91c07b44d8e5a1b2c3d4",
+      "Pick from your accepted contacts. Every existing member shares their encryption key with them end-to-end.",
+    "groupInfo.add_member_placeholder": "Choose a contact…",
+    "groupInfo.no_contacts_to_add": "You have no accepted contacts to add yet.",
     "groupInfo.invalid_peer_id_24":
       "Enter a valid 24-character Whisper ID (hex digits only).",
     "groupInfo.member_already_in_group": "That peer is already in this group.",
@@ -197,6 +222,9 @@ export const translations = {
     "newGroup.group_name_required": "Give the group a name.",
     "newGroup.group_name_too_long": "Group names must be 64 characters or fewer.",
     "newGroup.add_member_required": "Add at least one member.",
+    "newGroup.not_contact": "You can only add accepted contacts to a group.",
+    "newGroup.pick_contact": "Pick a contact",
+    "newGroup.no_contacts_to_add": "No accepted contacts yet",
     "newGroup.selected_members": "Selected members",
     "newGroup.remove_member_aria": "Remove member {peerId}",
     "newGroup.creating_group": "Creating group\u2026",
@@ -491,12 +519,36 @@ export const translations = {
     "composer.enter_for_newline": "Enter rivinvaihtoon · Ctrl+Enter lähettää",
 
     // ---- Add-contact dialog ----------------------------------------------
+    "addContact.title": "Lisää yhteystieto",
     "addContact.hint":
-      "Liitä ystävän Whisper-ID. Istunto muodostetaan hänen julkaisemillaan pre-avaimeilla, ja jokainen viesti on end-to-end-salattu.",
+      "Anna ystävän Whisper-ID lähettääksesi hänelle kaveripyynnön. Kun hän hyväksyy, voitte viestiä toisillenne end-to-end-salattuna.",
     "addContact.invalid_peer_id":
-      "Anna kelvollinen 16-merkkinen Whisper-ID (vain heksadesimaalimerkkejä).",
-    "addContact.starting_session": "Aloitetaan istunto…",
-    "addContact.start_chat": "Aloita keskustelu",
+      "Anna kelvollinen 24-merkkinen Whisper-ID (vain heksadesimaalimerkkejä).",
+    "addContact.sending": "Lähetetään…",
+    "addContact.send_request": "Lähetä pyyntö",
+    "addContact.request_sent_title": "Pyyntö lähetetty",
+    "addContact.request_sent_hint":
+      "Odotetaan, että {peerId} hyväksyy pyynnön. Saat ilmoituksen, kun hän tekee niin.",
+    "addContact.done": "Valmis",
+
+    // ---- Contacts / friend requests --------------------------------------
+    "contacts.title": "Pyynnöt",
+    "contacts.accept": "Hyväksy",
+    "contacts.accept_aria": "Hyväksy {name}:n kaveripyyntö",
+    "contacts.decline": "Hylkää",
+    "contacts.decline_aria": "Hylkää {name}:n kaveripyyntö",
+    "contacts.pending": "Odottaa",
+    "contacts.request_sent": "Pyyntö lähetetty",
+    "contacts.already_contacts": "Olette jo kavereita",
+    "contacts.already_pending": "Pyyntö on jo odottamassa",
+    "contacts.not_in_contacts": "Sinun on oltava ensin kavereita",
+    "contacts.you_are_contacts": "Olette nyt kavereita: {name}",
+    "contacts.request_received": "Uusi kaveripyyntö: {name}",
+    "contacts.request_declined": "{name} hylkäsi kaveripyyntösi",
+    "contacts.contact_removed": "Yhteystieto poistettu",
+    "contacts.cannot_add_self": "Et voi lisätä itseäsi yhteystiedoksi",
+    "contacts.not_found": "Käyttäjää ei löytynyt tällä Whisper-ID:llä",
+    "contacts.rate_limited": "Liian monta pyyntöä — yritä myöhemmin uudelleen",
 
     // ---- Profile dialog --------------------------------------------------
     "profile.close_profile": "Sulje profiili",
@@ -524,8 +576,9 @@ export const translations = {
     "groupInfo.close_group_info": "Sulje ryhmän tiedot",
     "groupInfo.add_member": "Lisää jäsen",
     "groupInfo.add_member_hint":
-      "Lisää jäsen Whisper-ID:llä. Jokainen nykyinen jäsen jakaa oman salausavaimensa uudelle jäsenelle päästä päähän.",
-    "groupInfo.add_member_placeholder": "esim. 3f2a91c07b44d8e5a1b2c3d4",
+      "Valitse hyväksyttyjen yhteystietojesi joukosta. Jokainen nykyinen jäsen jakaa oman salausavaimensa uudelle jäsenelle päästä päähän.",
+    "groupInfo.add_member_placeholder": "Valitse yhteystieto…",
+    "groupInfo.no_contacts_to_add": "Sinulla ei ole vielä hyväksyttyjä yhteystietoja.",
     "groupInfo.invalid_peer_id_24":
       "Anna kelvollinen 24-merkkinen Whisper-ID (vain heksadesimaalimerkkejä).",
     "groupInfo.member_already_in_group": "Tämä käyttäjä on jo ryhmässä.",
@@ -548,6 +601,9 @@ export const translations = {
     "newGroup.group_name_required": "Anna ryhmälle nimi.",
     "newGroup.group_name_too_long": "Ryhmän nimen on oltava enintään 64 merkkiä.",
     "newGroup.add_member_required": "Lisää vähintään yksi jäsen.",
+    "newGroup.not_contact": "Ryhmään voi lisätä vain hyväksyttyjä kavereita.",
+    "newGroup.pick_contact": "Valitse yhteystieto",
+    "newGroup.no_contacts_to_add": "Ei hyväksyttyjä yhteystietoja",
     "newGroup.selected_members": "Valitut jäsenet",
     "newGroup.remove_member_aria": "Poista jäsen {peerId}",
     "newGroup.creating_group": "Luodaan ryhmää…",

@@ -35,6 +35,8 @@
 //! - [`presence`]: presence watches, queries, pushes, last-seen and privacy.
 //! - [`ratelimit`]: per-IP token-bucket rate limiting.
 
+#[path = "contacts.rs"]
+pub(crate) mod contacts;
 #[path = "groups.rs"]
 pub(crate) mod groups;
 #[path = "prekeys.rs"]
@@ -228,6 +230,26 @@ enum ClientMessage {
     /// owner or an admin may change the avatar.
     #[serde(rename = "set_group_avatar")]
     SetGroupAvatar { group_id: String, avatar: String },
+    /// Send a friend request to `peer_id`. The recipient receives a
+    /// `friend_request_received` push when online; offline recipients find it
+    /// via `get_friend_requests` on their next connect.
+    #[serde(rename = "send_friend_request")]
+    SendFriendRequest { peer_id: String },
+    /// Accept a pending friend request from `peer_id`: the two peers become
+    /// accepted contacts and both receive a `friend_request_accepted` push.
+    #[serde(rename = "accept_friend_request")]
+    AcceptFriendRequest { peer_id: String },
+    /// Decline a pending friend request from `peer_id`. The requester is
+    /// pushed a `friend_request_declined` notification.
+    #[serde(rename = "decline_friend_request")]
+    DeclineFriendRequest { peer_id: String },
+    /// List the caller's pending incoming and outgoing friend requests.
+    #[serde(rename = "get_friend_requests")]
+    GetFriendRequests,
+    /// Remove `peer_id` from the caller's contacts. Both peers receive a
+    /// `contact_removed` push.
+    #[serde(rename = "remove_contact")]
+    RemoveContact { peer_id: String },
 }
 
 /// Messages the SERVER sends to the client.
@@ -336,6 +358,46 @@ pub(crate) enum ServerMessage {
     /// reply).
     #[serde(rename = "group_avatar_set")]
     GroupAvatarSet { group_id: String },
+    /// Reply to `send_friend_request`: the request was persisted.
+    #[serde(rename = "friend_request_sent")]
+    FriendRequestSent,
+    /// Push to the recipient of a friend request, naming the requester and
+    /// its public display name. Only sent when the recipient is online;
+    /// offline recipients retrieve pending requests via `get_friend_requests`.
+    #[serde(rename = "friend_request_received")]
+    FriendRequestReceived {
+        peer_id: String,
+        display_name: Option<String>,
+    },
+    /// Reply to `accept_friend_request`: the caller is now contacts with the
+    /// other peer.
+    #[serde(rename = "friend_request_accepted_ok")]
+    FriendRequestAcceptedOk,
+    /// Push naming the peer the caller just became contacts with. Sent to BOTH
+    /// sides of the relationship, so the accepting client treats it as its
+    /// confirmation too.
+    #[serde(rename = "friend_request_accepted")]
+    FriendRequestAccepted { peer_id: String },
+    /// Reply to `decline_friend_request`.
+    #[serde(rename = "friend_request_declined_ok")]
+    FriendRequestDeclinedOk,
+    /// Push to the requester, naming the peer that declined their request.
+    #[serde(rename = "friend_request_declined")]
+    FriendRequestDeclined { peer_id: String },
+    /// Reply to `remove_contact`.
+    #[serde(rename = "contact_removed_ok")]
+    ContactRemovedOk,
+    /// Push naming the peer the caller is no longer contacts with. Sent to BOTH
+    /// sides of the relationship.
+    #[serde(rename = "contact_removed")]
+    ContactRemoved { peer_id: String },
+    /// Reply to `get_friend_requests`: pending incoming requests (requester +
+    /// display name) and outgoing requests (target peer IDs).
+    #[serde(rename = "friend_requests")]
+    FriendRequests {
+        incoming: Vec<FriendRequestIncoming>,
+        outgoing: Vec<String>,
+    },
     /// Protocol error.
     Error { code: String },
 }
@@ -363,6 +425,15 @@ pub struct SearchResult {
     pub display_name: Option<String>,
     /// URL of the peer's avatar blob, if uploaded.
     pub avatar_url: Option<String>,
+}
+
+/// One pending incoming friend request (the `get_friend_requests` reply).
+#[derive(Debug, Serialize)]
+pub struct FriendRequestIncoming {
+    /// Peer ID of the requester.
+    pub peer_id: String,
+    /// The requester's public display name, if one was set.
+    pub display_name: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -412,6 +483,8 @@ pub(crate) struct RelayInner {
     pub(crate) limiter: RateLimiter,
     /// Per-IP guard for profile mutations and directory lookups.
     pub(crate) profile_limiter: RateLimiter,
+    /// Per-IP guard for friend-request/contact mutations.
+    pub(crate) contacts_limiter: RateLimiter,
     /// Directory holding uploaded avatar blobs (`<sha256>.bin`).
     pub(crate) media_dir: PathBuf,
 }
@@ -428,6 +501,7 @@ impl Relay {
             media_dir,
             RateLimiter::from_env(),
             RateLimiter::from_profile_env(),
+            RateLimiter::from_contacts_env(),
         )
     }
 
@@ -439,6 +513,7 @@ impl Relay {
             Self::default_media_dir(),
             RateLimiter::from_env(),
             RateLimiter::from_profile_env(),
+            RateLimiter::from_contacts_env(),
         )
     }
 
@@ -451,6 +526,7 @@ impl Relay {
             Self::default_media_dir(),
             RateLimiter::new(burst, refill),
             RateLimiter::new(burst, refill),
+            RateLimiter::new(burst, refill),
         )
     }
 
@@ -461,6 +537,7 @@ impl Relay {
         media_dir: PathBuf,
         limiter: RateLimiter,
         profile_limiter: RateLimiter,
+        contacts_limiter: RateLimiter,
     ) -> Self {
         Self {
             inner: Arc::new(RelayInner {
@@ -469,6 +546,7 @@ impl Relay {
                 store,
                 limiter,
                 profile_limiter,
+                contacts_limiter,
                 media_dir,
             }),
         }
@@ -650,6 +728,21 @@ impl Relay {
                         Ok(ClientMessage::SetGroupAvatar { group_id, avatar }) => {
                             self.set_group_avatar(&peer_id, &ip, &group_id, &avatar)
                                 .await;
+                        }
+                        Ok(ClientMessage::SendFriendRequest { peer_id: target }) => {
+                            self.send_friend_request(&peer_id, &ip, &target).await;
+                        }
+                        Ok(ClientMessage::AcceptFriendRequest { peer_id: target }) => {
+                            self.accept_friend_request(&peer_id, &ip, &target).await;
+                        }
+                        Ok(ClientMessage::DeclineFriendRequest { peer_id: target }) => {
+                            self.decline_friend_request(&peer_id, &ip, &target).await;
+                        }
+                        Ok(ClientMessage::GetFriendRequests) => {
+                            self.get_friend_requests(&peer_id, &ip).await;
+                        }
+                        Ok(ClientMessage::RemoveContact { peer_id: target }) => {
+                            self.remove_contact(&peer_id, &ip, &target).await;
                         }
                         // Re-registration or protocol violations: ignore for now.
                         Ok(_) => {}
@@ -867,6 +960,31 @@ impl Relay {
             return;
         }
 
+        // Contact gate: 1:1 envelopes may only flow between ACCEPTED contacts.
+        // This is the server-level anti-spam boundary — a stranger's ciphertext
+        // is never routed, queued or acked. Group sends use a separate path
+        // (`send_group_message`) where group membership is the only requirement.
+        if !self
+            .inner
+            .store
+            .are_contacts(&envelope.sender, &envelope.recipient)
+        {
+            tracing::warn!(
+                sender = %envelope.sender,
+                recipient = %envelope.recipient,
+                "envelope between non-contacts dropped"
+            );
+            let _ = self
+                .send(
+                    sender_peer,
+                    ServerMessage::Error {
+                        code: "not_contacts".into(),
+                    },
+                )
+                .await;
+            return;
+        }
+
         let seq = envelope.seq;
 
         // Deliver live if possible, otherwise persist the ciphertext blob in
@@ -1035,6 +1153,15 @@ pub(crate) mod test_utils {
     /// Sign a username binding with an identity's Ed25519 key (base64).
     pub(crate) fn sign_username(identity: &Identity, username: &str) -> String {
         e2ee_core::sign_username(identity, username).to_base64()
+    }
+
+    /// Establish an accepted contact relationship between `a` and `b` directly
+    /// in the store (as if `a` had requested and `b` had accepted). Tests that
+    /// drive `add_group_member`, `fetch_prekeys` or 1:1 routing need the two
+    /// peers to be accepted contacts first.
+    pub(crate) fn make_contacts(relay: &Relay, a: &str, b: &str) {
+        relay.inner.store.upsert_friend_request(a, b).unwrap();
+        relay.inner.store.accept_friend(a, b).unwrap();
     }
 }
 

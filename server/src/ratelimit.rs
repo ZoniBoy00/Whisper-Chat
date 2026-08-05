@@ -21,6 +21,13 @@ const DEFAULT_RATE_REFILL_PER_SEC: f64 = 1.0;
 const DEFAULT_PROFILE_RATE_BURST: f64 = 30.0;
 const DEFAULT_PROFILE_RATE_REFILL_PER_SEC: f64 = 30.0 / 3600.0;
 
+/// Default per-IP contact token bucket: 20 friend-request/contact mutations,
+/// refilled at 20/hour. Tight enough to block friend-request spam — the
+/// exact vector the contact system exists to stop — while a normal user adds
+/// friends as they meet them.
+const DEFAULT_CONTACTS_RATE_BURST: f64 = 20.0;
+const DEFAULT_CONTACTS_RATE_REFILL_PER_SEC: f64 = 20.0 / 3600.0;
+
 /// Per-IP token bucket. Each accepted envelope consumes one token; tokens are
 /// refilled continuously up to the burst capacity.
 ///
@@ -88,6 +95,34 @@ impl RateLimiter {
                     .and_then(|v| v.parse::<f64>().ok())
             })
             .unwrap_or(DEFAULT_PROFILE_RATE_REFILL_PER_SEC);
+        Self::new(burst, refill)
+    }
+
+    /// Build the contacts limiter (see [`DEFAULT_CONTACTS_RATE_BURST`]).
+    ///
+    /// Burst/refill are overridable via `WHISPER_CONTACTS_RATE_BURST` and
+    /// `WHISPER_CONTACTS_RATE_REFILL`; when those are unset the generic
+    /// `WHISPER_RATE_BURST` / `WHISPER_RATE_REFILL` overrides apply, so a
+    /// single smoke-test configuration can bound every bucket.
+    pub(crate) fn from_contacts_env() -> Self {
+        let burst = std::env::var("WHISPER_CONTACTS_RATE_BURST")
+            .ok()
+            .and_then(|v| v.parse::<f64>().ok())
+            .or_else(|| {
+                std::env::var("WHISPER_RATE_BURST")
+                    .ok()
+                    .and_then(|v| v.parse::<f64>().ok())
+            })
+            .unwrap_or(DEFAULT_CONTACTS_RATE_BURST);
+        let refill = std::env::var("WHISPER_CONTACTS_RATE_REFILL")
+            .ok()
+            .and_then(|v| v.parse::<f64>().ok())
+            .or_else(|| {
+                std::env::var("WHISPER_RATE_REFILL")
+                    .ok()
+                    .and_then(|v| v.parse::<f64>().ok())
+            })
+            .unwrap_or(DEFAULT_CONTACTS_RATE_REFILL_PER_SEC);
         Self::new(burst, refill)
     }
 

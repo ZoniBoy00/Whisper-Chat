@@ -22,6 +22,7 @@ import {
   updateSettings,
 } from "../lib/relay";
 import { buildConversations } from "../lib/chatList";
+import { shortPeerId } from "../lib/format";
 import { loadPinnedChats, persistPinnedChats } from "../lib/pinned";
 import { useI18n } from "../i18n/I18nContext";
 import { useChatState } from "../hooks/useChatState";
@@ -503,11 +504,59 @@ export function MainView({ peerId, onReset }: MainViewProps) {
     onReset();
   }, [onReset]);
 
+  /** Send a friend request (AddContactDialog + directory search results). The
+   *  peer becomes chatable once they accept; failures propagate so the dialog
+   *  can show the translated code. */
+  const handleSendFriendRequest = useCallback(
+    async (targetPeerId: string) => {
+      await chat.sendFriendRequest(targetPeerId);
+      toast(t("contacts.request_sent"), "success");
+    },
+    [chat, t, toast]
+  );
+
+  /** Accept an incoming friend request; both sides become contacts. The relay
+   *  pushes `friend_request_accepted` to BOTH peers, so the `contact-added`
+   *  listener toasts and resyncs — nothing extra to show here. */
+  const handleAcceptRequest = useCallback(
+    async (targetPeerId: string) => {
+      try {
+        await chat.acceptFriendRequest(targetPeerId);
+        void chat.refresh();
+      } catch (err) {
+        toast(String(err).replace(/^Error:\s*/, ""), "error");
+      }
+    },
+    [chat, toast]
+  );
+
+  /** Decline an incoming friend request; it disappears from the Requests
+   *  section and the requester is notified. */
+  const handleDeclineRequest = useCallback(
+    async (targetPeerId: string) => {
+      try {
+        await chat.declineFriendRequest(targetPeerId);
+        toast(t("contacts.request_declined", { name: shortPeerId(targetPeerId, 16) }), "info");
+      } catch (err) {
+        toast(String(err).replace(/^Error:\s*/, ""), "error");
+      }
+    },
+    [chat, t, toast]
+  );
+
   // Conversations ordered by recency of the last message so the chat list
   // behaves like Signal/WhatsApp: most recent activity first. Pinned chats
-  // (Signal/Telegram style) sort above everything else.
+  // (Signal/Telegram style) sort above everything else. Pending (non-accepted)
+  // contacts are not chatable and never appear here — they live in the
+  // Sidebar's Requests section instead.
   const conversations = useMemo(
-    () => buildConversations(chat.contacts, chat.groups, chat.messages, pinnedIds),
+    () =>
+      buildConversations(
+        chat.contacts.filter((c) => c.status !== "pending"),
+        chat.groups,
+        chat.messages,
+        pinnedIds
+      ),
     [chat.contacts, chat.groups, chat.messages, pinnedIds]
   );
 
@@ -549,10 +598,14 @@ export function MainView({ peerId, onReset }: MainViewProps) {
         reconnectInfo={chat.reconnectInfo}
         connectionError={chat.connectionError}
         relayUrl={relayUrl}
+        friendRequestsIncoming={chat.friendRequestsIncoming}
+        friendRequestsOutgoing={chat.friendRequestsOutgoing}
         onSelect={chat.setActivePeerId}
         onAddContact={() => setAddDialogOpen(true)}
         onNewGroup={() => setNewGroupOpen(true)}
-        onStartChat={chat.addContact}
+        onStartChat={handleSendFriendRequest}
+        onAcceptRequest={handleAcceptRequest}
+        onDeclineRequest={handleDeclineRequest}
         onOpenSettings={() => setSettingsOpen(true)}
         onReconnect={() => void chat.connect()}
         onReset={handleReset}
@@ -583,13 +636,15 @@ export function MainView({ peerId, onReset }: MainViewProps) {
       <AddContactDialog
         open={addDialogOpen}
         onOpenChange={setAddDialogOpen}
-        onAdd={chat.addContact}
+        onAdd={handleSendFriendRequest}
+        myPeerId={peerId}
       />
       <NewGroupDialog
         open={newGroupOpen}
         onOpenChange={setNewGroupOpen}
         onCreate={handleCreateGroup}
         myPeerId={peerId}
+        contacts={chat.contacts}
       />
       <GroupInfoDialog
         open={groupInfoGroupId !== null}

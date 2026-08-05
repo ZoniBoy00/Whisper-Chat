@@ -13,7 +13,7 @@ import {
   X,
 } from "lucide-react";
 import type { ContactInfo, GroupInfo, GroupMember, ProfileInfo } from "../types";
-import { cx, mediaUrl, shortPeerId } from "../lib/format";
+import { cx, isGroupId, mediaUrl, shortPeerId } from "../lib/format";
 import { getProfile } from "../lib/relay";
 import type { TFunction } from "../i18n/types";
 import { useI18n } from "../i18n/I18nContext";
@@ -134,6 +134,19 @@ export function GroupInfoDialog({
     for (const contact of contacts) map.set(contact.peer_id, contact);
     return map;
   }, [contacts]);
+
+  /** The peers that may be added to the group: ACCEPTED 1:1 contacts only
+   *  (pending requests are not chatable and the relay rejects them), excluding
+   *  groups and anyone already on the roster. */
+  const eligibleContacts = useMemo(() => {
+    const memberIds = new Set((info?.members ?? []).map((m) => m.peer_id));
+    return contacts.filter(
+      (contact) =>
+        contact.status !== "pending" &&
+        !isGroupId(contact.peer_id) &&
+        !memberIds.has(contact.peer_id)
+    );
+  }, [contacts, info]);
 
   /** For roster members whose name the contact list does not know yet, fetch
    *  their public profile once and cache it. The row renders the short peer ID
@@ -547,48 +560,51 @@ export function GroupInfoDialog({
               <p className="mb-2 text-xs leading-snug text-wp-faint">
                 {t("groupInfo.add_member_hint")}
               </p>
-              <div className="flex items-center gap-2">
-                <label className="sr-only" htmlFor="group-add-member">
-                  {t("groupInfo.add_member")}
-                </label>
-                <input
-                  id="group-add-member"
-                  type="text"
-                  value={addMemberInput}
-                  onChange={(e) => {
-                    setAddMemberInput(e.target.value);
-                    setAddMemberError(null);
-                  }}
-                  onKeyDown={(e) => {
-                    if (e.key === "Enter") {
-                      e.preventDefault();
-                      void handleAddMember();
+              {eligibleContacts.length === 0 ? (
+                <p className="text-xs leading-snug text-wp-faint">
+                  {t("groupInfo.no_contacts_to_add")}
+                </p>
+              ) : (
+                <div className="flex items-center gap-2">
+                  <label className="sr-only" htmlFor="group-add-member">
+                    {t("groupInfo.add_member")}
+                  </label>
+                  <select
+                    id="group-add-member"
+                    value={addMemberInput}
+                    onChange={(e) => {
+                      setAddMemberInput(e.target.value);
+                      setAddMemberError(null);
+                    }}
+                    disabled={busyPeer !== null}
+                    aria-invalid={addMemberError ? true : undefined}
+                    aria-describedby={
+                      addMemberError ? "group-add-member-error" : undefined
                     }
-                  }}
-                  placeholder={t("groupInfo.add_member_placeholder")}
-                  autoComplete="off"
-                  spellCheck={false}
-                  aria-invalid={addMemberError ? true : undefined}
-                  aria-describedby={
-                    addMemberError ? "group-add-member-error" : undefined
-                  }
-                  disabled={busyPeer !== null}
-                  className="min-w-0 flex-1 rounded-xl border border-wp-line/10 bg-wp-panel-3 px-3 py-2 font-mono text-xs text-wp-text placeholder-wp-faint outline-none transition focus:border-wp-accent disabled:opacity-40"
-                />
-                <button
-                  type="button"
-                  onClick={() => void handleAddMember()}
-                  disabled={busyPeer !== null || !addMemberInput.trim()}
-                  className="inline-flex shrink-0 items-center gap-1.5 rounded-xl border border-wp-line/10 px-3 py-2 text-xs font-semibold text-wp-dim transition hover:bg-wp-panel-3 hover:text-wp-text disabled:opacity-40"
-                >
-                  {busyPeer === "__add_member__" ? (
-                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                  ) : (
-                    <UserPlus className="h-3.5 w-3.5" aria-hidden="true" />
-                  )}
-                  {t("groupInfo.add_member")}
-                </button>
-              </div>
+                    className="min-w-0 flex-1 rounded-xl border border-wp-line/10 bg-wp-panel-3 px-3 py-2 text-xs text-wp-text focus:border-wp-accent focus:outline-none disabled:opacity-40"
+                  >
+                    <option value="">{t("groupInfo.add_member_placeholder")}</option>
+                    {eligibleContacts.map((contact) => (
+                      <option key={contact.peer_id} value={contact.peer_id}>
+                        {memberName(contact.peer_id)}
+                      </option>
+                    ))}
+                  </select>
+                  <button
+                    type="button"
+                    onClick={() => void handleAddMember()}
+                    disabled={busyPeer !== null || !addMemberInput.trim()}
+                    className="inline-flex shrink-0 items-center gap-1.5 rounded-xl border border-wp-line/10 px-3 py-2 text-xs font-semibold text-wp-dim transition hover:bg-wp-panel-3 hover:text-wp-text disabled:opacity-40"
+                  >
+                    {busyPeer === "__add_member__" ? (
+                      <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                    ) : (
+                      <UserPlus className="h-3.5 w-3.5" aria-hidden="true" />
+                    )}
+                    {t("groupInfo.add_member")}
+                  </button>
+                </div>
+              )}
               {addMemberError ? (
                 <p
                   id="group-add-member-error"
