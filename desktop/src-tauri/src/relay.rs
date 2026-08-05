@@ -23,7 +23,7 @@ use tokio::sync::{mpsc, oneshot};
 use tokio_tungstenite::tungstenite::Message as WsMessage;
 
 use e2ee_core::{
-    ChatSession, Envelope, EnvelopeContent, Handshake, Identity, Message, PreKeyBundle,
+    ChatSession, Envelope, EnvelopeContent, Handshake, Identity, Message, PreKeyBundle, ReceiptKind,
 };
 use vodozemac::olm::OlmMessage;
 
@@ -39,6 +39,14 @@ const PREKEY_BATCH_SIZE: usize = 5;
 /// Text of the greeting message sent when a session is established.
 const FIRST_MESSAGE_TEXT: &str = "👋 Connected via Whisper";
 
+/// Maximum length of a public display name, in Unicode characters. Mirrors the
+/// server's limit so an invalid name is rejected locally before a round trip.
+const MAX_DISPLAY_NAME_CHARS: usize = 64;
+
+/// How long a typing indicator stays "on" after the last `typing` receipt
+/// before the client auto-emits `is_typing: false` as a safety net.
+const TYPING_TIMEOUT_SECS: u64 = 5;
+
 /// Resolve the identity file path. `WHISPER_IDENTITY_FILE` overrides the
 /// default so two Whisper instances can run side by side on one machine
 /// (e.g. to test E2EE between two windows).
@@ -50,6 +58,19 @@ fn resolve_identity_path(app: &AppHandle) -> PathBuf {
                 .app_data_dir()
                 .map(|dir| dir.join("identity.json"))
                 .unwrap_or_else(|_| PathBuf::from("identity.json"))
+        })
+}
+
+/// Resolve the profiles file path. `WHISPER_PROFILES_FILE` mirrors the
+/// identity override so side-by-side test instances keep separate names.
+pub fn resolve_profiles_path(app: &AppHandle) -> PathBuf {
+    std::env::var("WHISPER_PROFILES_FILE")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| {
+            app.path()
+                .app_data_dir()
+                .map(|dir| dir.join("profiles.json"))
+                .unwrap_or_else(|_| PathBuf::from("profiles.json"))
         })
 }
 
@@ -80,6 +101,9 @@ pub enum RelayError {
     /// The relay replied with an error code.
     #[error("relay error: {0}")]
     Relay(String),
+    /// A display name failed local validation (mirrors the server's rules).
+    #[error("display name must be 1-64 characters without control characters")]
+    InvalidDisplayName,
     /// The WebSocket could not be opened.
     #[error("relay connection failed: {0}")]
     Connection(String),
@@ -107,12 +131,15 @@ pub enum RelayError {
 #[derive(Debug, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 enum ClientMessage {
-    /// Announces a signed hello binding the peer ID to its public keys.
+    /// Announces a signed hello binding the peer ID to its public keys. The
+    /// optional `display_name` is public profile data (Signal-style) the
+    /// relay stores so other peers can show it in pre-key lookups.
     Hello {
         peer_id: String,
         curve25519_key: String,
         ed25519_key: String,
         signature: String,
+        display_name: Option<String>,
     },
     /// An opaque encrypted envelope to route onward.
     Envelope { envelope: RelayEnvelope },
@@ -125,6 +152,9 @@ enum ClientMessage {
     /// Fetch another peer's published pre-key bundle.
     #[serde(rename = "fetch_prekeys")]
     FetchPrekeys { peer_id: String },
+    /// Set the caller's public display name (Signal-style profile name).
+    #[serde(rename = "update_profile")]
+    UpdateProfile { display_name: String },
 }
 
 /// Messages the SERVER sends to the client (matches `server/src/relay.rs`).
@@ -138,11 +168,20 @@ enum ServerMessage {
     Acknowledged { seq: u64 },
     /// Batch reply to `fetch_since`.
     Envelopes { envelopes: Vec<RelayEnvelope> },
-    /// A requested pre-key bundle.
-    Prekeys { bundle: Box<PreKeyBundle> },
+    /// A requested pre-key bundle plus the peer's public display name (`null`
+    /// when they have not set one). `display_name` defaults to `None` so older
+    /// replies without the field still parse.
+    Prekeys {
+        bundle: Box<PreKeyBundle>,
+        #[serde(default)]
+        display_name: Option<String>,
+    },
     /// The published bundle was accepted.
     #[serde(rename = "prekeys_published")]
     PrekeysPublished,
+    /// The caller's display name was updated.
+    #[serde(rename = "profile_updated")]
+    ProfileUpdated,
     /// A protocol error code.
     Error { code: String },
 }
@@ -188,12 +227,66 @@ pub struct RelayStatusEvent {
     pub connected: bool,
 }
 
-/// Payload of the `message-status` event emitted when the relay acks a sent
-/// envelope, flipping the message to "delivered".
+/// Payload of the `message-status` event emitted when a sent message's
+/// delivery state changes: the relay ack flips it to "delivered" and an
+/// end-to-end read receipt flips it to "read".
 #[derive(Debug, Clone, Serialize)]
 pub struct MessageStatusEvent {
     pub client_id: String,
     pub status: String,
+}
+
+/// Payload of the `typing` event emitted when a peer starts or stops typing.
+/// `TypingStopped` receipts and the 5-second auto-timeout both emit
+/// `is_typing: false`.
+#[derive(Debug, Clone, Serialize)]
+pub struct TypingEvent {
+    pub peer_id: String,
+    pub is_typing: bool,
+}
+
+/// Payload of the `contact-updated` event emitted when a contact's display
+/// name is learned or refreshed (from a pre-key lookup), so the UI can update
+/// the contact list without waiting for a full state refresh.
+#[derive(Debug, Clone, Serialize)]
+pub struct ContactUpdatedEvent {
+    pub peer_id: String,
+    pub display_name: Option<String>,
+}
+
+/// Persisted profile data stored in `profiles.json` (next to `identity.json`):
+/// our own public display name plus the display names we have learned for our
+/// contacts. Keeping it in a separate file means a corrupt file can never
+/// block identity loading, exactly like `settings.json`.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct Profiles {
+    /// Our own public display name; `None` when unset.
+    #[serde(default)]
+    pub my_display_name: Option<String>,
+    /// Peer ID -> the display name that peer advertises in pre-key lookups.
+    #[serde(default)]
+    pub contacts: HashMap<String, String>,
+}
+
+/// A known conversation peer plus the display name they advertise, if any.
+#[derive(Debug, Clone, Serialize)]
+pub struct ContactInfo {
+    pub peer_id: String,
+    /// `None` (or a peer with no name) falls back to the peer ID in the UI.
+    pub display_name: Option<String>,
+}
+
+/// Snapshot of everything the UI needs to render the chat surface.
+#[derive(Debug, Clone, Serialize)]
+pub struct ChatState {
+    pub my_peer_id: String,
+    /// Our own public display name; `None` when unset.
+    pub my_display_name: Option<String>,
+    pub connected: bool,
+    /// Peer IDs this identity has a conversation with, plus their names.
+    pub contacts: Vec<ContactInfo>,
+    /// Per-peer message history, oldest first.
+    pub messages: HashMap<String, Vec<UIMessage>>,
 }
 
 /// Persisted user preferences stored in `settings.json`.
@@ -206,17 +299,6 @@ pub struct Settings {
     /// UI theme ("dark", "light", ...); the UI owns the valid values.
     #[serde(default)]
     pub theme: Option<String>,
-}
-
-/// Snapshot of everything the UI needs to render the chat surface.
-#[derive(Debug, Clone, Serialize)]
-pub struct ChatState {
-    pub my_peer_id: String,
-    pub connected: bool,
-    /// Peer IDs this identity has a conversation with.
-    pub contacts: Vec<String>,
-    /// Per-peer message history, oldest first.
-    pub messages: HashMap<String, Vec<UIMessage>>,
 }
 
 /// Thread-safe handle to the relay client, managed as Tauri state.
@@ -232,8 +314,12 @@ struct RelayInner {
     sessions_path: PathBuf,
     /// File where the relay URL and UI theme are persisted.
     settings_path: PathBuf,
+    /// File where display names (our own + contacts') are persisted.
+    profiles_path: PathBuf,
     /// In-memory copy of the persisted settings.
     settings: RwLock<Settings>,
+    /// In-memory copy of the persisted display names.
+    profiles: RwLock<Profiles>,
     /// The local identity, loaded from disk on first connect.
     identity: Mutex<Option<Identity>>,
     /// Double Ratchet sessions, keyed by the remote peer ID.
@@ -263,10 +349,15 @@ struct RelayInner {
     /// id so a delivery confirmation can flip the matching message to
     /// "delivered".
     pending_acks: Mutex<HashMap<u64, String>>,
+    /// Per-peer generation counter used to deduplicate typing auto-timeouts:
+    /// each new `typing` receipt bumps the counter so older pending timers
+    /// give up instead of flipping the indicator off early.
+    typing_timeouts: Mutex<HashMap<String, u64>>,
 }
 
-/// Result channel type for a pre-key fetch.
-type PrekeyResponse = Result<PreKeyBundle, RelayError>;
+/// Result channel type for a pre-key fetch: the bundle plus the peer's public
+/// display name (`None` when they have not set one).
+type PrekeyResponse = Result<(PreKeyBundle, Option<String>), RelayError>;
 
 impl RelayClient {
     /// Build a client bound to `app`'s identity file in the app data dir.
@@ -282,13 +373,16 @@ impl RelayClient {
             .app_data_dir()
             .map(|dir| dir.join("settings.json"))
             .unwrap_or_else(|_| PathBuf::from("settings.json"));
+        let profiles_path = resolve_profiles_path(&app);
         Self {
             inner: Arc::new(RelayInner {
                 app,
                 identity_path,
                 sessions_path,
                 settings_path,
+                profiles_path,
                 settings: RwLock::new(Settings::default()),
+                profiles: RwLock::new(Profiles::default()),
                 identity: Mutex::new(None),
                 sessions: Mutex::new(HashMap::new()),
                 messages: RwLock::new(HashMap::new()),
@@ -301,6 +395,7 @@ impl RelayClient {
                 pending_prekeys: Mutex::new(VecDeque::new()),
                 seen_envelopes: Mutex::new(HashSet::new()),
                 pending_acks: Mutex::new(HashMap::new()),
+                typing_timeouts: Mutex::new(HashMap::new()),
             }),
         }
     }
@@ -335,6 +430,7 @@ impl RelayClient {
         };
 
         let settings = self.load_settings()?;
+        let profiles = self.load_profiles()?;
         let url = resolve_relay_url(
             &settings,
             std::env::var("WHISPER_RELAY_URL").ok().as_deref(),
@@ -361,6 +457,7 @@ impl RelayClient {
             curve25519_key: hello.curve25519_key,
             ed25519_key: hello.ed25519_key,
             signature: hello.signature,
+            display_name: profiles.my_display_name.clone(),
         })?;
         out_tx
             .send(WsMessage::Text(hello_json))
@@ -427,6 +524,13 @@ impl RelayClient {
                 return Err(err.into());
             }
         }
+        // A fresh identity means a fresh name and no learned contact names.
+        *write_guard(&self.inner.profiles)? = Profiles::default();
+        if let Err(err) = std::fs::remove_file(&self.inner.profiles_path) {
+            if err.kind() != std::io::ErrorKind::NotFound {
+                return Err(err.into());
+            }
+        }
         write_guard(&self.inner.messages)?.clear();
         write_guard(&self.inner.contacts)?.clear();
         if let Ok(mut seen) = self.inner.seen_envelopes.lock() {
@@ -451,7 +555,10 @@ impl RelayClient {
     }
 
     /// Fetch a peer's pre-key bundle, waiting up to [`PREKEY_FETCH_TIMEOUT`].
-    async fn fetch_prekeys(&self, peer_id: &str) -> Result<PreKeyBundle, RelayError> {
+    async fn fetch_prekeys(
+        &self,
+        peer_id: &str,
+    ) -> Result<(PreKeyBundle, Option<String>), RelayError> {
         let (tx, rx) = oneshot::channel();
         mutex_guard(&self.inner.pending_prekeys)?.push_back(tx);
         if let Err(err) = self.send_json(&ClientMessage::FetchPrekeys {
@@ -476,8 +583,14 @@ impl RelayClient {
             return Err(RelayError::InvalidPeer(peer_id.to_string()));
         }
 
-        let bundle = self.fetch_prekeys(peer_id).await?;
+        let (bundle, display_name) = self.fetch_prekeys(peer_id).await?;
         let my_peer_id = self.my_peer_id()?;
+
+        // Learn the peer's public display name so the UI can show it in the
+        // contact list and chat header.
+        if let Some(name) = display_name {
+            self.remember_contact_name(peer_id, &name)?;
+        }
 
         // Build the outbound session and encrypt the very first message; the
         // first ciphertext is always a pre-key message.
@@ -578,15 +691,24 @@ impl RelayClient {
         Ok(())
     }
 
-    /// Snapshot the state the UI needs: identity, connection, contacts and
-    /// message history.
+    /// Snapshot the state the UI needs: identity, connection, contacts (with
+    /// their display names) and message history.
     pub fn get_chat_state(&self) -> Result<ChatState, RelayError> {
         let my_peer_id = self.my_peer_id()?;
+        let profiles = self.load_profiles()?;
         let contacts = read_guard(&self.inner.contacts)?.clone();
         let messages = read_guard(&self.inner.messages)?.clone();
         let connected = self.inner.connected.load(Ordering::SeqCst);
+        let contacts = contacts
+            .into_iter()
+            .map(|peer_id| ContactInfo {
+                peer_id: peer_id.clone(),
+                display_name: profiles.contacts.get(&peer_id).cloned(),
+            })
+            .collect();
         Ok(ChatState {
             my_peer_id,
+            my_display_name: profiles.my_display_name,
             connected,
             contacts,
             messages,
@@ -628,15 +750,19 @@ impl RelayClient {
                 }
                 Ok(())
             }
-            ServerMessage::Prekeys { bundle } => {
+            ServerMessage::Prekeys {
+                bundle,
+                display_name,
+            } => {
                 let mut pending = mutex_guard(&self.inner.pending_prekeys)?;
                 if let Some(tx) = pending.pop_front() {
-                    let _ = tx.send(Ok(*bundle));
+                    let _ = tx.send(Ok((*bundle, display_name)));
                 }
                 Ok(())
             }
             ServerMessage::Acknowledged { seq } => self.handle_ack(seq),
             ServerMessage::PrekeysPublished => Ok(()),
+            ServerMessage::ProfileUpdated => Ok(()),
             ServerMessage::Error { code } => {
                 let mut pending = mutex_guard(&self.inner.pending_prekeys)?;
                 if let Some(tx) = pending.pop_front() {
@@ -661,14 +787,18 @@ impl RelayClient {
             // (e.g. after a restart) is simply ignored.
             None => return Ok(()),
         };
-        self.mark_delivered(&client_id)?;
-        let _ = self.inner.app.emit(
-            "message-status",
-            MessageStatusEvent {
-                client_id,
-                status: "delivered".to_string(),
-            },
-        );
+        // Only announce the flip when it actually changed something. The relay
+        // can ack an envelope after the peer's read receipt already marked the
+        // message "read"; announcing "delivered" then would downgrade it.
+        if self.mark_delivered(&client_id)? {
+            let _ = self.inner.app.emit(
+                "message-status",
+                MessageStatusEvent {
+                    client_id,
+                    status: "delivered".to_string(),
+                },
+            );
+        }
         Ok(())
     }
 
@@ -728,12 +858,30 @@ impl RelayClient {
                         .ok_or_else(|| RelayError::NoSession(sender.clone()))?;
                     session.decrypt(&message.message)?
                 };
+                // Receipts travel as an encrypted serialized
+                // `EnvelopeContent::Receipt` inside an ordinary message, so
+                // the relay only ever sees ciphertext. They are recognised by
+                // parsing the decrypted plaintext first.
+                if let Ok(EnvelopeContent::Receipt { kind }) =
+                    serde_json::from_slice::<EnvelopeContent>(&plaintext)
+                {
+                    self.save_sessions()?;
+                    self.handle_receipt(&sender, kind)?;
+                    return Ok(None);
+                }
                 let text = String::from_utf8_lossy(&plaintext).to_string();
                 self.save_sessions()?;
+                // Acknowledging the message end-to-end: encrypt a read receipt
+                // with the same (now-advanced) session. Best-effort so a
+                // transient send failure never drops the plaintext message.
+                let _ = self.send_receipt(&sender, ReceiptKind::Read);
                 Ok(Some(self.record_incoming(&sender, text)?))
             }
             // A bundle is published, never delivered as a chat envelope.
             EnvelopeContent::PreKeyBundle(_) => Ok(None),
+            // Defensive: this client always sends receipts encrypted inside a
+            // Message, so a bare receipt content is never expected here.
+            EnvelopeContent::Receipt { .. } => Ok(None),
         }
     }
 
@@ -829,6 +977,177 @@ impl RelayClient {
     }
 
     // ---------------------------------------------------------------------
+    // Display names and receipts
+    // ---------------------------------------------------------------------
+
+    /// Persist our own public display name and, when connected, announce it to
+    /// the relay so everyone who fetches our pre-keys sees it. An empty name
+    /// clears the local profile (the previously published name stays visible
+    /// to others until overwritten — the server rejects empty names).
+    pub fn set_display_name(&self, name: &str) -> Result<(), RelayError> {
+        let name = name.trim();
+        if !name.is_empty()
+            && (name.chars().count() > MAX_DISPLAY_NAME_CHARS || name.chars().any(char::is_control))
+        {
+            return Err(RelayError::InvalidDisplayName);
+        }
+        let mut profiles = self.load_profiles()?;
+        profiles.my_display_name = if name.is_empty() {
+            None
+        } else {
+            Some(name.to_string())
+        };
+        self.save_profiles(&profiles)?;
+        if !name.is_empty() && self.inner.connected.load(Ordering::SeqCst) {
+            self.send_json(&ClientMessage::UpdateProfile {
+                display_name: name.to_string(),
+            })?;
+        }
+        Ok(())
+    }
+
+    /// Send an end-to-end typing indicator (or the "stopped" signal) to a
+    /// peer, encrypted inside the established session.
+    pub fn send_typing(&self, peer_id: &str, is_typing: bool) -> Result<(), RelayError> {
+        let kind = if is_typing {
+            ReceiptKind::Typing
+        } else {
+            ReceiptKind::TypingStopped
+        };
+        self.send_receipt(peer_id, kind)
+    }
+
+    /// Encrypt and send an end-to-end receipt inside the session with
+    /// `peer_id`. The receipt is serialized as [`e2ee_core::EnvelopeContent`]
+    /// and encrypted like an ordinary message, so the relay only ever sees the
+    /// ciphertext of a [`e2ee_core::Message`].
+    fn send_receipt(&self, peer_id: &str, kind: ReceiptKind) -> Result<(), RelayError> {
+        let my_peer_id = self.my_peer_id()?;
+        let content = EnvelopeContent::Receipt { kind };
+        let (olm, session_id) = {
+            let mut sessions = mutex_guard(&self.inner.sessions)?;
+            let session = sessions
+                .get_mut(peer_id)
+                .ok_or_else(|| RelayError::NoSession(peer_id.to_string()))?;
+            let session_id = session.session_id();
+            let olm = session.encrypt(serde_json::to_vec(&content)?)?;
+            (olm, session_id)
+        };
+        self.save_sessions()?;
+        let wire = Envelope::new(
+            my_peer_id.clone(),
+            peer_id.to_string(),
+            EnvelopeContent::Message(Message::new(my_peer_id, session_id, olm)),
+        );
+        let seq = self.next_seq();
+        self.send_wire(&wire, seq)
+    }
+
+    /// Remember a display name learned for a contact and persist it. Emits a
+    /// `contact-updated` event so the UI can update the contact list without a
+    /// full state refresh.
+    fn remember_contact_name(&self, peer_id: &str, name: &str) -> Result<(), RelayError> {
+        let mut profiles = self.load_profiles()?;
+        profiles
+            .contacts
+            .insert(peer_id.to_string(), name.to_string());
+        self.save_profiles(&profiles)?;
+        let _ = self.inner.app.emit(
+            "contact-updated",
+            ContactUpdatedEvent {
+                peer_id: peer_id.to_string(),
+                display_name: Some(name.to_string()),
+            },
+        );
+        Ok(())
+    }
+
+    /// Apply an inbound end-to-end receipt. Read receipts flip all of our
+    /// outgoing messages to the sender to "read"; typing receipts are relayed
+    /// to the UI (with a 5-second auto-timeout that emits `false` unless a
+    /// newer indicator arrives first).
+    fn handle_receipt(&self, sender: &str, kind: ReceiptKind) -> Result<(), RelayError> {
+        match kind {
+            ReceiptKind::Read => {
+                // A single `Read` receipt acknowledges every message the peer
+                // has read so far, so all unread outgoing messages to them
+                // flip at once. Each flip emits one `message-status` event.
+                let flipped = {
+                    let mut messages = write_guard(&self.inner.messages)?;
+                    apply_read(&mut messages, sender)
+                };
+                for client_id in flipped {
+                    let _ = self.inner.app.emit(
+                        "message-status",
+                        MessageStatusEvent {
+                            client_id,
+                            status: "read".to_string(),
+                        },
+                    );
+                }
+                Ok(())
+            }
+            ReceiptKind::Typing | ReceiptKind::TypingStopped => {
+                let is_typing = kind == ReceiptKind::Typing;
+                let mut timers = mutex_guard(&self.inner.typing_timeouts)?;
+                let generation = timers.entry(sender.to_string()).or_insert(0);
+                *generation += 1;
+                let generation = *generation;
+                drop(timers);
+                let _ = self.inner.app.emit(
+                    "typing",
+                    TypingEvent {
+                        peer_id: sender.to_string(),
+                        is_typing,
+                    },
+                );
+                // A "stopped" receipt cancels any pending auto-timeout by
+                // bumping the generation; nothing more is scheduled for it.
+                if is_typing {
+                    let client = self.clone();
+                    let peer = sender.to_string();
+                    tauri::async_runtime::spawn(async move {
+                        tokio::time::sleep(std::time::Duration::from_secs(TYPING_TIMEOUT_SECS))
+                            .await;
+                        let timers = match mutex_guard(&client.inner.typing_timeouts) {
+                            Ok(t) => t,
+                            Err(_) => return,
+                        };
+                        if timers.get(&peer).copied() == Some(generation) {
+                            drop(timers);
+                            let _ = client.inner.app.emit(
+                                "typing",
+                                TypingEvent {
+                                    peer_id: peer.clone(),
+                                    is_typing: false,
+                                },
+                            );
+                        }
+                    });
+                }
+                Ok(())
+            }
+        }
+    }
+
+    /// Load the persisted display names from disk and cache them in memory. A
+    /// missing or unparseable file yields the defaults instead of an error.
+    fn load_profiles(&self) -> Result<Profiles, RelayError> {
+        let profiles = read_profiles_file(&self.inner.profiles_path)?;
+        let mut guard = write_guard(&self.inner.profiles)?;
+        *guard = profiles.clone();
+        Ok(profiles)
+    }
+
+    /// Persist display names to disk and cache them in memory.
+    fn save_profiles(&self, profiles: &Profiles) -> Result<(), RelayError> {
+        write_profiles_file(&self.inner.profiles_path, profiles)?;
+        let mut guard = write_guard(&self.inner.profiles)?;
+        *guard = profiles.clone();
+        Ok(())
+    }
+
+    // ---------------------------------------------------------------------
     // State recording
     // ---------------------------------------------------------------------
 
@@ -884,17 +1203,30 @@ impl RelayClient {
 
     /// Flip the status of the message with `client_id` to "delivered" so a
     /// state refresh keeps the delivery marker. Returns whether the message
-    /// was found.
+    /// was actually flipped: an ack that races in after an end-to-end read
+    /// receipt must not downgrade the message back to "delivered".
     fn mark_delivered(&self, client_id: &str) -> Result<bool, RelayError> {
         let mut messages = write_guard(&self.inner.messages)?;
         Ok(apply_delivered(&mut messages, client_id))
     }
 
-    /// Add `peer_id` to the contact list if it is not already there.
+    /// Add `peer_id` to the contact list if it is not already there. For a new
+    /// contact, the peer's public display name is fetched in the background so
+    /// the receiving side of a conversation shows names too (not only the
+    /// initiator, who learns the name during `start_chat`).
     fn ensure_contact(&self, peer_id: &str) -> Result<(), RelayError> {
         let mut contacts = write_guard(&self.inner.contacts)?;
         if !contacts.iter().any(|known| known == peer_id) {
             contacts.push(peer_id.to_string());
+            let client = self.clone();
+            let peer = peer_id.to_string();
+            tauri::async_runtime::spawn(async move {
+                // Best-effort: a peer that never published pre-keys simply has
+                // no name to learn, and the fetch fails silently.
+                if let Ok((_, Some(name))) = client.fetch_prekeys(&peer).await {
+                    let _ = client.remember_contact_name(&peer, &name);
+                }
+            });
         }
         Ok(())
     }
@@ -992,6 +1324,29 @@ fn write_settings_file(path: &Path, settings: &Settings) -> Result<(), RelayErro
     Ok(())
 }
 
+/// Read the profiles file at `path`, returning defaults when it is missing or
+/// unparseable so a corrupt file can never block startup or reconnect.
+fn read_profiles_file(path: &Path) -> Result<Profiles, RelayError> {
+    let json = match std::fs::read_to_string(path) {
+        Ok(json) => json,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Profiles::default()),
+        Err(e) => return Err(e.into()),
+    };
+    Ok(serde_json::from_str(&json).unwrap_or_default())
+}
+
+/// Write the profiles file at `path`, creating the parent directory on demand.
+pub fn write_profiles_file(path: &Path, profiles: &Profiles) -> Result<(), RelayError> {
+    if let Some(dir) = path.parent() {
+        if !dir.as_os_str().is_empty() {
+            std::fs::create_dir_all(dir)?;
+        }
+    }
+    let json = serde_json::to_string_pretty(profiles)?;
+    std::fs::write(path, json)?;
+    Ok(())
+}
+
 /// Resolve the relay endpoint: settings first, then the `WHISPER_RELAY_URL`
 /// env var, then the built-in default.
 fn resolve_relay_url(settings: &Settings, env_url: Option<&str>) -> String {
@@ -1005,14 +1360,37 @@ fn resolve_relay_url(settings: &Settings, env_url: Option<&str>) -> String {
 
 /// Pure helper for [`RelayClient::mark_delivered`], separated so the ack
 /// bookkeeping can be unit-tested without a live WebSocket or Tauri app.
+/// Returns whether the message was actually flipped: a message already marked
+/// "read" is never downgraded by a late ack.
 fn apply_delivered(messages: &mut HashMap<String, Vec<UIMessage>>, client_id: &str) -> bool {
     for msgs in messages.values_mut() {
         if let Some(message) = msgs.iter_mut().find(|m| m.id == client_id) {
-            message.status = "delivered".to_string();
-            return true;
+            if message.status == "sent" {
+                message.status = "delivered".to_string();
+                return true;
+            }
+            // Already delivered or read: a late ack is a no-op.
+            return false;
         }
     }
     false
+}
+
+/// Pure helper for [`RelayClient::handle_receipt`]: flip every outgoing
+/// message to `peer_id` to "read", returning the client ids that changed so
+/// the caller can notify the UI. Incoming messages and already-read messages
+/// are left untouched.
+fn apply_read(messages: &mut HashMap<String, Vec<UIMessage>>, peer_id: &str) -> Vec<String> {
+    let mut flipped = Vec::new();
+    if let Some(msgs) = messages.get_mut(peer_id) {
+        for message in msgs.iter_mut() {
+            if message.outgoing && message.status != "read" {
+                message.status = "read".to_string();
+                flipped.push(message.id.clone());
+            }
+        }
+    }
+    flipped
 }
 
 /// Lock a mutex, mapping poison onto a typed error.
@@ -1043,6 +1421,7 @@ mod tests {
             curve25519_key: hello.curve25519_key,
             ed25519_key: hello.ed25519_key,
             signature: hello.signature,
+            display_name: None,
         };
 
         let json = serde_json::to_value(&message).expect("serialization must succeed");
@@ -1051,6 +1430,24 @@ mod tests {
         assert!(json.get("curve25519_key").is_some());
         assert!(json.get("ed25519_key").is_some());
         assert!(json.get("signature").is_some());
+        assert!(json.get("display_name").is_some());
+        assert!(json["display_name"].is_null());
+    }
+
+    #[test]
+    fn hello_serializes_an_advertised_display_name() {
+        let identity = Identity::new();
+        let hello = identity.signed_hello();
+        let message = ClientMessage::Hello {
+            peer_id: hello.peer_id,
+            curve25519_key: hello.curve25519_key,
+            ed25519_key: hello.ed25519_key,
+            signature: hello.signature,
+            display_name: Some("Alice Prime".into()),
+        };
+
+        let json = serde_json::to_value(&message).expect("serialization must succeed");
+        assert_eq!(json["display_name"], "Alice Prime");
     }
 
     #[test]
@@ -1115,13 +1512,59 @@ mod tests {
         let bundle = identity.pre_key_bundle(2);
         let text = serde_json::to_string(&ServerMessage::Prekeys {
             bundle: Box::new(bundle.clone()),
+            display_name: None,
         })
         .expect("serialize");
 
         match serde_json::from_str::<ServerMessage>(&text).expect("deserialize") {
-            ServerMessage::Prekeys { bundle: restored } => assert_eq!(*restored, bundle),
+            ServerMessage::Prekeys {
+                bundle: restored,
+                display_name,
+            } => {
+                assert_eq!(*restored, bundle);
+                assert_eq!(display_name, None);
+            }
             other => panic!("unexpected variant: {other:?}"),
         }
+    }
+
+    #[test]
+    fn prekeys_response_parses_an_advertised_display_name() {
+        let text = r#"{"type":"prekeys","bundle":{"x":1},"display_name":"Bob Prime"}"#;
+        let message = serde_json::from_str::<serde_json::Value>(text).expect("valid json");
+        // A missing `display_name` field must also be tolerated (old servers).
+        assert!(message.get("display_name").is_some());
+    }
+
+    #[test]
+    fn prekeys_response_without_display_name_field_defaults_to_none() {
+        // Old relay replies omit the field entirely; serde must default it.
+        let mut identity = Identity::new();
+        let bundle = identity.pre_key_bundle(1);
+        let bundle_json = serde_json::to_string(&bundle).expect("serialize");
+        let text = format!(r#"{{"type":"prekeys","bundle":{bundle_json}}}"#);
+        match serde_json::from_str::<ServerMessage>(&text) {
+            Ok(ServerMessage::Prekeys { display_name, .. }) => assert_eq!(display_name, None),
+            Ok(other) => panic!("unexpected variant: {other:?}"),
+            Err(err) => panic!("must parse: {err}"),
+        }
+    }
+
+    #[test]
+    fn profile_updated_server_message_parses() {
+        let message: ServerMessage =
+            serde_json::from_str(r#"{"type":"profile_updated"}"#).expect("parse");
+        assert!(matches!(message, ServerMessage::ProfileUpdated));
+    }
+
+    #[test]
+    fn update_profile_client_message_serializes() {
+        let json = serde_json::to_value(ClientMessage::UpdateProfile {
+            display_name: "New Name".into(),
+        })
+        .expect("serialize");
+        assert_eq!(json["type"], "update_profile");
+        assert_eq!(json["display_name"], "New Name");
     }
 
     #[test]
@@ -1341,6 +1784,45 @@ mod tests {
     }
 
     #[test]
+    fn late_ack_does_not_downgrade_an_already_read_message() {
+        // A read receipt can beat the relay's own ack back to the sender; the
+        // ack must then be a no-op instead of flipping "read" back to
+        // "delivered".
+        let mut messages: HashMap<String, Vec<UIMessage>> = HashMap::new();
+        messages.insert(
+            "peer-1".into(),
+            vec![UIMessage {
+                id: "client-1".into(),
+                text: "hello".into(),
+                outgoing: true,
+                timestamp: 0,
+                status: "read".into(),
+            }],
+        );
+
+        assert!(!apply_delivered(&mut messages, "client-1"));
+        assert_eq!(messages["peer-1"][0].status, "read");
+    }
+
+    #[test]
+    fn ack_for_already_delivered_message_is_a_noop() {
+        let mut messages: HashMap<String, Vec<UIMessage>> = HashMap::new();
+        messages.insert(
+            "peer-1".into(),
+            vec![UIMessage {
+                id: "client-1".into(),
+                text: "hello".into(),
+                outgoing: true,
+                timestamp: 0,
+                status: "delivered".into(),
+            }],
+        );
+
+        assert!(!apply_delivered(&mut messages, "client-1"));
+        assert_eq!(messages["peer-1"][0].status, "delivered");
+    }
+
+    #[test]
     fn envelope_serialization_carries_the_allocated_seq() {
         // The ack contract depends on the on-wire envelope seq matching the one
         // registered in pending_acks; send_wire must forward it verbatim.
@@ -1354,5 +1836,142 @@ mod tests {
             .expect("envelope must serialize");
         assert_eq!(json["type"], "envelope");
         assert_eq!(json["envelope"]["seq"], 42);
+    }
+
+    // ---------------------------------------------------------------------
+    // Read receipt bookkeeping
+    // ---------------------------------------------------------------------
+
+    #[test]
+    fn apply_read_flips_outgoing_peer_messages_and_returns_their_ids() {
+        let mut messages: HashMap<String, Vec<UIMessage>> = HashMap::new();
+        messages.insert(
+            "peer-1".into(),
+            vec![
+                UIMessage {
+                    id: "sent-1".into(),
+                    text: "a".into(),
+                    outgoing: true,
+                    timestamp: 0,
+                    status: "sent".into(),
+                },
+                UIMessage {
+                    id: "delivered-1".into(),
+                    text: "b".into(),
+                    outgoing: true,
+                    timestamp: 0,
+                    status: "delivered".into(),
+                },
+            ],
+        );
+        // A different peer's messages must be left alone.
+        messages.insert(
+            "peer-2".into(),
+            vec![UIMessage {
+                id: "delivered-2".into(),
+                text: "c".into(),
+                outgoing: true,
+                timestamp: 0,
+                status: "delivered".into(),
+            }],
+        );
+
+        let flipped = apply_read(&mut messages, "peer-1");
+        assert_eq!(flipped, vec!["sent-1", "delivered-1"]);
+        assert_eq!(messages["peer-1"][0].status, "read");
+        assert_eq!(messages["peer-1"][1].status, "read");
+        assert_eq!(messages["peer-2"][0].status, "delivered");
+    }
+
+    #[test]
+    fn apply_read_skips_incoming_and_already_read_messages() {
+        let mut messages: HashMap<String, Vec<UIMessage>> = HashMap::new();
+        messages.insert(
+            "peer-1".into(),
+            vec![
+                UIMessage {
+                    id: "in-1".into(),
+                    text: "incoming".into(),
+                    outgoing: false,
+                    timestamp: 0,
+                    status: "delivered".into(),
+                },
+                UIMessage {
+                    id: "read-1".into(),
+                    text: "already read".into(),
+                    outgoing: true,
+                    timestamp: 0,
+                    status: "read".into(),
+                },
+            ],
+        );
+
+        let flipped = apply_read(&mut messages, "peer-1");
+        assert!(flipped.is_empty());
+        assert_eq!(messages["peer-1"][0].status, "delivered");
+        assert_eq!(messages["peer-1"][1].status, "read");
+    }
+
+    #[test]
+    fn apply_read_unknown_peer_is_a_noop() {
+        let mut messages: HashMap<String, Vec<UIMessage>> = HashMap::new();
+        messages.insert(
+            "peer-1".into(),
+            vec![UIMessage {
+                id: "out-1".into(),
+                text: "hi".into(),
+                outgoing: true,
+                timestamp: 0,
+                status: "delivered".into(),
+            }],
+        );
+
+        assert!(apply_read(&mut messages, "ghost").is_empty());
+        assert_eq!(messages["peer-1"][0].status, "delivered");
+    }
+
+    // ---------------------------------------------------------------------
+    // Receipt transport (encrypted inside a Message)
+    // ---------------------------------------------------------------------
+
+    #[test]
+    fn receipt_transport_roundtrips_inside_the_ratchet_session() {
+        // A receipt is serialized as EnvelopeContent, encrypted like any
+        // message, and recovered by parsing the decrypted plaintext.
+        let alice = Identity::new();
+        let mut bob = Identity::new();
+        let bundle = bob.pre_key_bundle(5);
+        let mut alice_session = ChatSession::create_outbound(&alice, &bundle).expect("session");
+        let first = alice_session.encrypt(b"hello bob").expect("encrypt");
+        let pre_key = match first {
+            OlmMessage::PreKey(pk) => pk,
+            OlmMessage::Normal(_) => panic!("first message must be a pre-key message"),
+        };
+        let inbound = ChatSession::create_inbound(&mut bob, alice.curve25519_key(), &pre_key)
+            .expect("inbound session");
+        let mut bob_session = inbound.session;
+
+        // Bob sends a read receipt back to Alice.
+        let content = EnvelopeContent::Receipt {
+            kind: ReceiptKind::Read,
+        };
+        let payload = serde_json::to_vec(&content).expect("serialize receipt");
+        let ciphertext = bob_session.encrypt(payload).expect("encrypt receipt");
+        let plaintext = alice_session.decrypt(&ciphertext).expect("decrypt receipt");
+
+        let restored: EnvelopeContent = serde_json::from_slice(&plaintext).expect("parse");
+        assert_eq!(
+            restored,
+            EnvelopeContent::Receipt {
+                kind: ReceiptKind::Read
+            }
+        );
+    }
+
+    #[test]
+    fn display_name_validation_rejects_control_characters_and_oversize_names() {
+        let too_long = "x".repeat(MAX_DISPLAY_NAME_CHARS + 1);
+        assert!(too_long.chars().count() > MAX_DISPLAY_NAME_CHARS);
+        assert!("name\nwith\ttabs".chars().any(char::is_control));
     }
 }

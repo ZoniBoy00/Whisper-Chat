@@ -4,11 +4,13 @@
 //! Every payload is opaque to the relay: it only sees the base64-encoded
 //! ciphertext and metadata, never plaintext or key material.
 //!
-//! Three kinds of content exist:
+//! Four kinds of content exist:
 //!
 //! - [`EnvelopeContent::PreKeyBundle`]: published key material.
 //! - [`EnvelopeContent::Handshake`]: the first, session-establishing message.
 //! - [`EnvelopeContent::Message`]: an ordinary encrypted message.
+//! - [`EnvelopeContent::Receipt`]: a lightweight end-to-end control signal
+//!   (read receipts and typing indicators).
 
 use serde::{Deserialize, Serialize};
 use vodozemac::olm::{OlmMessage, PreKeyMessage};
@@ -66,6 +68,24 @@ impl Handshake {
     }
 }
 
+/// The kind of end-to-end control signal carried in an
+/// [`EnvelopeContent::Receipt`].
+///
+/// Read receipts and typing indicators are per-message client signals. They
+/// are not message payloads themselves: like [`Message`] they travel as
+/// small encrypted envelopes inside the Double Ratchet session, so the
+/// zero-knowledge relay only ever sees their ciphertext.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ReceiptKind {
+    /// The recipient has read the sender's messages.
+    Read,
+    /// The recipient is currently composing a reply.
+    Typing,
+    /// The recipient has stopped composing.
+    TypingStopped,
+}
+
 /// A routed envelope addressed to a specific peer.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Envelope {
@@ -105,6 +125,16 @@ pub enum EnvelopeContent {
     Handshake(Handshake),
     /// An ordinary encrypted message.
     Message(Message),
+    /// A lightweight end-to-end control signal: read receipts and typing
+    /// indicators.
+    ///
+    /// The serde field is renamed to `receipt` because the enum's internal
+    /// tag (`kind`) already occupies the key `kind` in the JSON object; a
+    /// plain `kind` field would collide with the tag and break round-tripping.
+    Receipt {
+        #[serde(rename = "receipt")]
+        kind: ReceiptKind,
+    },
 }
 
 #[cfg(test)]
@@ -184,8 +214,16 @@ mod tests {
         let handshake_content =
             EnvelopeContent::Handshake(Handshake::new("alice".to_string(), pre_key_message));
         let bundle_content = EnvelopeContent::PreKeyBundle(bundle);
+        let receipt_content = EnvelopeContent::Receipt {
+            kind: ReceiptKind::Read,
+        };
 
-        for content in [message_content, handshake_content, bundle_content] {
+        for content in [
+            message_content,
+            handshake_content,
+            bundle_content,
+            receipt_content,
+        ] {
             let envelope = Envelope::new("alice".to_string(), "bob".to_string(), content);
             let json = serde_json::to_string(&envelope).expect("serialization must succeed");
             let restored: Envelope =
@@ -194,6 +232,68 @@ mod tests {
             assert_eq!(restored, envelope);
             assert_eq!(restored.version, WIRE_VERSION);
         }
+    }
+
+    #[test]
+    fn receipt_kind_serializes_to_snake_case() {
+        assert_eq!(
+            serde_json::to_string(&ReceiptKind::Read).expect("serialization must succeed"),
+            r#""read""#
+        );
+        assert_eq!(
+            serde_json::to_string(&ReceiptKind::Typing).expect("serialization must succeed"),
+            r#""typing""#
+        );
+        assert_eq!(
+            serde_json::to_string(&ReceiptKind::TypingStopped).expect("serialization must succeed"),
+            r#""typing_stopped""#
+        );
+    }
+
+    #[test]
+    fn receipt_kind_roundtrips_through_json() {
+        for kind in [
+            ReceiptKind::Read,
+            ReceiptKind::Typing,
+            ReceiptKind::TypingStopped,
+        ] {
+            let json = serde_json::to_string(&kind).expect("serialization must succeed");
+            let restored: ReceiptKind =
+                serde_json::from_str(&json).expect("deserialization must succeed");
+            assert_eq!(restored, kind);
+        }
+    }
+
+    #[test]
+    fn receipt_content_roundtrips_inside_envelope() {
+        for kind in [
+            ReceiptKind::Read,
+            ReceiptKind::Typing,
+            ReceiptKind::TypingStopped,
+        ] {
+            let envelope = Envelope::new(
+                "alice".to_string(),
+                "bob".to_string(),
+                EnvelopeContent::Receipt { kind },
+            );
+            let json = serde_json::to_string(&envelope).expect("serialization must succeed");
+            let restored: Envelope =
+                serde_json::from_str(&json).expect("deserialization must succeed");
+
+            assert_eq!(restored, envelope);
+            assert_eq!(restored.version, WIRE_VERSION);
+        }
+    }
+
+    #[test]
+    fn receipt_wire_format_avoids_kind_tag_collision() {
+        let content = EnvelopeContent::Receipt {
+            kind: ReceiptKind::TypingStopped,
+        };
+        let json = serde_json::to_string(&content).expect("serialization must succeed");
+        // The `kind` tag names the variant; the receipt kind lives under a
+        // distinct `receipt` key so the JSON object stays unambiguous.
+        assert_eq!(json, r#"{"kind":"receipt","receipt":"typing_stopped"}"#);
     }
 
     /// A minimal session pair used to produce wire-level message payloads.

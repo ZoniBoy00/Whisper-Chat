@@ -1,15 +1,19 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import type { Conversation, Message } from "../types";
+import type { ContactInfo, Conversation, Message, MessageStatus } from "../types";
 import {
   connectRelay,
   getChatState,
   getSettings,
   onChatMessage,
+  onContactUpdated,
   onMessageStatus,
   onRelayStatus,
+  onTyping,
   publishPrekeys,
   resetRelay,
   sendMessage,
+  sendTyping,
+  setDisplayName as persistDisplayName,
   setRelayUrl as persistRelayUrl,
   setTheme as persistTheme,
   startChat,
@@ -29,7 +33,8 @@ interface MainViewProps {
 }
 
 export function MainView({ peerId, onReset }: MainViewProps) {
-  const [contacts, setContacts] = useState<string[]>([]);
+  const [contacts, setContacts] = useState<ContactInfo[]>([]);
+  const [myDisplayName, setMyDisplayName] = useState<string | null>(null);
   const [messages, setMessages] = useState<Record<string, Message[]>>({});
   const [connected, setConnected] = useState(false);
   const [connecting, setConnecting] = useState(true);
@@ -39,6 +44,9 @@ export function MainView({ peerId, onReset }: MainViewProps) {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [theme, setTheme] = useState<Theme>("dark");
   const [relayUrl, setRelayUrl] = useState("");
+  // Per-peer typing state fed by the `typing` event (with a 5s auto-timeout
+  // on the backend, so it can never get stuck on "on").
+  const [typing, setTyping] = useState<Record<string, boolean>>({});
 
   const connect = useCallback(async () => {
     setConnecting(true);
@@ -59,6 +67,7 @@ export function MainView({ peerId, onReset }: MainViewProps) {
       setContacts(state.contacts);
       setMessages(state.messages);
       setConnected(state.connected);
+      setMyDisplayName(state.my_display_name);
     } catch {
       // Transient failure; event listeners resync the next state change.
     }
@@ -118,7 +127,9 @@ export function MainView({ peerId, onReset }: MainViewProps) {
         onChatMessage(({ peer_id, message }) => {
           if (disposed) return;
           setContacts((prev) =>
-            prev.includes(peer_id) ? prev : [...prev, peer_id]
+            prev.some((c) => c.peer_id === peer_id)
+              ? prev
+              : [...prev, { peer_id, display_name: null }]
           );
           setMessages((prev) => {
             const list = prev[peer_id] ?? [];
@@ -138,14 +149,19 @@ export function MainView({ peerId, onReset }: MainViewProps) {
       const messageStatusUnlisten = await register(() =>
         onMessageStatus(({ client_id, status }) => {
           if (disposed) return;
-          // Delivery acks carry only the client id, so match it against every
-          // peer's history and flip the matching message to `delivered`.
+          // Status events carry only the client id, so match it against every
+          // peer's history and flip the matching message. `status` is either
+          // "delivered" (relay ack) or "read" (end-to-end read receipt).
+          const rank: Record<MessageStatus, number> = { sent: 0, delivered: 1, read: 2 };
           setMessages((prev) => {
             let changed = false;
             const next: Record<string, Message[]> = {};
             for (const [peer, list] of Object.entries(prev)) {
               next[peer] = list.map((m) => {
                 if (m.id !== client_id) return m;
+                // Promotion-only: an out-of-order event must never downgrade
+                // an already "read" (or "delivered") message.
+                if (rank[status] <= rank[m.status ?? "delivered"]) return m;
                 changed = true;
                 return { ...m, status };
               });
@@ -154,7 +170,36 @@ export function MainView({ peerId, onReset }: MainViewProps) {
           });
         })
       );
-      if (disposed || !chatUnlisten || !statusUnlisten || !messageStatusUnlisten) {
+      const typingUnlisten = await register(() =>
+        onTyping(({ peer_id, is_typing }) => {
+          if (disposed) return;
+          setTyping((prev) =>
+            prev[peer_id] === is_typing
+              ? prev
+              : { ...prev, [peer_id]: is_typing }
+          );
+        })
+      );
+      const contactUpdatedUnlisten = await register(() =>
+        onContactUpdated(({ peer_id, display_name }) => {
+          if (disposed) return;
+          setContacts((prev) =>
+            prev.some((c) => c.peer_id === peer_id)
+              ? prev.map((c) =>
+                  c.peer_id === peer_id ? { ...c, display_name } : c
+                )
+              : [...prev, { peer_id, display_name }]
+          );
+        })
+      );
+      if (
+        disposed ||
+        !chatUnlisten ||
+        !statusUnlisten ||
+        !messageStatusUnlisten ||
+        !typingUnlisten ||
+        !contactUpdatedUnlisten
+      ) {
         return;
       }
       // connect() must settle before refresh() so the snapshot reflects the
@@ -200,7 +245,7 @@ export function MainView({ peerId, onReset }: MainViewProps) {
       const clientId = crypto.randomUUID();
       // Optimistic insertion; the backend echoes the same client id in the
       // `chat-message` event, which the dedup logic above ignores. The status
-      // flips to "delivered" when the relay acks.
+      // flips to "delivered" on the relay ack and "read" on a read receipt.
       setMessages((prev) => ({
         ...prev,
         [activePeerId]: [
@@ -223,17 +268,43 @@ export function MainView({ peerId, onReset }: MainViewProps) {
     [activePeerId]
   );
 
-  const handleAddContact = useCallback(async (peerIdToAdd: string) => {
-    try {
-      await startChat(peerIdToAdd);
-      setContacts((prev) =>
-        prev.includes(peerIdToAdd) ? prev : [...prev, peerIdToAdd]
-      );
-      setActivePeerId(peerIdToAdd);
-    } catch (err) {
-      throw new Error(String(err));
-    }
-  }, []);
+  const handleTypingChange = useCallback(
+    (isTyping: boolean) => {
+      if (!activePeerId) return;
+      // Best-effort: without an established session (or while disconnected)
+      // there is no session to encrypt the indicator with.
+      void sendTyping(activePeerId, isTyping).catch(() => {});
+    },
+    [activePeerId]
+  );
+
+  const handleSaveDisplayName = useCallback(
+    async (name: string) => {
+      const trimmed = name.trim();
+      await persistDisplayName(trimmed);
+      setMyDisplayName(trimmed || null);
+    },
+    []
+  );
+
+  const handleAddContact = useCallback(
+    async (peerIdToAdd: string) => {
+      try {
+        await startChat(peerIdToAdd);
+        setContacts((prev) =>
+          prev.some((c) => c.peer_id === peerIdToAdd)
+            ? prev
+            : [...prev, { peer_id: peerIdToAdd, display_name: null }]
+        );
+        setActivePeerId(peerIdToAdd);
+        // Pull the freshly-fetched display name for the new contact.
+        void refresh();
+      } catch (err) {
+        throw new Error(String(err));
+      }
+    },
+    [refresh]
+  );
 
   const handleReset = useCallback(() => {
     void resetRelay();
@@ -245,11 +316,13 @@ export function MainView({ peerId, onReset }: MainViewProps) {
   const conversations: Conversation[] = useMemo(
     () =>
       contacts
-        .map((id) => ({
-          id,
-          name: shortPeerId(id),
-          peerId: id,
-          messages: messages[id] ?? [],
+        .map((contact) => ({
+          id: contact.peer_id,
+          name:
+            contact.display_name ?? shortPeerId(contact.peer_id),
+          displayName: contact.display_name,
+          peerId: contact.peer_id,
+          messages: messages[contact.peer_id] ?? [],
         }))
         .sort((a, b) => {
           const lastA = a.messages[a.messages.length - 1]?.timestamp ?? 0;
@@ -266,6 +339,7 @@ export function MainView({ peerId, onReset }: MainViewProps) {
     <div className="flex h-screen overflow-hidden bg-wp-bg text-wp-text">
       <Sidebar
         peerId={peerId}
+        myDisplayName={myDisplayName}
         conversations={conversations}
         activeId={activePeerId}
         connected={connected}
@@ -277,7 +351,12 @@ export function MainView({ peerId, onReset }: MainViewProps) {
         onReconnect={() => void connect()}
         onReset={handleReset}
       />
-      <ChatView conversation={active} onSend={(t) => void handleSend(t)} />
+      <ChatView
+        conversation={active}
+        isTyping={active ? typing[active.peerId] ?? false : false}
+        onSend={(t) => void handleSend(t)}
+        onTypingChange={handleTypingChange}
+      />
       <AddContactDialog
         open={addDialogOpen}
         onOpenChange={setAddDialogOpen}
@@ -287,10 +366,12 @@ export function MainView({ peerId, onReset }: MainViewProps) {
         open={settingsOpen}
         onOpenChange={setSettingsOpen}
         peerId={peerId}
+        myDisplayName={myDisplayName}
         theme={theme}
         onThemeChange={handleThemeChange}
         relayUrl={relayUrl}
         onSaveRelayUrl={handleRelayUrlSave}
+        onSaveDisplayName={handleSaveDisplayName}
         onReset={handleReset}
       />
     </div>

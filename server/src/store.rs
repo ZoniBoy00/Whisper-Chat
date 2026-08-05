@@ -94,6 +94,7 @@ impl Store {
                 peer_id         TEXT PRIMARY KEY,
                 curve25519_key  TEXT,
                 ed25519_key     TEXT,
+                display_name    TEXT,
                 first_seen      INTEGER NOT NULL
             );
             CREATE TABLE IF NOT EXISTS prekeys (
@@ -104,13 +105,15 @@ impl Store {
         )?;
 
         // Migration: databases created before the signed-hello binding lack
-        // the public-key columns. SQLite has no `ADD COLUMN IF NOT EXISTS`,
-        // so inspect the live schema and alter it in place when needed.
+        // the public-key columns, and databases created before the profile
+        // feature lack the display-name column. SQLite has no
+        // `ADD COLUMN IF NOT EXISTS`, so inspect the live schema and alter it
+        // in place when needed.
         let columns: Vec<String> = conn
             .prepare("PRAGMA table_info(users)")?
             .query_map([], |row| row.get::<_, String>(1))?
             .collect::<rusqlite::Result<_>>()?;
-        for name in ["curve25519_key", "ed25519_key"] {
+        for name in ["curve25519_key", "ed25519_key", "display_name"] {
             if !columns.iter().any(|c| c.as_str() == name) {
                 conn.execute(&format!("ALTER TABLE users ADD COLUMN {name} TEXT"), [])?;
             }
@@ -166,6 +169,34 @@ impl Store {
         )
         .optional()
         .unwrap_or(None)
+    }
+
+    /// Set (or update) a peer's public display name — Signal-style profile
+    /// data that any other peer can see in a pre-key lookup. Creating or
+    /// updating an existing row is the same operation, so this works for both
+    /// a brand-new peer and a returning one. The original `first_seen` is
+    /// preserved on update; a brand-new row records the current time.
+    pub fn set_display_name(&self, peer_id: &str, display_name: &str) -> SqlResult<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "INSERT INTO users (peer_id, display_name, first_seen) VALUES (?1, ?2, ?3)
+             ON CONFLICT(peer_id) DO UPDATE SET display_name = excluded.display_name",
+            params![peer_id, display_name, unix_now()],
+        )?;
+        Ok(())
+    }
+
+    /// The peer's public display name, if one was set (NULL rows yield None).
+    pub fn get_display_name(&self, peer_id: &str) -> Option<String> {
+        let conn = self.conn.lock().unwrap();
+        conn.query_row(
+            "SELECT display_name FROM users WHERE peer_id = ?1",
+            params![peer_id],
+            |r| r.get::<_, Option<String>>(0),
+        )
+        .optional()
+        .unwrap_or(None)
+        .flatten()
     }
 
     /// Store a peer's current pre-key bundle, replacing any previous bundle
@@ -470,6 +501,44 @@ mod tests {
     }
 
     #[test]
+    fn set_display_name_roundtrip() {
+        let store = Store::open_in_memory().unwrap();
+        store.set_display_name("peer-x", "Test Alice").unwrap();
+        assert_eq!(
+            store.get_display_name("peer-x").as_deref(),
+            Some("Test Alice")
+        );
+    }
+
+    #[test]
+    fn set_display_name_updates_existing_name() {
+        let store = Store::open_in_memory().unwrap();
+        store.set_display_name("peer-x", "First").unwrap();
+        store.set_display_name("peer-x", "Second").unwrap();
+        assert_eq!(store.get_display_name("peer-x").as_deref(), Some("Second"));
+    }
+
+    #[test]
+    fn get_display_name_returns_none_for_unknown_peer() {
+        let store = Store::open_in_memory().unwrap();
+        assert_eq!(store.get_display_name("peer-ghost"), None);
+    }
+
+    #[test]
+    fn get_display_name_returns_none_for_unset_column() {
+        let store = Store::open_in_memory().unwrap();
+        let now = unix_now();
+        store
+            .register_user_with_keys("peer-x", "curve-a", "ed-a", now)
+            .unwrap();
+        assert_eq!(
+            store.get_display_name("peer-x"),
+            None,
+            "a user registered without a name must yield None"
+        );
+    }
+
+    #[test]
     fn set_prekeys_roundtrip_returns_stored_json() {
         let store = Store::open_in_memory().unwrap();
         let now = unix_now();
@@ -521,6 +590,12 @@ mod tests {
             .expect("keys must be stored");
         assert_eq!(keys, ("curve-a".to_string(), "ed-a".to_string()));
         assert_eq!(store.first_seen_for("peer-old"), Some(1));
+        // The display-name column must be added by the same migration.
+        store.set_display_name("peer-old", "Old One").unwrap();
+        assert_eq!(
+            store.get_display_name("peer-old").as_deref(),
+            Some("Old One")
+        );
         store
             .register_user_with_keys("peer-new", "curve-b", "ed-b", 2)
             .unwrap();

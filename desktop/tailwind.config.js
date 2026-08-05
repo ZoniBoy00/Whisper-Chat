@@ -27,6 +27,7 @@ export default {
           "bubble-out-2": "rgb(var(--wp-bubble-out-2) / <alpha-value>)",
           "bubble-in": "rgb(var(--wp-bubble-in) / <alpha-value>)",
           danger: "rgb(var(--wp-danger) / <alpha-value>)",
+          read: "rgb(var(--wp-read) / <alpha-value>)",
         },
       },
     },

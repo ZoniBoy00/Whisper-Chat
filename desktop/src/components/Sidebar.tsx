@@ -17,6 +17,8 @@ import { CopyButton } from "./CopyButton";
 
 interface SidebarProps {
   peerId: string;
+  /** Our own public display name; null when unset. */
+  myDisplayName: string | null;
   conversations: Conversation[];
   activeId: string | null;
   connected: boolean;
@@ -31,6 +33,7 @@ interface SidebarProps {
 
 export function Sidebar({
   peerId,
+  myDisplayName,
   conversations,
   activeId,
   connected,
@@ -48,7 +51,8 @@ export function Sidebar({
 
   const trimmedQuery = query.trim().toLowerCase();
   const filteredConversations = conversations.filter((conversation) =>
-    conversation.peerId.toLowerCase().includes(trimmedQuery)
+    conversation.peerId.toLowerCase().includes(trimmedQuery) ||
+    (conversation.displayName ?? "").toLowerCase().includes(trimmedQuery)
   );
 
   const toggleMenu = () => {
@@ -70,10 +74,10 @@ export function Sidebar({
     <aside className="flex w-[350px] shrink-0 flex-col border-r border-wp-line/10 bg-wp-panel">
       {/* Profile */}
       <header className="flex items-center gap-3 px-4 pb-3 pt-4">
-        <Avatar size={40} />
+        <Avatar name={myDisplayName ?? undefined} size={40} />
         <div className="min-w-0 flex-1">
-          <p className="font-display text-sm font-semibold tracking-tight text-wp-text">
-            Your Whisper ID
+          <p className="truncate text-sm font-semibold tracking-tight text-wp-text">
+            {myDisplayName ?? "Your Whisper ID"}
           </p>
           <p className="truncate font-mono text-xs text-wp-dim">{peerId}</p>
         </div>
@@ -202,6 +206,8 @@ export function Sidebar({
           filteredConversations.map((conversation) => {
             const last = conversation.messages[conversation.messages.length - 1];
             const active = conversation.id === activeId;
+            const displayName =
+              conversation.displayName ?? shortPeerId(conversation.peerId, 16);
             return (
               <button
                 key={conversation.id}
@@ -213,11 +219,11 @@ export function Sidebar({
                   active ? "bg-wp-panel-3" : "hover:bg-wp-panel-2"
                 )}
               >
-                <Avatar name={shortPeerId(conversation.peerId)} size={42} />
+                <Avatar name={displayName} size={42} />
                 <div className="min-w-0 flex-1">
                   <div className="flex items-baseline justify-between gap-2">
-                    <p className="truncate font-mono text-sm font-medium text-wp-text">
-                      {shortPeerId(conversation.peerId, 16)}
+                    <p className="truncate text-sm font-medium text-wp-text">
+                      {displayName}
                     </p>
                     {last ? (
                       <span className="shrink-0 text-[10px] tabular-nums text-wp-faint">
@@ -228,7 +234,9 @@ export function Sidebar({
                   <p className="truncate text-xs text-wp-dim">
                     {last
                       ? `${last.outgoing ? "You: " : ""}${last.text}`
-                      : shortPeerId(conversation.peerId)}
+                      : conversation.displayName
+                        ? shortPeerId(conversation.peerId)
+                        : ""}
                   </p>
                 </div>
               </button>

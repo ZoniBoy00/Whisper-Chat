@@ -19,7 +19,9 @@ const DEBUG = process.env.DEBUG === "1";
 // Build a self-authenticating signed hello.
 // - x25519 public key (raw 32 bytes) -> peer_id = sha256(pub)[:24 hex]
 // - ed25519 signature over the peer_id, base64-encoded
-function makeIdentity() {
+// An optional `displayName` is attached as the public profile name
+// (Signal-style) and stored by the relay on the first hello.
+function makeIdentity(displayName) {
   const { privateKey: edPriv, publicKey: edPub } = generateKeyPairSync("ed25519");
   const { publicKey: xPub } = generateKeyPairSync("x25519");
 
@@ -30,13 +32,14 @@ function makeIdentity() {
   const edDer = edPub.export({ type: "spki", format: "der" });
   const edRaw = edDer.subarray(edDer.length - 32);
 
-  return {
+  const identity = {
     peer_id: peerId,
     curve25519_key: curveRaw.toString("base64"),
     ed25519_key: edRaw.toString("base64"),
     signature: sign(null, Buffer.from(peerId, "utf8"), edPriv).toString("base64"),
-    edPriv,
   };
+  if (displayName) identity.display_name = displayName;
+  return { ...identity, edPriv };
 }
 
 // Build a signed pre-key bundle for an `identity` (from makeIdentity) holding
@@ -131,8 +134,8 @@ const check = (name, ok) => {
 };
 
 async function main() {
-  const alice = makeIdentity();
-  const bob = makeIdentity();
+  const alice = makeIdentity("Test Alice");
+  const bob = makeIdentity("Test Bob");
   const carol = makeIdentity();
   const dave = makeIdentity();
 
@@ -372,7 +375,8 @@ async function main() {
   await waitFor("prekeys reply", () =>
     bob4.ws.messages.some((m) => m.type === "prekeys")
   );
-  const fetchedBundle = bob4.ws.messages.filter((m) => m.type === "prekeys").pop().bundle;
+  const fetchedMsg = bob4.ws.messages.filter((m) => m.type === "prekeys").pop();
+  const fetchedBundle = fetchedMsg.bundle;
   check(
     "prekeys: fetch roundtrip returns the published bundle",
     fetchedBundle &&
@@ -380,6 +384,10 @@ async function main() {
       fetchedBundle.signing_key === aliceBundle.signing_key &&
       fetchedBundle.signature === aliceBundle.signature &&
       JSON.stringify(fetchedBundle.one_time_keys) === JSON.stringify(aliceBundle.one_time_keys)
+  );
+  check(
+    "prekeys: response carries the peer's display name",
+    fetchedMsg.display_name === "Test Alice"
   );
 
   // --- Test (b): identity mismatch ---
@@ -400,6 +408,33 @@ async function main() {
     bob4.ws.messages.some((m) => m.type === "error" && m.code === "no_prekeys")
   );
   check("prekeys: unknown peer returns no_prekeys", true);
+
+  // --- Test (a): update_profile sets a new public display name ---
+  aliceConn.ws.sendJson({ type: "update_profile", display_name: "Alice Prime" });
+  await waitFor("profile_updated", () =>
+    aliceConn.ws.messages.some((m) => m.type === "profile_updated")
+  );
+  check("update_profile: acknowledged with profile_updated", true);
+
+  // --- Test (b): the new name is visible in the next pre-keys lookup ---
+  bob4.ws.sendJson({ type: "fetch_prekeys", peer_id: alice.peer_id });
+  await waitFor("prekeys reply (updated profile)", () =>
+    bob4.ws.messages
+      .filter((m) => m.type === "prekeys")
+      .some((m) => m.display_name === "Alice Prime")
+  );
+  const refetched = bob4.ws.messages.filter((m) => m.type === "prekeys").pop();
+  check(
+    "update_profile: new name visible in the next prekeys fetch",
+    refetched.display_name === "Alice Prime"
+  );
+
+  // --- Test (c): an over-long display name is rejected ---
+  aliceConn.ws.sendJson({ type: "update_profile", display_name: "A".repeat(65) });
+  await waitFor("invalid_display_name error", () =>
+    aliceConn.ws.messages.some((m) => m.type === "error" && m.code === "invalid_display_name")
+  );
+  check("update_profile: name over 64 chars rejected with invalid_display_name", true);
 
   aliceConn.ws.close();
   bob4.ws.close();

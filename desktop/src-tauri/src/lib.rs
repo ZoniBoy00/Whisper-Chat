@@ -6,7 +6,7 @@ use tauri::{Manager, State};
 
 mod relay;
 
-use relay::{ChatState, RelayClient, Settings};
+use relay::{ChatState, Profiles, RelayClient, Settings};
 
 /// Resolve the on-disk location of the persisted identity.
 ///
@@ -43,9 +43,14 @@ fn get_identity(app: tauri::AppHandle) -> Result<IdentityInfo, String> {
 
 /// Generate a fresh identity, persist it to the app data directory and return
 /// its peer ID. Existing identities are overwritten on purpose — the caller
-/// only reaches this command when no identity is present.
+/// only reaches this command when no identity is present. An optional
+/// `display_name` (the onboarding "What should people call you?" answer) is
+/// stored next to the identity so the first connect advertises it.
 #[tauri::command]
-fn generate_identity(app: tauri::AppHandle) -> Result<IdentityInfo, String> {
+fn generate_identity(
+    app: tauri::AppHandle,
+    display_name: Option<String>,
+) -> Result<IdentityInfo, String> {
     let identity = e2ee_core::Identity::new();
     let peer_id = identity.peer_id();
     let json = identity.to_json().map_err(|e| e.to_string())?;
@@ -55,6 +60,18 @@ fn generate_identity(app: tauri::AppHandle) -> Result<IdentityInfo, String> {
         fs::create_dir_all(dir).map_err(|e| e.to_string())?;
     }
     fs::write(path, json).map_err(|e| e.to_string())?;
+
+    if let Some(name) = display_name {
+        let name = name.trim();
+        if !name.is_empty() {
+            let profiles = Profiles {
+                my_display_name: Some(name.to_string()),
+                ..Profiles::default()
+            };
+            relay::write_profiles_file(&relay::resolve_profiles_path(&app), &profiles)
+                .map_err(|e| e.to_string())?;
+        }
+    }
 
     Ok(IdentityInfo {
         peer_id,
@@ -153,6 +170,25 @@ async fn set_theme(state: State<'_, RelayClient>, theme: String) -> Result<(), S
     state.set_theme(&theme).map_err(|e| e.to_string())
 }
 
+/// Persist our own public display name and announce it to the relay so other
+/// peers can show it when they look us up.
+#[tauri::command]
+async fn set_display_name(state: State<'_, RelayClient>, name: String) -> Result<(), String> {
+    state.set_display_name(&name).map_err(|e| e.to_string())
+}
+
+/// Send an end-to-end typing indicator to a peer (encrypted in the session).
+#[tauri::command]
+async fn send_typing(
+    state: State<'_, RelayClient>,
+    peer_id: String,
+    is_typing: bool,
+) -> Result<(), String> {
+    state
+        .send_typing(&peer_id, is_typing)
+        .map_err(|e| e.to_string())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -173,7 +209,9 @@ pub fn run() {
             reset_relay,
             get_settings,
             set_relay_url,
-            set_theme
+            set_theme,
+            set_display_name,
+            send_typing
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

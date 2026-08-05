@@ -24,10 +24,14 @@ interface SettingsDialogProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   peerId: string;
+  /** Our own public display name; null when unset. */
+  myDisplayName: string | null;
   theme: Theme;
   onThemeChange: (theme: Theme) => void;
   relayUrl: string;
   onSaveRelayUrl: (url: string) => Promise<void>;
+  /** Persist a new display name; empty clears it. */
+  onSaveDisplayName: (name: string) => Promise<void>;
   onReset: () => void;
 }
 
@@ -57,17 +61,23 @@ export function SettingsDialog({
   open,
   onOpenChange,
   peerId,
+  myDisplayName,
   theme,
   onThemeChange,
   relayUrl,
   onSaveRelayUrl,
+  onSaveDisplayName,
   onReset,
 }: SettingsDialogProps) {
   const dialogRef = useRef<HTMLDialogElement>(null);
   const [relayInput, setRelayInput] = useState("");
+  const [nameInput, setNameInput] = useState("");
   const [saving, setSaving] = useState(false);
+  const [savingName, setSavingName] = useState(false);
   const [saved, setSaved] = useState(false);
+  const [savedName, setSavedName] = useState(false);
   const [relayError, setRelayError] = useState<string | null>(null);
+  const [nameError, setNameError] = useState<string | null>(null);
   const [confirmingReset, setConfirmingReset] = useState(false);
 
   useEffect(() => {
@@ -76,8 +86,11 @@ export function SettingsDialog({
     if (open && !dialog.open) {
       // Seed the form from the latest settings each time the dialog opens.
       setRelayInput(relayUrl);
+      setNameInput(myDisplayName ?? "");
       setSaved(false);
+      setSavedName(false);
       setRelayError(null);
+      setNameError(null);
       setConfirmingReset(false);
       dialog.showModal();
     } else if (!open && dialog.open) {
@@ -114,6 +127,25 @@ export function SettingsDialog({
       onOpenChange(false);
     } else {
       setConfirmingReset(true);
+    }
+  };
+
+  const handleSaveName = async () => {
+    const name = nameInput.trim();
+    if (name.length > 64) {
+      setNameError("Display name must be 64 characters or fewer.");
+      return;
+    }
+    setSavingName(true);
+    setNameError(null);
+    try {
+      await onSaveDisplayName(name);
+      setSavedName(true);
+      window.setTimeout(() => setSavedName(false), 2000);
+    } catch (err) {
+      setNameError(String(err).replace(/^Error:\s*/, ""));
+    } finally {
+      setSavingName(false);
     }
   };
 
@@ -159,17 +191,77 @@ export function SettingsDialog({
               icon={<User className="h-3.5 w-3.5" />}
               label="Profile"
             />
-            <div className="flex items-center gap-4 rounded-xl border border-wp-line/10 bg-wp-panel-3 p-4">
-              <Avatar size={48} />
-              <div className="min-w-0 flex-1">
-                <p className="text-xs font-medium text-wp-dim">
-                  Your Whisper ID
-                </p>
-                <p className="mt-1 select-all break-all font-mono text-sm text-wp-text">
-                  {peerId}
-                </p>
+            <div className="space-y-4 rounded-xl border border-wp-line/10 bg-wp-panel-3 p-4">
+              <div className="flex items-center gap-4">
+                <Avatar name={myDisplayName ?? undefined} size={48} />
+                <div className="min-w-0 flex-1">
+                  <p className="text-xs font-medium text-wp-dim">
+                    Your Whisper ID
+                  </p>
+                  <p className="mt-1 select-all break-all font-mono text-sm text-wp-text">
+                    {peerId}
+                  </p>
+                </div>
+                <CopyButton value={peerId} label="Copy" />
               </div>
-              <CopyButton value={peerId} label="Copy" />
+              <div>
+                <label
+                  htmlFor="settings-display-name"
+                  className="text-xs font-medium text-wp-dim"
+                >
+                  Display name
+                </label>
+                <div className="mt-2 flex gap-2">
+                  <input
+                    id="settings-display-name"
+                    type="text"
+                    value={nameInput}
+                    onChange={(e) => {
+                      setNameInput(e.target.value);
+                      setSavedName(false);
+                    }}
+                    placeholder="What should people call you?"
+                    maxLength={64}
+                    autoComplete="off"
+                    spellCheck={false}
+                    aria-invalid={nameError ? true : undefined}
+                    aria-describedby={nameError ? "settings-name-error" : "settings-name-hint"}
+                    className="min-w-0 flex-1 rounded-xl bg-wp-panel-2 px-3.5 py-2.5 text-sm text-wp-text placeholder-wp-faint outline-none transition focus:ring-1 focus:ring-wp-accent/60"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => void handleSaveName()}
+                    disabled={savingName || nameInput.trim() === (myDisplayName ?? "")}
+                    className={cx(
+                      "inline-flex shrink-0 items-center gap-2 rounded-xl bg-wp-accent px-4 py-2.5 text-xs font-semibold text-wp-accent-fg transition hover:bg-wp-accent-strong",
+                      "disabled:cursor-not-allowed disabled:opacity-50"
+                    )}
+                  >
+                    {savingName ? (
+                      <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden="true" />
+                    ) : (
+                      <Save className="h-3.5 w-3.5" aria-hidden="true" />
+                    )}
+                    {savedName ? "Saved" : savingName ? "Saving…" : "Save"}
+                  </button>
+                </div>
+                <p
+                  id="settings-name-hint"
+                  className="mt-2 text-[11px] leading-snug text-wp-faint"
+                >
+                  Public profile data — shown to people who start a chat with
+                  you. 64 characters max.
+                </p>
+                {nameError ? (
+                  <p
+                    id="settings-name-error"
+                    role="alert"
+                    className="mt-2 text-[11px] leading-snug text-wp-danger"
+                  >
+                    {nameError}
+                  </p>
+                ) : null}
+              </div>
             </div>
           </section>
 

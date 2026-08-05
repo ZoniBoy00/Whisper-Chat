@@ -35,6 +35,9 @@ const MAX_ENVELOPE_BYTES: usize = 8 * 1024 * 1024; // 8 MiB
 /// Seconds a client may take to send its `hello` before being dropped.
 const HELLO_TIMEOUT_SECS: u64 = 10;
 
+/// Maximum length of a public display name, in Unicode characters.
+const MAX_DISPLAY_NAME_CHARS: usize = 64;
+
 /// Default per-IP token bucket: burst of 60 envelopes, refilled at 1/sec
 /// (~60 envelopes per minute).
 const DEFAULT_RATE_BURST: f64 = 60.0;
@@ -74,12 +77,14 @@ impl Envelope {
 #[serde(tag = "type", rename_all = "snake_case")]
 enum ClientMessage {
     /// First message on a fresh socket — announces a signed hello binding
-    /// the peer ID to the sender's public keys.
+    /// the peer ID to the sender's public keys. The optional `display_name`
+    /// is public profile data (Signal-style) stored alongside the keys.
     Hello {
         peer_id: String,
         curve25519_key: String,
         ed25519_key: String,
         signature: String,
+        display_name: Option<String>,
     },
     /// An opaque envelope to route onward.
     Envelope { envelope: Envelope },
@@ -97,6 +102,11 @@ enum ClientMessage {
     /// Request another peer's pre-key bundle (public directory lookup).
     #[serde(rename = "fetch_prekeys")]
     FetchPrekeys { peer_id: String },
+    /// Set the caller's public display name (Signal-style profile name). The
+    /// new name replaces the stored one and is visible to everyone in
+    /// subsequent pre-key lookups.
+    #[serde(rename = "update_profile")]
+    UpdateProfile { display_name: String },
 }
 
 /// Messages the SERVER sends to the client.
@@ -114,9 +124,16 @@ enum ServerMessage {
     /// Confirmation that a published pre-key bundle was accepted and stored.
     #[serde(rename = "prekeys_published")]
     PrekeysPublished,
-    /// The requested peer's pre-key bundle.
+    /// The requested peer's pre-key bundle plus its public display name
+    /// (`null` when the peer has not set one).
     #[serde(rename = "prekeys")]
-    Prekeys { bundle: Box<PreKeyBundle> },
+    Prekeys {
+        bundle: Box<PreKeyBundle>,
+        display_name: Option<String>,
+    },
+    /// Confirmation that the caller's display name was updated.
+    #[serde(rename = "profile_updated")]
+    ProfileUpdated,
     /// Protocol error.
     Error { code: String },
 }
@@ -238,6 +255,19 @@ impl Relay {
         }
     }
 
+    /// Build a relay over a pre-opened store with a deterministic rate
+    /// limiter (unit tests need exact bucket sizes).
+    #[cfg(test)]
+    fn with_limiter(store: Store, burst: f64, refill: f64) -> Self {
+        Self {
+            inner: Arc::new(RelayInner {
+                online: RwLock::new(HashMap::new()),
+                store,
+                limiter: RateLimiter::new(burst, refill),
+            }),
+        }
+    }
+
     /// Accept a connected socket: wait for hello, register, pump messages.
     /// `ip` is the peer's source address, used for rate limiting.
     pub async fn handle_socket(&self, socket: WebSocket, ip: String) {
@@ -303,6 +333,9 @@ impl Relay {
                         Ok(ClientMessage::FetchPrekeys { peer_id: target }) => {
                             self.fetch_prekeys(&peer_id, &ip, &target).await;
                         }
+                        Ok(ClientMessage::UpdateProfile { display_name }) => {
+                            self.update_profile(&peer_id, &ip, &display_name).await;
+                        }
                         // Re-registration or protocol violations: ignore for now.
                         Ok(_) => {}
                         Err(_) => {
@@ -355,6 +388,7 @@ impl Relay {
                         curve25519_key,
                         ed25519_key,
                         signature,
+                        display_name,
                     }) = serde_json::from_str(&text)
                     {
                         let hello = SignedHello {
@@ -363,7 +397,7 @@ impl Relay {
                             ed25519_key,
                             signature,
                         };
-                        return Some(self.validate_hello(&hello));
+                        return Some(self.validate_hello(&hello, display_name.as_deref()));
                     }
                 }
             }
@@ -405,7 +439,13 @@ impl Relay {
     /// with `identity_conflict` when the peer ID is already bound to a
     /// different Ed25519 key ("first-seen wins"). Newly seen peers are
     /// registered with their keys; returning peers keep their existing keys.
-    fn validate_hello(&self, hello: &SignedHello) -> HelloOutcome {
+    ///
+    /// The optional `display_name` is stored on the first hello and refreshed
+    /// on later hellos, but an absent or invalid name never clears an
+    /// existing one. Invalid names are ignored rather than failing the
+    /// handshake: a cosmetic profile field must not block an otherwise valid
+    /// authenticated connection.
+    fn validate_hello(&self, hello: &SignedHello, display_name: Option<&str>) -> HelloOutcome {
         if let Err(err) = Identity::verify_signed_hello(hello) {
             tracing::warn!(peer = %hello.peer_id, "hello verification failed: {err}");
             return HelloOutcome::Rejected {
@@ -428,7 +468,24 @@ impl Relay {
             &hello.ed25519_key,
             unix_now(),
         );
+
+        if let Some(name) = display_name {
+            if !Self::is_valid_display_name(name) {
+                tracing::warn!(peer = %hello.peer_id, "ignoring invalid display name on hello");
+            } else if let Err(err) = self.inner.store.set_display_name(&hello.peer_id, name) {
+                tracing::error!(peer = %hello.peer_id, "failed to persist display name: {err}");
+            }
+        }
         HelloOutcome::Accepted(hello.peer_id.clone())
+    }
+
+    /// Whether `name` is acceptable as a public display name: non-empty, at
+    /// most [`MAX_DISPLAY_NAME_CHARS`] Unicode characters and free of control
+    /// characters (newlines, tabs, terminal escapes, ...).
+    fn is_valid_display_name(name: &str) -> bool {
+        !name.is_empty()
+            && name.chars().count() <= MAX_DISPLAY_NAME_CHARS
+            && !name.chars().any(char::is_control)
     }
 
     /// Route an envelope to its recipient, or persist it for offline delivery.
@@ -614,11 +671,13 @@ impl Relay {
         match self.inner.store.get_prekeys(target) {
             Some(json) => match serde_json::from_str::<PreKeyBundle>(&json) {
                 Ok(bundle) => {
+                    let display_name = self.inner.store.get_display_name(target);
                     let _ = self
                         .send(
                             peer_id,
                             ServerMessage::Prekeys {
                                 bundle: Box::new(bundle),
+                                display_name,
                             },
                         )
                         .await;
@@ -636,6 +695,49 @@ impl Relay {
                         },
                     )
                     .await;
+            }
+        }
+    }
+
+    /// Update the caller's public display name.
+    ///
+    /// Like pre-key traffic, profile updates are rate limited per source IP
+    /// under the `profile:<ip>` bucket so a client cannot spam renames.
+    /// Invalid names are rejected with `invalid_display_name` and leave any
+    /// existing name untouched.
+    async fn update_profile(&self, peer_id: &str, ip: &str, display_name: &str) {
+        if !self.inner.limiter.try_take(&format!("profile:{ip}")) {
+            tracing::warn!(ip = %ip, "profile rate limit exceeded");
+            let _ = self
+                .send(
+                    peer_id,
+                    ServerMessage::Error {
+                        code: "rate_limited".into(),
+                    },
+                )
+                .await;
+            return;
+        }
+
+        if !Self::is_valid_display_name(display_name) {
+            tracing::warn!(peer = %peer_id, "rejecting invalid display name");
+            let _ = self
+                .send(
+                    peer_id,
+                    ServerMessage::Error {
+                        code: "invalid_display_name".into(),
+                    },
+                )
+                .await;
+            return;
+        }
+
+        match self.inner.store.set_display_name(peer_id, display_name) {
+            Ok(()) => {
+                let _ = self.send(peer_id, ServerMessage::ProfileUpdated).await;
+            }
+            Err(err) => {
+                tracing::error!(peer = %peer_id, "failed to persist display name: {err}");
             }
         }
     }
@@ -753,7 +855,7 @@ mod tests {
         let identity = Identity::new();
         let hello = identity.signed_hello();
 
-        let outcome = relay.validate_hello(&hello);
+        let outcome = relay.validate_hello(&hello, None);
         let accepted = match outcome {
             HelloOutcome::Accepted(id) => id,
             HelloOutcome::Rejected { code } => panic!("expected acceptance, got {code}"),
@@ -778,7 +880,7 @@ mod tests {
         // Truncating the base64 makes it an invalid signature.
         hello.signature.truncate(10);
 
-        let outcome = relay.validate_hello(&hello);
+        let outcome = relay.validate_hello(&hello, None);
         match outcome {
             HelloOutcome::Accepted(_) => panic!("an invalid signature must be rejected"),
             HelloOutcome::Rejected { code } => assert_eq!(code, "invalid_hello"),
@@ -791,7 +893,7 @@ mod tests {
         let relay = Relay::with_store(store);
         let first = Identity::new();
         let hello = first.signed_hello();
-        relay.validate_hello(&hello);
+        relay.validate_hello(&hello, None);
 
         // Same curve key (hence same peer ID) but a different Ed25519 key:
         // the signature verifies, yet the identity conflicts with the
@@ -801,7 +903,7 @@ mod tests {
         conflict.ed25519_key = other.ed25519_key().to_base64();
         conflict.signature = other.sign(conflict.peer_id.as_bytes()).to_base64();
 
-        let outcome = relay.validate_hello(&conflict);
+        let outcome = relay.validate_hello(&conflict, None);
         match outcome {
             HelloOutcome::Accepted(_) => panic!("a conflicting identity must be rejected"),
             HelloOutcome::Rejected { code } => assert_eq!(code, "identity_conflict"),
@@ -860,5 +962,212 @@ mod tests {
 
         relay.publish_prekeys(&peer_id, "127.0.0.1", bundle).await;
         assert_eq!(relay.inner.store.get_prekeys(&peer_id), None);
+    }
+
+    // -- Display names ------------------------------------------------------
+
+    #[test]
+    fn validate_hello_stores_display_name() {
+        let store = Store::open_in_memory().unwrap();
+        let relay = Relay::with_store(store);
+        let identity = Identity::new();
+        let hello = identity.signed_hello();
+
+        let outcome = relay.validate_hello(&hello, Some("Test Alice"));
+        assert!(matches!(outcome, HelloOutcome::Accepted(_)));
+        assert_eq!(
+            relay
+                .inner
+                .store
+                .get_display_name(&hello.peer_id)
+                .as_deref(),
+            Some("Test Alice")
+        );
+    }
+
+    #[test]
+    fn validate_hello_updates_display_name_on_later_hellos() {
+        let store = Store::open_in_memory().unwrap();
+        let relay = Relay::with_store(store);
+        let identity = Identity::new();
+        let hello = identity.signed_hello();
+
+        relay.validate_hello(&hello, Some("First Name"));
+        relay.validate_hello(&hello, Some("New Name"));
+        assert_eq!(
+            relay
+                .inner
+                .store
+                .get_display_name(&hello.peer_id)
+                .as_deref(),
+            Some("New Name")
+        );
+    }
+
+    #[test]
+    fn validate_hello_keeps_existing_name_when_absent() {
+        let store = Store::open_in_memory().unwrap();
+        let relay = Relay::with_store(store);
+        let identity = Identity::new();
+        let hello = identity.signed_hello();
+
+        relay.validate_hello(&hello, Some("First Name"));
+        relay.validate_hello(&hello, None);
+        assert_eq!(
+            relay
+                .inner
+                .store
+                .get_display_name(&hello.peer_id)
+                .as_deref(),
+            Some("First Name"),
+            "a hello without a name must not clear the stored one"
+        );
+    }
+
+    #[test]
+    fn validate_hello_ignores_invalid_display_name() {
+        let store = Store::open_in_memory().unwrap();
+        let relay = Relay::with_store(store);
+        let identity = Identity::new();
+        let hello = identity.signed_hello();
+
+        let outcome = relay.validate_hello(&hello, Some("bad\nname"));
+        assert!(
+            matches!(outcome, HelloOutcome::Accepted(_)),
+            "an invalid display name must not fail the handshake"
+        );
+        assert_eq!(
+            relay.inner.store.get_display_name(&hello.peer_id),
+            None,
+            "an invalid display name must not be stored"
+        );
+    }
+
+    #[tokio::test]
+    async fn update_profile_persists_display_name() {
+        let store = Store::open_in_memory().unwrap();
+        let relay = Relay::with_store(store);
+        let peer_id = "peer-profile".to_string();
+        let (out_tx, mut out_rx) = mpsc::unbounded_channel::<WsMessage>();
+        relay
+            .inner
+            .online
+            .write()
+            .await
+            .insert(peer_id.clone(), out_tx);
+
+        relay
+            .update_profile(&peer_id, "127.0.0.1", "Alice Prime")
+            .await;
+        assert_eq!(
+            relay.inner.store.get_display_name(&peer_id).as_deref(),
+            Some("Alice Prime")
+        );
+        let reply = read_reply(&mut out_rx);
+        assert_eq!(reply["type"].as_str(), Some("profile_updated"));
+    }
+
+    #[tokio::test]
+    async fn update_profile_rejects_invalid_display_name() {
+        let store = Store::open_in_memory().unwrap();
+        let relay = Relay::with_store(store);
+        let peer_id = "peer-profile".to_string();
+        let (out_tx, mut out_rx) = mpsc::unbounded_channel::<WsMessage>();
+        relay
+            .inner
+            .online
+            .write()
+            .await
+            .insert(peer_id.clone(), out_tx);
+
+        let too_long = "x".repeat(MAX_DISPLAY_NAME_CHARS + 1);
+        relay.update_profile(&peer_id, "127.0.0.1", &too_long).await;
+        let reply = read_reply(&mut out_rx);
+        assert_eq!(reply["type"].as_str(), Some("error"));
+        assert_eq!(reply["code"].as_str(), Some("invalid_display_name"));
+        assert_eq!(
+            relay.inner.store.get_display_name(&peer_id),
+            None,
+            "a rejected name must not touch the stored profile"
+        );
+    }
+
+    #[tokio::test]
+    async fn update_profile_is_rate_limited() {
+        let store = Store::open_in_memory().unwrap();
+        let relay = Relay::with_limiter(store, 1.0, 0.0);
+        let peer_id = "peer-profile".to_string();
+        let (out_tx, mut out_rx) = mpsc::unbounded_channel::<WsMessage>();
+        relay
+            .inner
+            .online
+            .write()
+            .await
+            .insert(peer_id.clone(), out_tx);
+
+        relay.update_profile(&peer_id, "10.0.0.1", "First").await;
+        relay.update_profile(&peer_id, "10.0.0.1", "Second").await;
+
+        let first = read_reply(&mut out_rx);
+        assert_eq!(first["type"].as_str(), Some("profile_updated"));
+        let second = read_reply(&mut out_rx);
+        assert_eq!(second["type"].as_str(), Some("error"));
+        assert_eq!(second["code"].as_str(), Some("rate_limited"));
+        assert_eq!(
+            relay.inner.store.get_display_name(&peer_id).as_deref(),
+            Some("First"),
+            "the rejected rename must not overwrite the accepted one"
+        );
+    }
+
+    #[tokio::test]
+    async fn fetch_prekeys_reply_includes_display_name() {
+        let store = Store::open_in_memory().unwrap();
+        let relay = Relay::with_store(store);
+        let mut owner = Identity::new();
+        let owner_id = owner.peer_id();
+        relay
+            .inner
+            .store
+            .register_user_with_keys(
+                &owner_id,
+                &owner.curve25519_key().to_base64(),
+                &owner.ed25519_key().to_base64(),
+                unix_now(),
+            )
+            .unwrap();
+        relay
+            .inner
+            .store
+            .set_display_name(&owner_id, "Test Alice")
+            .unwrap();
+        relay
+            .publish_prekeys(&owner_id, "127.0.0.1", owner.pre_key_bundle(2))
+            .await;
+
+        let (out_tx, mut out_rx) = mpsc::unbounded_channel::<WsMessage>();
+        relay
+            .inner
+            .online
+            .write()
+            .await
+            .insert("requester".into(), out_tx);
+
+        relay
+            .fetch_prekeys("requester", "127.0.0.1", &owner_id)
+            .await;
+        let reply = read_reply(&mut out_rx);
+        assert_eq!(reply["type"].as_str(), Some("prekeys"));
+        assert_eq!(reply["display_name"].as_str(), Some("Test Alice"));
+    }
+
+    /// Read the single text reply queued for a peer and parse it as JSON.
+    fn read_reply(rx: &mut mpsc::UnboundedReceiver<WsMessage>) -> serde_json::Value {
+        let msg = rx.try_recv().expect("a reply must be queued");
+        let text = match msg {
+            WsMessage::Text(t) => t,
+            _ => panic!("expected a text reply"),
+        };
+        serde_json::from_str(&text).expect("reply must be valid JSON")
     }
 }

@@ -8,10 +8,13 @@ import { Composer } from "./Composer";
 
 interface ChatViewProps {
   conversation: Conversation | null;
+  /** Whether the active peer is currently typing (from the `typing` event). */
+  isTyping: boolean;
   onSend: (text: string) => void;
+  onTypingChange: (isTyping: boolean) => void;
 }
 
-export function ChatView({ conversation, onSend }: ChatViewProps) {
+export function ChatView({ conversation, isTyping, onSend, onTypingChange }: ChatViewProps) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const messageCount = conversation?.messages.length ?? 0;
 
@@ -39,25 +42,55 @@ export function ChatView({ conversation, onSend }: ChatViewProps) {
     );
   }
 
+  const displayName =
+    conversation.displayName ?? shortPeerId(conversation.peerId, 16);
+
   return (
     <main className="flex min-w-0 flex-1 flex-col bg-wp-bg">
       <header className="flex items-center gap-3 border-b border-wp-line/10 bg-wp-panel px-5 py-3">
-        <Avatar name={shortPeerId(conversation.peerId)} size={38} />
+        <Avatar name={displayName} size={38} />
         <div className="min-w-0 flex-1">
-          <p className="truncate font-mono text-sm font-semibold text-wp-text">
-            {shortPeerId(conversation.peerId, 16)}
-          </p>
-          <p className="mt-0.5 inline-flex items-center gap-1.5 rounded-full border border-wp-line/10 bg-wp-panel-2 px-2.5 py-0.5 text-[10px] font-semibold tracking-wide text-wp-dim">
-            <Lock className="h-3 w-3 text-wp-accent" aria-hidden="true" />
-            End-to-end encrypted
-          </p>
+          <div className="flex items-baseline gap-2">
+            <p
+              className="truncate text-sm font-semibold text-wp-text"
+              title={conversation.peerId}
+            >
+              {displayName}
+            </p>
+            {conversation.displayName ? (
+              <p className="truncate font-mono text-[10px] text-wp-faint">
+                {shortPeerId(conversation.peerId, 10)}
+              </p>
+            ) : null}
+          </div>
+          {isTyping ? (
+            <p
+              aria-live="polite"
+              className="mt-0.5 inline-flex items-center gap-1.5 text-xs font-semibold text-wp-read"
+            >
+              <span
+                className="flex items-center gap-0.5"
+                aria-hidden="true"
+              >
+                <span className="typing-dot" />
+                <span className="typing-dot" />
+                <span className="typing-dot" />
+              </span>
+              typing…
+            </p>
+          ) : (
+            <p className="mt-0.5 inline-flex items-center gap-1.5 rounded-full border border-wp-line/10 bg-wp-panel-2 px-2.5 py-0.5 text-[10px] font-semibold tracking-wide text-wp-dim">
+              <Lock className="h-3 w-3 text-wp-accent" aria-hidden="true" />
+              End-to-end encrypted
+            </p>
+          )}
         </div>
       </header>
 
       <div
         ref={scrollRef}
         role="log"
-        aria-label={`Messages with ${shortPeerId(conversation.peerId, 16)}`}
+        aria-label={`Messages with ${displayName}`}
         className="flex-1 overflow-y-auto px-6 py-6"
       >
         <div className="mx-auto flex max-w-3xl flex-col gap-2">
@@ -67,7 +100,7 @@ export function ChatView({ conversation, onSend }: ChatViewProps) {
         </div>
       </div>
 
-      <Composer onSend={onSend} />
+      <Composer onSend={onSend} onTypingChange={onTypingChange} />
     </main>
   );
 }

@@ -4,8 +4,10 @@ import type {
   AppSettings,
   ChatMessageEvent,
   ChatState,
+  ContactUpdatedEvent,
   MessageStatusEvent,
   RelayStatusEvent,
+  TypingEvent,
 } from "../types";
 
 /** Connect to the relay and authenticate with the stored identity. */
@@ -55,6 +57,16 @@ export function setTheme(theme: "dark" | "light"): Promise<void> {
   return invoke("set_theme", { theme });
 }
 
+/** Persist our own display name and announce it to the relay. */
+export function setDisplayName(name: string): Promise<void> {
+  return invoke("set_display_name", { name });
+}
+
+/** Send an end-to-end typing indicator to a peer (encrypted in-session). */
+export function sendTyping(peerId: string, isTyping: boolean): Promise<void> {
+  return invoke("send_typing", { peerId, isTyping });
+}
+
 /** Close the relay connection (used when resetting the identity). */
 export function disconnectRelay(): Promise<void> {
   return invoke("disconnect_relay");
@@ -88,6 +100,22 @@ export function onMessageStatus(
   handler: (event: MessageStatusEvent) => void
 ): Promise<UnlistenFn> {
   return listen<MessageStatusEvent>("message-status", (event) =>
+    handler(event.payload)
+  );
+}
+
+/** Subscribe to typing indicators. Returns an unlisten function. */
+export function onTyping(
+  handler: (event: TypingEvent) => void
+): Promise<UnlistenFn> {
+  return listen<TypingEvent>("typing", (event) => handler(event.payload));
+}
+
+/** Subscribe to contact display-name updates. Returns an unlisten fn. */
+export function onContactUpdated(
+  handler: (event: ContactUpdatedEvent) => void
+): Promise<UnlistenFn> {
+  return listen<ContactUpdatedEvent>("contact-updated", (event) =>
     handler(event.payload)
   );
 }

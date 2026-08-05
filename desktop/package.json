@@ -9,7 +9,7 @@
     "preview": "vite preview",
     "tauri": "tauri",
     "tauri:dev": "tauri dev",
-    "tauri:dev:second": "set VITE_PORT=1421&& set WHISPER_IDENTITY_FILE=%CD%\\..\\identity2.json&& set CARGO_TARGET_DIR=%CD%\\..\\target-dev2&& tauri dev --config src-tauri/tauri.dev2.json"
+    "tauri:dev:second": "set VITE_PORT=1421&& set WHISPER_IDENTITY_FILE=%CD%\\..\\identity2.json&& set WHISPER_PROFILES_FILE=%CD%\\..\\profiles2.json&& set CARGO_TARGET_DIR=%CD%\\..\\target-dev2&& tauri dev --config src-tauri/tauri.dev2.json"
   },
   "dependencies": {
     "@tauri-apps/api": "^2.11.1",
