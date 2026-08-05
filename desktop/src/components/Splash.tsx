@@ -44,7 +44,7 @@ export function Splash() {
         <h1 className="font-display text-4xl font-semibold tracking-tight text-wp-text">
           Whisper
         </h1>
-        <p className="text-[0.65rem] font-medium uppercase tracking-[0.22em] text-wp-faint">
+        <p className="text-xs font-medium uppercase tracking-[0.22em] text-wp-faint">
           End-to-end encrypted
         </p>
       </div>

@@ -704,6 +704,157 @@ async function main() {
   );
   check("profile: unknown peer get_profile -> no_profile", true);
 
+  // --- Group chat tests -------------------------------------------------------
+  // alice/bob/carol are all connected; bob6 is bob's current socket. Group
+  // operations draw from the separate `group:<ip>` rate bucket.
+
+  // (a) alice creates a group -> bob is added -> alice sends a group message
+  //     that bob receives and carol (a non-member) does not.
+  aliceConn.ws.sendJson({ type: "create_group", name: "Ghost Squad" });
+  await waitFor("group_created", () =>
+    aliceConn.ws.messages.some((m) => m.type === "group_created")
+  );
+  const groupCreated = aliceConn.ws.messages.filter((m) => m.type === "group_created").pop();
+  const groupId = groupCreated && groupCreated.group_id;
+  check(
+    "group: create_group returns group_id, name and owner member",
+    groupCreated &&
+      typeof groupId === "string" &&
+      groupCreated.name === "Ghost Squad" &&
+      Array.isArray(groupCreated.members) &&
+      groupCreated.members.length === 1 &&
+      groupCreated.members[0] === alice.peer_id
+  );
+
+  // Bob is not a member yet: he cannot read the group info.
+  bob6.ws.sendJson({ type: "get_group_info", group_id: groupId });
+  await waitFor("not_a_member (info)", () =>
+    bob6.ws.messages.some((m) => m.type === "error" && m.code === "not_a_member")
+  );
+  check("group: non-member get_group_info -> not_a_member", true);
+
+  aliceConn.ws.sendJson({ type: "add_group_member", group_id: groupId, peer_id: bob.peer_id });
+  await waitFor("group_member_added", () =>
+    aliceConn.ws.messages.some((m) => m.type === "group_member_added")
+  );
+  const added = aliceConn.ws.messages.filter((m) => m.type === "group_member_added").pop();
+  check(
+    "group: add_group_member acknowledged with the peer id",
+    added && added.group_id === groupId && added.peer_id === bob.peer_id
+  );
+
+  aliceConn.ws.sendJson({
+    type: "send_group_message",
+    group_id: groupId,
+    envelope: {
+      sender: alice.peer_id,
+      recipient: "ignored-by-server",
+      payload: Buffer.from("group ciphertext #1").toString("base64"),
+      seq: 7001,
+    },
+  });
+  await waitFor("group send ack", () =>
+    aliceConn.ws.messages.some((m) => m.type === "ack" && m.seq === 7001)
+  );
+  check("group: send_group_message acked for the sender", true);
+
+  await waitFor("group msg delivered to bob", () =>
+    bob6.ws.messages.some((m) => m.type === "envelope" && m.envelope.seq === 7001)
+  );
+  const groupEnv = bob6.ws.messages.filter((m) => m.type === "envelope" && m.envelope.seq === 7001).pop();
+  check(
+    "group: bob received the group envelope (recipient rewritten per member)",
+    groupEnv &&
+      groupEnv.envelope.sender === alice.peer_id &&
+      groupEnv.envelope.recipient === bob.peer_id
+  );
+  await sleep(300);
+  const carolGotGroup = carolConn.ws.messages.some(
+    (m) => m.type === "envelope" && m.envelope.seq === 7001
+  );
+  check("group: carol (non-member) did not receive the group message", !carolGotGroup);
+
+  // (b) a non-member cannot send a group message.
+  carolConn.ws.sendJson({
+    type: "send_group_message",
+    group_id: groupId,
+    envelope: {
+      sender: carol.peer_id,
+      recipient: "ignored-by-server",
+      payload: Buffer.from("intruder").toString("base64"),
+      seq: 7002,
+    },
+  });
+  await waitFor("not_a_member (send)", () =>
+    carolConn.ws.messages.some((m) => m.type === "error" && m.code === "not_a_member")
+  );
+  check("group: non-member send_group_message -> not_a_member", true);
+
+  // (c) get_group_info returns the member roster to members.
+  aliceConn.ws.sendJson({ type: "get_group_info", group_id: groupId });
+  await waitFor("group_info", () =>
+    aliceConn.ws.messages.some((m) => m.type === "group_info")
+  );
+  const info = aliceConn.ws.messages.filter((m) => m.type === "group_info").pop();
+  check(
+    "group: get_group_info returns owner + full member list",
+    info &&
+      info.owner_peer_id === alice.peer_id &&
+      info.name === "Ghost Squad" &&
+      Array.isArray(info.members) &&
+      info.members.length === 2 &&
+      info.members.includes(alice.peer_id) &&
+      info.members.includes(bob.peer_id)
+  );
+
+  // (d) leave_group removes the member from the roster and revokes sends.
+  bob6.ws.sendJson({ type: "leave_group", group_id: groupId });
+  await waitFor("group_member_left", () =>
+    bob6.ws.messages.some((m) => m.type === "group_member_left")
+  );
+  check("group: leave_group acknowledged", true);
+
+  aliceConn.ws.sendJson({ type: "get_group_info", group_id: groupId });
+  await waitFor("group_info after leave", () =>
+    aliceConn.ws.messages.filter((m) => m.type === "group_info").length >= 2
+  );
+  const infoAfter = aliceConn.ws.messages.filter((m) => m.type === "group_info").pop();
+  check(
+    "group: leave_group removes the member from the roster",
+    infoAfter &&
+      Array.isArray(infoAfter.members) &&
+      infoAfter.members.length === 1 &&
+      infoAfter.members[0] === alice.peer_id
+  );
+
+  bob6.ws.sendJson({
+    type: "send_group_message",
+    group_id: groupId,
+    envelope: {
+      sender: bob.peer_id,
+      recipient: "ignored-by-server",
+      payload: Buffer.from("post-leave").toString("base64"),
+      seq: 7003,
+    },
+  });
+  await waitFor("not_a_member after leave", () =>
+    bob6.ws.messages.some((m) => m.type === "error" && m.code === "not_a_member")
+  );
+  check("group: a left member cannot send -> not_a_member", true);
+
+  // (e) unknown group_id -> group_not_found; invalid name -> invalid_group_name.
+  aliceConn.ws.sendJson({ type: "get_group_info", group_id: "does-not-exist" });
+  await waitFor("group_not_found", () =>
+    aliceConn.ws.messages.some((m) => m.type === "error" && m.code === "group_not_found")
+  );
+  check("group: unknown group_id -> group_not_found", true);
+
+  aliceConn.ws.sendJson({ type: "create_group", name: "" });
+  await waitFor("invalid_group_name", () =>
+    aliceConn.ws.messages.some((m) => m.type === "error" && m.code === "invalid_group_name")
+  );
+  check("group: empty group name -> invalid_group_name", true);
+
   aliceConn.ws.close();
   bob6.ws.close();
   carolConn.ws.close();

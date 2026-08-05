@@ -4,11 +4,13 @@
 //! Every payload is opaque to the relay: it only sees the base64-encoded
 //! ciphertext and metadata, never plaintext or key material.
 //!
-//! Four kinds of content exist:
+//! Five kinds of content exist:
 //!
 //! - [`EnvelopeContent::PreKeyBundle`]: published key material.
 //! - [`EnvelopeContent::Handshake`]: the first, session-establishing message.
 //! - [`EnvelopeContent::Message`]: an ordinary encrypted message.
+//! - [`EnvelopeContent::Group`]: a Megolm group ciphertext (the group_id
+//!   selects the inbound session to decrypt it with).
 //! - [`EnvelopeContent::Receipt`]: a lightweight end-to-end control signal
 //!   (read receipts and typing indicators).
 
@@ -125,6 +127,16 @@ pub enum EnvelopeContent {
     Handshake(Handshake),
     /// An ordinary encrypted message.
     Message(Message),
+    /// A Megolm-encrypted group message.
+    ///
+    /// `ciphertext` is the base64 Megolm ciphertext produced by an
+    /// [`crate::OutboundGroup`]; `group_id` is the relay-assigned group
+    /// identifier that selects the member's [`crate::InboundGroup`] session.
+    /// The relay treats the whole payload as opaque and only routes it.
+    Group {
+        group_id: String,
+        ciphertext: String,
+    },
     /// A lightweight end-to-end control signal: read receipts and typing
     /// indicators.
     ///
@@ -217,12 +229,17 @@ mod tests {
         let receipt_content = EnvelopeContent::Receipt {
             kind: ReceiptKind::Read,
         };
+        let group_content = EnvelopeContent::Group {
+            group_id: "group-1".to_string(),
+            ciphertext: "some-megolm-ciphertext".to_string(),
+        };
 
         for content in [
             message_content,
             handshake_content,
             bundle_content,
             receipt_content,
+            group_content,
         ] {
             let envelope = Envelope::new("alice".to_string(), "bob".to_string(), content);
             let json = serde_json::to_string(&envelope).expect("serialization must succeed");
@@ -294,6 +311,33 @@ mod tests {
         // The `kind` tag names the variant; the receipt kind lives under a
         // distinct `receipt` key so the JSON object stays unambiguous.
         assert_eq!(json, r#"{"kind":"receipt","receipt":"typing_stopped"}"#);
+    }
+
+    #[test]
+    fn group_content_serializes_with_expected_wire_format() {
+        let content = EnvelopeContent::Group {
+            group_id: "group-42".to_string(),
+            ciphertext: "c2VjcmV0".to_string(),
+        };
+        let json = serde_json::to_string(&content).expect("serialization must succeed");
+        assert_eq!(
+            json,
+            r#"{"kind":"group","group_id":"group-42","ciphertext":"c2VjcmV0"}"#
+        );
+    }
+
+    #[test]
+    fn group_content_roundtrips_inside_envelope() {
+        let content = EnvelopeContent::Group {
+            group_id: "group-7".to_string(),
+            ciphertext: "aGFja2Vk".to_string(),
+        };
+        let envelope = Envelope::new("alice".to_string(), "bob".to_string(), content);
+        let json = serde_json::to_string(&envelope).expect("serialization must succeed");
+        let restored: Envelope = serde_json::from_str(&json).expect("deserialization must succeed");
+
+        assert_eq!(restored, envelope);
+        assert_eq!(restored.version, WIRE_VERSION);
     }
 
     /// A minimal session pair used to produce wire-level message payloads.

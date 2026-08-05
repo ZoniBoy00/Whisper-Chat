@@ -1,7 +1,7 @@
 import { useEffect, useRef } from "react";
 import { Lock, MessagesSquare } from "lucide-react";
 import type { Conversation, PresenceInfo } from "../types";
-import { formatLastSeen, shortPeerId } from "../lib/format";
+import { formatLastSeen, mediaUrl, shortPeerId } from "../lib/format";
 import { Avatar } from "./Avatar";
 import { MessageBubble } from "./MessageBubble";
 import { Composer } from "./Composer";
@@ -12,6 +12,8 @@ interface ChatViewProps {
   isTyping: boolean;
   /** Presence of the active peer; null when not yet known. */
   presence: PresenceInfo | null;
+  /** Relay endpoint; used to resolve `/media/{hash}` avatar paths. */
+  relayUrl: string;
   onSend: (text: string) => void;
   onTypingChange: (isTyping: boolean) => void;
 }
@@ -20,6 +22,7 @@ export function ChatView({
   conversation,
   isTyping,
   presence,
+  relayUrl,
   onSend,
   onTypingChange,
 }: ChatViewProps) {
@@ -52,21 +55,27 @@ export function ChatView({
 
   const displayName =
     conversation.displayName ?? shortPeerId(conversation.peerId, 16);
+  const avatarSrc =
+    conversation.avatarUrl ? mediaUrl(relayUrl, conversation.avatarUrl) : null;
 
   return (
     <main className="flex min-w-0 flex-1 flex-col bg-wp-bg">
       <header className="flex items-center gap-3 border-b border-wp-line/10 bg-wp-panel px-5 py-3">
-        <Avatar name={displayName} size={38} />
+        <Avatar name={displayName} size={40} src={avatarSrc} />
         <div className="min-w-0 flex-1">
           <div className="flex items-baseline gap-2">
             <p
-              className="truncate text-sm font-semibold text-wp-text"
+              className="truncate text-base font-semibold text-wp-text"
               title={conversation.peerId}
             >
               {displayName}
             </p>
-            {conversation.displayName ? (
-              <p className="truncate font-mono text-[10px] text-wp-faint">
+            {conversation.username ? (
+              <p className="truncate font-mono text-xs text-wp-faint">
+                @{conversation.username}
+              </p>
+            ) : conversation.displayName ? (
+              <p className="truncate font-mono text-xs text-wp-faint">
                 {shortPeerId(conversation.peerId, 10)}
               </p>
             ) : null}
@@ -74,7 +83,7 @@ export function ChatView({
           {isTyping ? (
             <p
               aria-live="polite"
-              className="mt-0.5 inline-flex items-center gap-1.5 text-xs font-semibold text-wp-read"
+              className="mt-0.5 inline-flex items-center gap-1.5 text-sm font-semibold text-wp-read"
             >
               <span
                 className="flex items-center gap-0.5"
@@ -90,7 +99,7 @@ export function ChatView({
             presence.online ? (
               <p
                 aria-live="polite"
-                className="mt-0.5 inline-flex items-center gap-1.5 text-xs font-semibold text-wp-online"
+                className="mt-0.5 inline-flex items-center gap-1.5 text-sm font-semibold text-wp-online"
               >
                 <span
                   className="h-2 w-2 rounded-full bg-wp-online"
@@ -101,7 +110,7 @@ export function ChatView({
             ) : (
               <p
                 aria-live="polite"
-                className="mt-0.5 inline-flex items-center gap-1.5 text-xs font-medium text-wp-dim"
+                className="mt-0.5 inline-flex items-center gap-1.5 text-sm font-medium text-wp-dim"
               >
                 {presence.last_seen != null
                   ? `Last seen ${formatLastSeen(presence.last_seen)}`
@@ -109,7 +118,7 @@ export function ChatView({
               </p>
             )
           ) : (
-            <p className="mt-0.5 inline-flex items-center gap-1.5 rounded-full border border-wp-line/10 bg-wp-panel-2 px-2.5 py-0.5 text-[10px] font-semibold tracking-wide text-wp-dim">
+            <p className="mt-0.5 inline-flex items-center gap-1.5 rounded-full border border-wp-line/10 bg-wp-panel-2 px-2.5 py-0.5 text-xs font-semibold tracking-wide text-wp-dim">
               <Lock className="h-3 w-3 text-wp-accent" aria-hidden="true" />
               End-to-end encrypted
             </p>

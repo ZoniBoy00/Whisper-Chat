@@ -8,6 +8,7 @@ import type {
   MessageStatusEvent,
   PresenceEvent,
   PresenceInfo,
+  ProfileInfo,
   RelayStatusEvent,
   TypingEvent,
 } from "../types";
@@ -62,6 +63,42 @@ export function setTheme(theme: "dark" | "light"): Promise<void> {
 /** Persist our own display name and announce it to the relay. */
 export function setDisplayName(name: string): Promise<void> {
   return invoke("set_display_name", { name });
+}
+
+/**
+ * Register a public username for our identity. The Ed25519 signature over the
+ * username is produced on the Rust side and attached to the request; the
+ * frontend sends an empty placeholder until the backend command fills it in.
+ * Resolves with the registered username on success.
+ */
+export function registerProfile(username: string): Promise<{ username: string }> {
+  return invoke("register_profile", { username, signature: "" });
+}
+
+/**
+ * Search the directory for users by username or Whisper ID. Returns a list of
+ * public profiles; empty when nothing matches.
+ */
+export function searchUsers(
+  query: string,
+  limit = 10
+): Promise<ProfileInfo[]> {
+  return invoke("search_users", { query, limit });
+}
+
+/** Fetch a peer's public profile by Whisper ID. Rejects with `no_profile`
+ *  when the peer has not registered one. */
+export function getProfile(peerId: string): Promise<ProfileInfo> {
+  return invoke("get_profile", { peerId });
+}
+
+/**
+ * Upload our avatar image. `avatarBase64` is raw base64 WITHOUT the
+ * "data:image/...;base64," prefix — the backend stores the bytes under
+ * /media/{hash} and the profile's avatar_url starts pointing there.
+ */
+export function setAvatar(avatarBase64: string): Promise<{ avatar_url?: string }> {
+  return invoke("set_avatar", { avatar: avatarBase64 });
 }
 
 /** Send an end-to-end typing indicator to a peer (encrypted in-session). */

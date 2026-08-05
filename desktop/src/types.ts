@@ -19,12 +19,28 @@ export interface Conversation {
   displayName: string | null;
   peerId: string;
   messages: Message[];
+  /** Registered public username (e.g. "@alice"); null when not known. */
+  username?: string | null;
+  /** Server avatar path ("/media/{hash}"); null when not known. */
+  avatarUrl?: string | null;
 }
 
-/** A known conversation peer plus the display name they advertise. */
+/** A known conversation peer plus the public profile data they advertise. */
 export interface ContactInfo {
   peer_id: string;
   display_name: string | null;
+  /** Registered public username; null when the peer has none. */
+  username?: string | null;
+  /** Server avatar path ("/media/{hash}"); null when the peer has none. */
+  avatar_url?: string | null;
+}
+
+/** Public profile returned by the `get_profile` command (and `search_users`). */
+export interface ProfileInfo {
+  username: string | null;
+  peer_id: string;
+  display_name: string | null;
+  avatar_url: string | null;
 }
 
 /** A peer's presence snapshot: online right now, plus last-seen unix seconds

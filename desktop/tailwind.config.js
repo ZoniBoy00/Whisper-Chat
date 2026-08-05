@@ -4,6 +4,13 @@ export default {
   content: ["./index.html", "./src/**/*.{ts,tsx}"],
   theme: {
     extend: {
+      // Global UI scale: the two workhorse sizes step up one notch so small
+      // secondaries are readable (13px) and primary text lands at 15px.
+      // `base` (16px) and larger sizes are unchanged, preserving hierarchy.
+      fontSize: {
+        xs: ["0.8125rem", { lineHeight: "1rem" }], // 13px / 16px
+        sm: ["0.9375rem", { lineHeight: "1.25rem" }], // 15px / 20px
+      },
       fontFamily: {
         display: ['"Palatino Linotype"', "Palatino", '"Book Antiqua"', "Georgia", "serif"],
         sans: ["Candara", '"Segoe UI Variable"', '"Segoe UI"', "system-ui", "sans-serif"],
