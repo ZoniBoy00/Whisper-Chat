@@ -1,0 +1,51 @@
+# Whisper relay — systemd unit template for Hetzner VPS deployment.
+#
+# Install:
+#   1. Build the release binary:  cargo build --release --workspace
+#   2. Create a dedicated non-root user:  sudo useradd --system --home /opt/whisper --shell /usr/sbin/nologin whisper
+#   3. Copy the binary:  sudo install -o whisper -g whisper target/release/whisper-relay /opt/whisper/whisper-relay
+#   4. Copy this file to /etc/systemd/system/whisper-relay.service
+#   5. Create env file:  sudo install -o root -g root -m 600 .env.example /etc/whisper/relay.env  (then edit values)
+#   6. sudo systemctl daemon-reload && sudo systemctl enable --now whisper-relay
+#
+# Security hardening notes:
+#   - Runs as an unprivileged, nologin system user (never root).
+#   - NoNewPrivileges + empty capability set: the service cannot gain privileges.
+#   - ProtectSystem=strict + ReadWritePaths: only the data directory is writable.
+#   - PrivateTmp + ProtectHome: no access to /tmp or user home directories.
+
+[Unit]
+Description=Whisper relay (E2EE blind message relay)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=whisper
+Group=whisper
+WorkingDirectory=/opt/whisper
+ExecStart=/opt/whisper/whisper-relay
+Restart=always
+RestartSec=3
+
+# Runtime configuration (secrets & tuning) — read from a root-only file.
+EnvironmentFile=/etc/whisper/relay.env
+
+# --- Hardening ---
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+RestrictRealtime=true
+ReadWritePaths=/opt/whisper/data
+CapabilityBoundingSet=
+AmbientCapabilities=
+PrivateDevices=true
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target
