@@ -33,6 +33,7 @@ import {
   onPresence,
   onReconnecting,
   onRelayStatus,
+  getGroupInfo as relayGetGroupInfo,
   leaveGroup as relayLeaveGroup,
   onTyping,
   publishPrekeys,
@@ -159,6 +160,8 @@ export interface ChatStateApi {
   deleteMessage: (peerId: string, messageId: string) => Promise<void>;
   /** Remove the caller from a group and drop it from every local list. */
   leaveGroup: (groupId: string) => Promise<void>;
+  /** Confirm we still have access to a group; drops it locally when not. */
+  verifyGroupAccess: (groupId: string) => Promise<boolean>;
   /** Transfer group ownership to `peerId`, then resync the roster and our own
    *  role so the UI reflects the new owner immediately. */
   transferOwnership: (groupId: string, peerId: string) => Promise<void>;
@@ -681,11 +684,16 @@ export function useChatState({
    * member. The group is left without an owner when the owner leaves — an
    * acceptable MVP trade-off documented in the UI.
    */
-  const leaveGroup = useCallback(async (groupId: string) => {
-    await relayLeaveGroup(groupId);
+  /**
+   * Drop a group from every local list (contacts, groups, messages, unread)
+   * and close the conversation if it was open. Shared by the leave flow, the
+   * `group-removed` push and the access-verification fallback below.
+   */
+  const dropGroupLocally = useCallback((groupId: string) => {
     setContacts((prev) => prev.filter((c) => c.peer_id !== groupId));
     setGroups((prev) => prev.filter((g) => g.group_id !== groupId));
     setMessages((prev) => {
+      if (!(groupId in prev)) return prev;
       const next = { ...prev };
       delete next[groupId];
       return next;
@@ -698,6 +706,36 @@ export function useChatState({
     });
     setActivePeerId((prev) => (prev === groupId ? null : prev));
   }, []);
+
+  const leaveGroup = useCallback(async (groupId: string) => {
+    await relayLeaveGroup(groupId);
+    dropGroupLocally(groupId);
+  }, [dropGroupLocally]);
+
+  /**
+   * Verify this identity still has access to `groupId` before opening the
+   * group info panel. When the relay answers `not_a_member`/`group_not_found`
+   * (we left the group, or were removed, possibly while the event was missed),
+   * the stale group is dropped locally so it stops "lingering" with every
+   * action failing. Returns true only when access is confirmed.
+   */
+  const verifyGroupAccess = useCallback(
+    async (groupId: string): Promise<boolean> => {
+      try {
+        await relayGetGroupInfo(groupId);
+        return true;
+      } catch (err) {
+        const code = relayErrorCode(err);
+        if (code === "not_a_member" || code === "group_not_found") {
+          dropGroupLocally(groupId);
+          toast(t("toast.group_removed"), "error");
+          return false;
+        }
+        throw err;
+      }
+    },
+    [dropGroupLocally, toast, t]
+  );
 
   /** Send a friend request to `peerId`. The peer becomes an accepted contact
    *  once they accept; until then they stay in the Requests section and are
@@ -785,6 +823,7 @@ export function useChatState({
     updatePresence,
     deleteMessage,
     leaveGroup,
+  verifyGroupAccess,
     transferOwnership,
     clearHistory,
   };
