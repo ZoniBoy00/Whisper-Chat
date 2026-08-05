@@ -1,0 +1,410 @@
+import { useCallback, useEffect, useRef, useState } from "react";
+import type { Dispatch, SetStateAction } from "react";
+import type { UnlistenFn } from "@tauri-apps/api/event";
+import type {
+  ContactInfo,
+  GroupInfo,
+  Message,
+  MessageStatus,
+  PresenceInfo,
+} from "../types";
+import {
+  connectRelay,
+  getChatState,
+  getProfile,
+  onChatMessage,
+  onContactUpdated,
+  onMessageStatus,
+  onPresence,
+  onRelayStatus,
+  onTyping,
+  publishPrekeys,
+  removeContact as relayRemoveContact,
+  sendMessage as relaySendMessage,
+  sendTyping as relaySendTyping,
+  setDisplayName as persistDisplayName,
+  startChat,
+} from "../lib/relay";
+import { shortPeerId } from "../lib/format";
+
+/** Only request the HTML5 notification permission once per session. */
+let notificationPermissionRequested = false;
+
+/**
+ * Show an HTML5 desktop notification for an incoming message. Only called
+ * while the window is unfocused and notifications are enabled. Permission is
+ * requested once per session; if it is not granted the toggle stays on but
+ * nothing is shown (documented in the Notifications settings tab).
+ */
+async function showChatNotification(
+  peerId: string,
+  message: Message,
+  contacts: ContactInfo[],
+  preview: boolean
+): Promise<void> {
+  if (typeof Notification === "undefined") return;
+  if (Notification.permission === "denied") return;
+  if (Notification.permission !== "granted") {
+    if (notificationPermissionRequested) return;
+    notificationPermissionRequested = true;
+    try {
+      const permission = await Notification.requestPermission();
+      if (permission !== "granted") return;
+    } catch {
+      return;
+    }
+  }
+  const contact = contacts.find((c) => c.peer_id === peerId);
+  const name =
+    contact?.display_name ??
+    (contact?.username ? `@${contact.username}` : shortPeerId(peerId, 16));
+  const body = preview
+    ? `${name}: ${message.text}`
+    : `New message from ${name}`;
+  try {
+    new Notification("Whisper", { body });
+  } catch {
+    // The webview may not support the Notification API; the toggle stays on
+    // and nothing is shown.
+  }
+}
+
+interface UseChatStateParams {
+  /** Desktop-notification prefs, hydrated from persisted settings. The
+   *  chat-message listener reads them through a ref updated every render. */
+  notificationsEnabled: boolean;
+  notificationPreview: boolean;
+}
+
+export interface ChatStateApi {
+  contacts: ContactInfo[];
+  myDisplayName: string | null;
+  messages: Record<string, Message[]>;
+  groups: GroupInfo[];
+  connected: boolean;
+  connecting: boolean;
+  connectionError: string | null;
+  typing: Record<string, boolean>;
+  presence: Record<string, PresenceInfo>;
+  activePeerId: string | null;
+  setActivePeerId: Dispatch<SetStateAction<string | null>>;
+  connect: () => Promise<void>;
+  refresh: () => Promise<void>;
+  sendMessage: (peerId: string, text: string) => Promise<void>;
+  sendTyping: (peerId: string, isTyping: boolean) => void;
+  saveDisplayName: (name: string) => Promise<void>;
+  removeContact: (peerId: string) => Promise<void>;
+  addContact: (peerId: string) => Promise<void>;
+  updatePresence: (peerId: string, info: PresenceInfo) => void;
+}
+
+/** Owns the chat state (contacts, messages, groups, connection, presence,
+ *  typing) together with the event listeners that keep it live and the
+ *  high-level send/remove/add operations that mutate it. */
+export function useChatState({
+  notificationsEnabled,
+  notificationPreview,
+}: UseChatStateParams): ChatStateApi {
+  const [contacts, setContacts] = useState<ContactInfo[]>([]);
+  const [myDisplayName, setMyDisplayName] = useState<string | null>(null);
+  const [messages, setMessages] = useState<Record<string, Message[]>>({});
+  const [groups, setGroups] = useState<GroupInfo[]>([]);
+  const [connected, setConnected] = useState(false);
+  const [connecting, setConnecting] = useState(true);
+  const [connectionError, setConnectionError] = useState<string | null>(null);
+  const [typing, setTyping] = useState<Record<string, boolean>>({});
+  const [presence, setPresence] = useState<Record<string, PresenceInfo>>({});
+  const [activePeerId, setActivePeerId] = useState<string | null>(null);
+
+  // The chat-message listener is registered once but must read the *current*
+  // notification prefs and contact list, so they live in a ref updated on
+  // every render.
+  const notifyPrefs = useRef({ notificationsEnabled, notificationPreview, contacts });
+  notifyPrefs.current = { notificationsEnabled, notificationPreview, contacts };
+
+  const connect = useCallback(async () => {
+    setConnecting(true);
+    setConnectionError(null);
+    try {
+      await connectRelay();
+      await publishPrekeys();
+    } catch (err) {
+      setConnectionError(String(err));
+    } finally {
+      setConnecting(false);
+    }
+  }, []);
+
+  const refresh = useCallback(async () => {
+    try {
+      const state = await getChatState();
+      setContacts(state.contacts);
+      setMessages(state.messages);
+      setGroups(state.groups);
+      setConnected(state.connected);
+      setMyDisplayName(state.my_display_name);
+      setPresence(state.presence);
+    } catch {
+      // Transient failure; event listeners resync the next state change.
+    }
+  }, []);
+
+  useEffect(() => {
+    const unlisteners: UnlistenFn[] = [];
+    let disposed = false;
+
+    // Register a listener and immediately reap it if the effect was cleaned
+    // up mid-registration (React StrictMode double-mounts in dev).
+    const register = async (
+      subscribe: () => Promise<UnlistenFn>
+    ): Promise<UnlistenFn | null> => {
+      const unlisten = await subscribe();
+      if (disposed) {
+        unlisten();
+        return null;
+      }
+      unlisteners.push(unlisten);
+      return unlisten;
+    };
+
+    const setup = async () => {
+      // Listeners are registered BEFORE the first connection attempt, so the
+      // `relay-status` and `chat-message` events can never race past the
+      // subscription window.
+      const chatUnlisten = await register(() =>
+        onChatMessage(({ peer_id, message }) => {
+          if (disposed) return;
+          setContacts((prev) =>
+            prev.some((c) => c.peer_id === peer_id)
+              ? prev
+              : [...prev, { peer_id, display_name: null }]
+          );
+          setMessages((prev) => {
+            const list = prev[peer_id] ?? [];
+            if (list.some((m) => m.id === message.id)) return prev;
+            return { ...prev, [peer_id]: [...list, message] };
+          });
+          setActivePeerId((prev) => prev ?? peer_id);
+          // Desktop notification: incoming message + window unfocused +
+          // notifications enabled (preview text controlled by the setting).
+          if (message.outgoing) return;
+          const prefs = notifyPrefs.current;
+          if (!prefs.notificationsEnabled) return;
+          if (document.hasFocus()) return;
+          void showChatNotification(peer_id, message, prefs.contacts, prefs.notificationPreview);
+        })
+      );
+      const statusUnlisten = await register(() =>
+        onRelayStatus(({ connected: isConnected }) => {
+          if (disposed) return;
+          setConnected(isConnected);
+          if (isConnected) void refresh();
+        })
+      );
+      const messageStatusUnlisten = await register(() =>
+        onMessageStatus(({ client_id, status }) => {
+          if (disposed) return;
+          // Status events carry only the client id, so match it against every
+          // peer's history and flip the matching message. `status` is either
+          // "delivered" (relay ack) or "read" (end-to-end read receipt).
+          const rank: Record<MessageStatus, number> = { sent: 0, delivered: 1, read: 2 };
+          setMessages((prev) => {
+            let changed = false;
+            const next: Record<string, Message[]> = {};
+            for (const [peer, list] of Object.entries(prev)) {
+              next[peer] = list.map((m) => {
+                if (m.id !== client_id) return m;
+                // Promotion-only: an out-of-order event must never downgrade
+                // an already "read" (or "delivered") message.
+                if (rank[status] <= rank[m.status ?? "delivered"]) return m;
+                changed = true;
+                return { ...m, status };
+              });
+            }
+            return changed ? next : prev;
+          });
+        })
+      );
+      const typingUnlisten = await register(() =>
+        onTyping(({ peer_id, is_typing }) => {
+          if (disposed) return;
+          setTyping((prev) =>
+            prev[peer_id] === is_typing
+              ? prev
+              : { ...prev, [peer_id]: is_typing }
+          );
+        })
+      );
+      const contactUpdatedUnlisten = await register(() =>
+        onContactUpdated(({ peer_id, display_name }) => {
+          if (disposed) return;
+          setContacts((prev) =>
+            prev.some((c) => c.peer_id === peer_id)
+              ? prev.map((c) =>
+                  c.peer_id === peer_id ? { ...c, display_name } : c
+                )
+              : [...prev, { peer_id, display_name }]
+          );
+        })
+      );
+      const presenceUnlisten = await register(() =>
+        onPresence(({ peer_id, online, last_seen }) => {
+          if (disposed) return;
+          setPresence((prev) =>
+            prev[peer_id]?.online === online &&
+            prev[peer_id]?.last_seen === last_seen
+              ? prev
+              : { ...prev, [peer_id]: { online, last_seen } }
+          );
+        })
+      );
+      if (
+        disposed ||
+        !chatUnlisten ||
+        !statusUnlisten ||
+        !messageStatusUnlisten ||
+        !typingUnlisten ||
+        !contactUpdatedUnlisten ||
+        !presenceUnlisten
+      ) {
+        return;
+      }
+      // connect() must settle before refresh() so the snapshot reflects the
+      // established connection — offline messages included — and the UI is
+      // consistent the moment it first renders.
+      void (async () => {
+        await connect();
+        await refresh();
+      })();
+    };
+
+    void setup();
+
+    return () => {
+      disposed = true;
+      for (const unlisten of unlisteners) unlisten();
+    };
+  }, [connect, refresh]);
+
+  const sendMessage = useCallback(async (peerId: string, text: string) => {
+    const clientId = crypto.randomUUID();
+    // Optimistic insertion; the backend echoes the same client id in the
+    // `chat-message` event, which the dedup logic above ignores. The status
+    // flips to "delivered" on the relay ack and "read" on a read receipt.
+    setMessages((prev) => ({
+      ...prev,
+      [peerId]: [
+        ...(prev[peerId] ?? []),
+        { id: clientId, text, outgoing: true, timestamp: Date.now(), status: "sent" },
+      ],
+    }));
+    try {
+      await relaySendMessage(peerId, text, clientId);
+    } catch (err) {
+      setMessages((prev) => ({
+        ...prev,
+        [peerId]: (prev[peerId] ?? []).filter(
+          (m) => m.id !== clientId
+        ),
+      }));
+      setConnectionError(String(err));
+    }
+  }, []);
+
+  const sendTyping = useCallback((peerId: string, isTyping: boolean) => {
+    // Best-effort: without an established session (or while disconnected)
+    // there is no session to encrypt the indicator with.
+    void relaySendTyping(peerId, isTyping).catch(() => {});
+  }, []);
+
+  const saveDisplayName = useCallback(async (name: string) => {
+    const trimmed = name.trim();
+    await persistDisplayName(trimmed);
+    setMyDisplayName(trimmed || null);
+  }, []);
+
+  const updatePresence = useCallback((peerId: string, info: PresenceInfo) => {
+    setPresence((prev) => ({ ...prev, [peerId]: info }));
+  }, []);
+
+  /** Remove a contact and its messages on this device (client-local). The
+   *  Rust backend drops the contact row, history and session; this keeps the
+   *  React state in sync so no refresh is needed. The peer's own copy and any
+   *  relay-queued envelopes are untouched — a later message re-establishes
+   *  the contact. */
+  const removeContact = useCallback(async (targetPeerId: string) => {
+    try {
+      await relayRemoveContact(targetPeerId);
+    } catch {
+      // Client-local best-effort: the in-memory removal below still applies
+      // for this session.
+    }
+    setContacts((prev) => prev.filter((c) => c.peer_id !== targetPeerId));
+    setMessages((prev) => {
+      const next = { ...prev };
+      delete next[targetPeerId];
+      return next;
+    });
+    setActivePeerId((prev) => (prev === targetPeerId ? null : prev));
+  }, []);
+
+  const addContact = useCallback(
+    async (peerIdToAdd: string) => {
+      try {
+        await startChat(peerIdToAdd);
+      } catch (err) {
+        throw new Error(String(err));
+      }
+      setContacts((prev) =>
+        prev.some((c) => c.peer_id === peerIdToAdd)
+          ? prev
+          : [...prev, { peer_id: peerIdToAdd, display_name: null }]
+      );
+      setActivePeerId(peerIdToAdd);
+      // Best-effort enrichment: pull the peer's public profile (display
+      // name, username, avatar) so the contact renders fully right away.
+      try {
+        const profile = await getProfile(peerIdToAdd);
+        setContacts((prev) =>
+          prev.map((c) =>
+            c.peer_id === peerIdToAdd
+              ? {
+                  ...c,
+                  display_name: profile.display_name,
+                  username: profile.username,
+                  avatar_url: profile.avatar_url,
+                }
+              : c
+          )
+        );
+      } catch {
+        // No registered profile (or lookup unavailable) — display name and
+        // presence still arrive via the usual events.
+      }
+      void refresh();
+    },
+    [refresh]
+  );
+
+  return {
+    contacts,
+    myDisplayName,
+    messages,
+    groups,
+    connected,
+    connecting,
+    connectionError,
+    typing,
+    presence,
+    activePeerId,
+    setActivePeerId,
+    connect,
+    refresh,
+    sendMessage,
+    sendTyping,
+    saveDisplayName,
+    removeContact,
+    addContact,
+    updatePresence,
+  };
+}

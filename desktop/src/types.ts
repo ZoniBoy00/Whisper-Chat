@@ -1,3 +1,6 @@
+/** The app's theme palette. */
+export type Theme = "dark" | "light";
+
 /** Delivery state of an outgoing message. */
 export type MessageStatus = "sent" | "delivered" | "read";
 
@@ -125,7 +128,7 @@ export interface PresenceEvent {
 /** Settings snapshot returned by the `get_settings` command. */
 export interface AppSettings {
   relay_url?: string;
-  theme?: "dark" | "light";
+  theme?: Theme;
   /** Whether our online status and last-seen are shown to others. */
   presence_visible?: boolean;
   /** Whether we send end-to-end read receipts to the sender. */
