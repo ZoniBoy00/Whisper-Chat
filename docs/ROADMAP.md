@@ -180,7 +180,10 @@ talks to whom, IP) is visible just as in Signal/WhatsApp — this is an
 | **6.6** | **i18n + notifications:** EN/FI translations, native notifications + sounds, unread badges, pinned chats, in-chat message search, day separators, context menus, auto-reconnect | 1–2 | ✅ **done** |
 | **6.7** | **Group multi-sender:** every member sends with their own outbound Megolm session (created on first group-key receipt); connection toasts | 1 | ✅ **done** |
 | **6.8** | **Friend system (anti-spam):** signed friend requests + accept/decline/remove, server-enforced `not_contacts` gating (1:1 envelopes, pre-keys, group member adds), Contacts tab with live Online / Last seen + one-click removal | 2 | ✅ **done** |
-| **7** | **Media + calls:** encrypted file transfer, WebRTC (DTLS-SRTP) + coturn | 2 | 🔒 After MVP |
+| **6.9** | **Message interactions:** emoji reactions, quoted replies, edit + delete-for-everyone | 2 | 🔒 Next |
+| **6.10** | **Invite links + safety numbers:** `whisper://` deep links (peer ID + username), QR verification of contacts | 1–2 | 🔒 Next |
+| **6.11** | **Multi-device sync:** one identity on several devices (Signal-style key backup / signed device list) | 2 | 🔒 After MVP |
+| **7** | **Media + calls:** encrypted file transfer (AES-GCM key exchange, `/media` extension), WebRTC (DTLS-SRTP) + coturn, voice messages | 2 | 🔒 After MVP |
 | **8** | **Mobile:** Flutter + flutter_rust_bridge; push (APNs/FCM — only "you have a message") | separate | 🔒 After MVP |
 | **9** | **Audit + PQ:** cargo audit, fuzz, external review, threat model, X25519Kyber768 | — | 🔒 After MVP |
 
@@ -263,7 +266,7 @@ tester → reviewer → report → approval → push.
 | Crypto is hard | vodozemac + TDD + review + audit |
 | Metadata visible to the server | **Accepted product choice** (Signal model) — documented honestly |
 | Scope creep | Phases 6–8 kept out of the MVP |
-| DoS / spam | Rate limiting, size cap, signed hello (next), TTL |
+| DoS / spam | Rate limiting, size cap, signed hello ✅, `not_contacts` gating ✅, TTL |
 | Store rules (scanning pressure) | Clean architecture; E2EE protected by law (EU) |
 | Anti-reverse is not absolute | The bar is raised, not the impossible promised |
 
@@ -273,26 +276,62 @@ tester → reviewer → report → approval → push.
 
 ---
 
-## 13. Status & Next Steps (TODO)
+## 13. Future Features (Idea Backlog)
+
+A running wishlist of WhatsApp/Signal/Telegram-style features, prioritized by
+impact and effort. Pull items into the phase table when they get scheduled.
+
+| Priority | Feature | Notes |
+|---|---|---|
+| 🔥 High | **Emoji reactions** | `reaction` receipt-type, shown on the bubble (like Signal) |
+| 🔥 High | **Quoted replies** | tap a message → "Reply"; renders the quoted bubble |
+| 🔥 High | **Invite links** | share `whisper://<peer-id>`; new users see the name + avatar before accepting |
+| 🔥 High | **Safety number verification** | QR scan between devices to verify the key fingerprint (no server trust) |
+| 🔥 High | **Disappearing messages** | per-chat timer (off/5s/30s/1m/1h/1d), auto-delete both ends + server TTL |
+| 💪 Medium | **Message editing** | edit within a window; E2EE edit envelope |
+| 💪 Medium | **Delete for everyone** | E2EE delete receipt; the server drops queued copies |
+| 💪 Medium | **Voice messages** | opus/WebM chunks over the encrypted media channel |
+| 💪 Medium | **Mute conversations** | per-chat notification mute (15m/1h/8h/forever) |
+| 💪 Medium | **Archived chats** | fold old conversations out of the list (unarchive on new message) |
+| 💪 Medium | **Chat backgrounds/themes** | per-chat wallpaper + accent (client-side only) |
+| 💪 Medium | **Message font scale** | small/normal/large (setting exists — wire into bubbles) |
+| 💪 Medium | **Self-destructing identity** | wipe all local data from Settings (already resets identity) |
+| 💪 Medium | **Session health report** | list of sessions/devices with "verify/revoke" actions (Signal-style) |
+| 🧠 Nice-to-have | **Status/Stories** | ephemeral 24h photo/text status (WhatsApp-style) |
+| 🧠 Nice-to-have | **Pinned messages in groups** | admin pins a message to the top |
+| 🧠 Nice-to-have | **Group admin controls** | only-admins-can-send, group name/photo lock, disband group |
+| 🧠 Nice-to-have | **Search inside chats** | exists per-chat — extend to global message search |
+| 🧠 Nice-to-have | **Spell-check / autocorrect** | client-side only (never sent) |
+| 🧠 Nice-to-have | **Message padding** | random-size padding to flatten traffic patterns (metadata) |
+| 🧠 Nice-to-have | **Web client (WASM)** | e2ee-core → wasm-bindgen; read-only companion or full client |
+| 🧠 Nice-to-have | **Testnet mode** | a shared demo relay for trying the app without self-hosting |
+
+---
+
+## 14. Status & Next Steps (TODO)
 
 **✅ Done (2026-08-05):**
-- [x] Phase 0: workspace, CI, AGENTS.md, .gitignore
+- [x] Phase 0: workspace, CI (test/clippy/fmt/smoke jobs), AGENTS.md, .gitignore
 - [x] Phase 1: `e2ee-core` (vodozemac) — 48/48 tests
-- [x] Phase 2: relay + SQLite + fetch_since + rate limit + signed hello (spoofing protection) — 112/112 tests, smoke 67/67
-- [x] Phase 5.5: username & profile system (signed bindings, avatars, search)
-- [x] Phase 6: groups — owner/admin roles, multi-sender (own Megolm session per member), ownership transfer, Megolm key sharing over 1:1 E2EE
-- [x] Phase 6.6: i18n (EN/FI) + native notifications/sounds, unread badges, pinned chats, in-chat search, day separators, context menus, auto-reconnect
+- [x] Phase 2: relay — SQLite offline queue, fetch_since, rate limiting, signed hello + spoofing protection, prekeys, display names, presence watch
+- [x] Phase 5.5: username & profile system (signed bindings, avatars via /media, search by username/UID)
+- [x] Phase 6: groups — owner/admin roles, multi-sender (own Megolm session per member), ownership transfer, group photos, member add/remove with pushes
+- [x] Phase 6.6: i18n (EN/FI, 173 keys) + native notifications/sounds, unread badges, pinned chats, in-chat search, day separators, context menus, auto-reconnect, splash, toasts
 - [x] Phase 6.7: group multi-sender — every member sends with an own outbound Megolm session
-- [x] Relay ops: structured logging (`RUST_LOG`-controllable, peer-ID level only) + graceful shutdown on Ctrl+C/SIGTERM (clean exit, no `STATUS_CONTROL_C_EXIT`)
-- [x] Code hardening: release profiles, systemd template, .env.example
-- [x] Rename `ghost-relay` → `whisper-relay` (crate, `WHISPER_*` env vars, deploy unit)
+- [x] Phase 6.8: friend system — requests/accept/decline/remove, `not_contacts` gating (1:1, pre-keys, group adds), Contacts tab with Online/Last seen + removal
+- [x] Desktop extras: settings expansion (tray, autostart, enter-to-send, font scale, identity backup/restore, clear history, test sound), log viewer (Logs tab), profile dialog, context menus, webview menu suppression
+- [x] Relay ops: structured logging (`RUST_LOG`-controllable, peer-ID level only) + graceful shutdown on Ctrl+C/SIGTERM
+- [x] Robustness fixes: FIFO→keyed request resolution (get_group_info), error-code→queue routing (stale groups evicted), legacy avatar sync, contact-only group cleanup
 
 **Test counts (2026-08-05):** 277 unit tests — e2ee-core 48, whisper-relay 140,
-whisper-desktop 89; smoke suite 92/92 checks.
+whisper-desktop 89; smoke suite 92/92 checks. CI green (4 jobs incl. smoke).
 
 **⏳ Next up:**
+- [ ] Deploy the relay to Hetzner (systemd unit ready) → real two-machine E2EE test
 - [ ] Phase 6.5: disappearing messages (per-chat TTL, auto-delete both ends)
-- [ ] Connection toasts for auto-reconnect events
+- [ ] Phase 6.9: emoji reactions + quoted replies (backlog item, high priority)
+- [ ] Phase 6.10: invite links + safety-number QR verification
+- [ ] Public repo (open source) once remote testing is solid
 
 ---
 
