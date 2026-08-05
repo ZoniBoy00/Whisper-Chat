@@ -143,11 +143,15 @@ export function MainView({ peerId, onReset }: MainViewProps) {
 
   const handleSetAvatar = useCallback(
     async (avatarBase64: string) => {
-      await setAvatar(avatarBase64);
+      const username = myProfile?.username;
+      if (!username) {
+        throw new Error("Register a username before uploading an avatar.");
+      }
+      await setAvatar(username, avatarBase64);
       // Re-fetch the profile so the avatar_url (and preview) refresh.
       await refreshOwnProfile();
     },
-    [refreshOwnProfile]
+    [myProfile?.username, refreshOwnProfile]
   );
 
   // Privacy / notification preference handlers: apply in memory immediately

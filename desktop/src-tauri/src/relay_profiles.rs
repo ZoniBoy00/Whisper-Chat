@@ -167,6 +167,13 @@ impl RelayClient {
         write_guard(&self.inner.profiles)?
             .contacts
             .insert(peer_id.to_string(), name.to_string());
+        // Register the peer in the ordered contact list as well, so the
+        // `contact-updated` event and a `get_chat_state` snapshot agree.
+        // `create_group` depends on this: without it, the refresh that follows
+        // creation would overwrite the event-driven entry and drop the
+        // just-created group from the conversation list.
+        let mut contacts = write_guard(&self.inner.contacts)?;
+        ensure_contact_entry(&mut contacts, peer_id);
         let _ = self.inner.app.emit(
             "contact-updated",
             ContactUpdatedEvent {
@@ -175,6 +182,15 @@ impl RelayClient {
             },
         );
         Ok(())
+    }
+}
+
+/// Add `peer_id` to the ordered contact list when it is not already present.
+/// Keeps the in-memory list and the persisted contact rows in agreement so a
+/// state snapshot reflects every peer whose display name we have learned.
+pub(crate) fn ensure_contact_entry(contacts: &mut Vec<String>, peer_id: &str) {
+    if !contacts.iter().any(|known| known == peer_id) {
+        contacts.push(peer_id.to_string());
     }
 }
 
@@ -204,5 +220,17 @@ mod tests {
         let too_long = "x".repeat(MAX_DISPLAY_NAME_CHARS + 1);
         assert!(too_long.chars().count() > MAX_DISPLAY_NAME_CHARS);
         assert!("name\nwith\ttabs".chars().any(char::is_control));
+    }
+
+    #[test]
+    fn ensure_contact_entry_adds_once_and_is_idempotent() {
+        // A learned display name must also produce a stable conversation-list
+        // entry: a duplicate push would render two rows for one peer, so the
+        // helper must add exactly once and keep first-contact order.
+        let mut contacts = vec!["alice".to_string()];
+        ensure_contact_entry(&mut contacts, "bob");
+        ensure_contact_entry(&mut contacts, "alice");
+        ensure_contact_entry(&mut contacts, "bob");
+        assert_eq!(contacts, vec!["alice".to_string(), "bob".to_string()]);
     }
 }

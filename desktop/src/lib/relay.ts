@@ -119,12 +119,16 @@ export function getProfile(peerId: string): Promise<ProfileInfo> {
 }
 
 /**
- * Upload our avatar image. `avatarBase64` is raw base64 WITHOUT the
- * "data:image/...;base64," prefix — the backend stores the bytes under
- * /media/{hash} and the profile's avatar_url starts pointing there.
+ * Upload our avatar image. `username` must already be registered (the relay
+ * re-registers the profile with the avatar). `avatarBase64` is raw base64
+ * WITHOUT the "data:image/...;base64," prefix — the backend stores the bytes
+ * under /media/{hash} and the profile's avatar_url starts pointing there.
  */
-export function setAvatar(avatarBase64: string): Promise<{ avatar_url?: string }> {
-  return invoke("set_avatar", { avatar: avatarBase64 });
+export function setAvatar(
+  username: string,
+  avatarBase64: string
+): Promise<{ avatar_url?: string }> {
+  return invoke("set_avatar", { username, avatar: avatarBase64 });
 }
 
 /** Send an end-to-end typing indicator to a peer (encrypted in-session). */
