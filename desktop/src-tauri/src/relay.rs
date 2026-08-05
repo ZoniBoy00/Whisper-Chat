@@ -822,7 +822,7 @@ impl RelayClient {
             display_name: read_guard(&self.inner.profiles)?.my_display_name.clone(),
         })?;
         out_tx
-            .send(WsMessage::Text(hello_json))
+            .send(WsMessage::Text(hello_json.into()))
             .map_err(|_| RelayError::NotConnected)?;
 
         // Drain the relay's offline queue so reconnects never redeliver the
@@ -1862,7 +1862,7 @@ impl RelayClient {
     /// Queue an already-serialized message on the outbox.
     fn send_json<T: Serialize>(&self, message: &T) -> Result<(), RelayError> {
         let text = serde_json::to_string(message)?;
-        self.send_raw(WsMessage::Text(text))
+        self.send_raw(WsMessage::Text(text.into()))
     }
 
     /// Queue a raw WebSocket frame on the outbox.

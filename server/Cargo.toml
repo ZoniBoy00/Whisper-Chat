@@ -6,7 +6,7 @@ description = "Whisper — zero-knowledge blind relay server for E2EE messaging"
 license = "MIT"
 
 [dependencies]
-axum = { version = "0.7", features = ["ws"] }
+axum = { version = "0.8", features = ["ws"] }
 e2ee-core = { path = "../e2ee-core" }
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "net", "time", "sync", "fs"] }
 futures-util = "0.3"

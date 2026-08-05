@@ -52,7 +52,7 @@ async fn main() {
     let app = Router::new()
         .route("/healthz", get(health))
         .route("/ws", get(ws_handler))
-        .route("/media/:hash", get(media))
+        .route("/media/{hash}", get(media))
         .with_state(state);
 
     let addr: SocketAddr = std::env::var("WHISPER_ADDR")
