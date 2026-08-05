@@ -27,6 +27,13 @@ export interface ContactInfo {
   display_name: string | null;
 }
 
+/** A peer's presence snapshot: online right now, plus last-seen unix seconds
+ *  (null while online or when never seen). */
+export interface PresenceInfo {
+  online: boolean;
+  last_seen: number | null;
+}
+
 /** Snapshot returned by the `get_chat_state` command. */
 export interface ChatState {
   my_peer_id: string;
@@ -34,6 +41,7 @@ export interface ChatState {
   connected: boolean;
   contacts: ContactInfo[];
   messages: Record<string, Message[]>;
+  presence: Record<string, PresenceInfo>;
 }
 
 /** Payload of the `chat-message` event emitted for new plaintext. */
@@ -64,6 +72,13 @@ export interface TypingEvent {
 export interface ContactUpdatedEvent {
   peer_id: string;
   display_name: string | null;
+}
+
+/** Payload of the `presence` event emitted on a presence push or reply. */
+export interface PresenceEvent {
+  peer_id: string;
+  online: boolean;
+  last_seen: number | null;
 }
 
 /** Settings snapshot returned by the `get_settings` command. */

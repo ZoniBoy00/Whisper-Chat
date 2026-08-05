@@ -7,8 +7,13 @@
 //   # Start the relay with a bounded rate limit and a scratch DB, then:
 //   node tests/smoke.mjs   (relay must be running on 127.0.0.1:8080)
 //
-// The rate-limit test relies on WHISPER_RATE_BURST / WHISPER_RATE_REFILL
-// being set low; it also passes with the defaults (60/min burst).
+// The rate-limit tests rely on WHISPER_RATE_BURST / WHISPER_RATE_REFILL
+// being set low. The username/profile tests perform ~12 profile operations
+// from one source IP, so the profile bucket must hold at least that many
+// tokens: run with WHISPER_RATE_BURST=20 (which the profile bucket falls back
+// to) or set WHISPER_PROFILE_RATE_BURST explicitly.
+//
+// The presence tests also consume a few tokens from the per-IP buckets.
 
 import { generateKeyPairSync, createHash, sign } from "node:crypto";
 
@@ -93,6 +98,29 @@ function tamper(b64) {
   return b64.slice(0, i) + (b64[i] === "A" ? "B" : "A") + b64.slice(i + 1);
 }
 
+const HTTP_URL = process.env.WHISPER_HTTP_URL || "http://127.0.0.1:8080";
+
+// A tiny valid 1x1 PNG used as the avatar upload payload.
+const AVATAR_PNG = Buffer.from(
+  "89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c489" +
+    "0000000d4944415478da63fcffff3f030005fef9810e14e0960000000049454e44ae426082",
+  "hex"
+);
+
+// Sign the canonical username binding: username || 0x00 || curve25519_raw.
+// Mirrors e2ee-core profile::canonical_bytes exactly.
+function signUsername(identity, username) {
+  return sign(
+    null,
+    Buffer.concat([
+      Buffer.from(username, "utf8"),
+      Buffer.from([0x00]),
+      Buffer.from(identity.curve25519_key, "base64"),
+    ]),
+    identity.edPriv
+  ).toString("base64");
+}
+
 function connect(label) {
   const ws = new WebSocket(URL);
   const ready = new Promise((res, rej) => {
@@ -125,6 +153,16 @@ const waitFor = async (label, fn, timeoutMs = 5000) => {
     await sleep(50);
   }
   throw new Error(`timeout waiting for: ${label}`);
+};
+// Wait until at least `count` messages match the predicate (re-registrations
+// produce several replies of the same shape).
+const waitForCount = async (label, ws, predicate, count, timeoutMs = 5000) => {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (ws.messages.filter(predicate).length >= count) return;
+    await sleep(50);
+  }
+  throw new Error(`timeout waiting for ${count} x ${label}`);
 };
 
 let failures = 0;
@@ -436,8 +474,238 @@ async function main() {
   );
   check("update_profile: name over 64 chars rejected with invalid_display_name", true);
 
-  aliceConn.ws.close();
+  // --- Presence tests ---
+
+  // (a) get_presence for a peer that never connected: offline, no last_seen.
+  aliceConn.ws.sendJson({ type: "get_presence", peer_id: dave.peer_id });
+  await waitFor("get_presence unknown reply", () =>
+    aliceConn.ws.messages.some(
+      (m) => m.type === "presence" && m.peer_id === dave.peer_id
+    )
+  );
+  const unknownPresence = aliceConn.ws.messages
+    .filter((m) => m.type === "presence" && m.peer_id === dave.peer_id)
+    .pop();
+  check(
+    "presence: unknown peer reports online:false and last_seen:null",
+    unknownPresence &&
+      unknownPresence.online === false &&
+      unknownPresence.last_seen === null
+  );
+
+  // (b) alice watches bob; bob disconnects -> alice gets an offline push.
+  aliceConn.ws.sendJson({ type: "watch_presence", peer_id: bob.peer_id });
+  await sleep(100); // let the watch registration reach the relay
+  const bobPresenceBefore = aliceConn.ws.messages.filter(
+    (m) => m.type === "presence" && m.peer_id === bob.peer_id
+  ).length;
   bob4.ws.close();
+  await waitFor("presence offline push", () =>
+    aliceConn.ws.messages.filter(
+      (m) => m.type === "presence" && m.peer_id === bob.peer_id
+    ).length > bobPresenceBefore
+  );
+  const offlinePush = aliceConn.ws.messages
+    .filter((m) => m.type === "presence" && m.peer_id === bob.peer_id)
+    .slice(bobPresenceBefore)
+    .pop();
+  check(
+    "presence: watcher receives an offline push with online:false",
+    offlinePush && offlinePush.online === false
+  );
+
+  // (c) bob's last_seen is persisted on disconnect and visible via get_presence.
+  const bobPresenceBefore2 = aliceConn.ws.messages.filter(
+    (m) => m.type === "presence" && m.peer_id === bob.peer_id
+  ).length;
+  aliceConn.ws.sendJson({ type: "get_presence", peer_id: bob.peer_id });
+  await waitFor("get_presence bob reply", () =>
+    aliceConn.ws.messages.filter(
+      (m) => m.type === "presence" && m.peer_id === bob.peer_id
+    ).length > bobPresenceBefore2
+  );
+  const bobReply = aliceConn.ws.messages
+    .filter((m) => m.type === "presence" && m.peer_id === bob.peer_id)
+    .slice(bobPresenceBefore2)
+    .pop();
+  check(
+    "presence: get_presence reports last_seen after disconnect",
+    bobReply && bobReply.online === false && typeof bobReply.last_seen === "number"
+  );
+
+  // (d) bob reconnects -> alice's watch delivers an online push.
+  const bob5 = connect("bob5");
+  await bob5.ready;
+  bob5.ws.hello(bob);
+  await waitFor("presence online push", () =>
+    aliceConn.ws.messages.some(
+      (m) => m.type === "presence" && m.peer_id === bob.peer_id && m.online === true
+    )
+  );
+  check("presence: watcher receives an online push on reconnect", true);
+  bob5.ws.close();
+  await sleep(100);
+
+  // --- Usernames & profiles ---
+
+  // Reconnect bob: bob4 was closed by the presence tests.
+  const bob6 = connect("bob6");
+  await bob6.ready;
+  bob6.ws.hello(bob);
+
+  // (a) register_profile -> search_users -> get_profile roundtrip.
+  aliceConn.ws.sendJson({
+    type: "register_profile",
+    username: "alice_test",
+    signature: signUsername(alice, "alice_test"),
+    display_name: "Test Alice",
+  });
+  await waitFor("alice profile_registered", () =>
+    aliceConn.ws.messages.some((m) => m.type === "profile_registered")
+  );
+  const aliceReg = aliceConn.ws.messages.filter((m) => m.type === "profile_registered").pop();
+  check(
+    "profile: alice registers username alice_test",
+    aliceReg && aliceReg.username === "alice_test"
+  );
+
+  bob6.ws.sendJson({
+    type: "register_profile",
+    username: "bob_test",
+    signature: signUsername(bob, "bob_test"),
+    display_name: "Test Bob",
+  });
+  await waitFor("bob profile_registered", () =>
+    bob6.ws.messages.some((m) => m.type === "profile_registered")
+  );
+  check("profile: bob registers username bob_test", true);
+
+  // Search by username prefix.
+  aliceConn.ws.sendJson({ type: "search_users", query: "alice", limit: 10 });
+  await waitFor("search by username reply", () =>
+    aliceConn.ws.messages.some((m) => m.type === "users_search")
+  );
+  let search = aliceConn.ws.messages.filter((m) => m.type === "users_search").pop();
+  check(
+    "profile: search by username prefix finds alice_test",
+    search &&
+      search.results.some((r) => r.username === "alice_test" && r.peer_id === alice.peer_id)
+  );
+
+  // Search by UID prefix.
+  bob6.ws.sendJson({ type: "search_users", query: alice.peer_id.slice(0, 10) });
+  await waitFor("search by uid reply", () =>
+    bob6.ws.messages.some((m) => m.type === "users_search")
+  );
+  search = bob6.ws.messages.filter((m) => m.type === "users_search").pop();
+  check(
+    "profile: search by UID prefix finds alice_test",
+    search && search.results.some((r) => r.peer_id === alice.peer_id)
+  );
+
+  // get_profile by peer id (both directions).
+  aliceConn.ws.sendJson({ type: "get_profile", peer_id: bob.peer_id });
+  await waitFor("get_profile(bob) reply", () =>
+    aliceConn.ws.messages.some((m) => m.type === "profile")
+  );
+  const bobProfile = aliceConn.ws.messages.filter((m) => m.type === "profile").pop();
+  check(
+    "profile: get_profile(bob) returns username + display name + curve key",
+    bobProfile &&
+      bobProfile.username === "bob_test" &&
+      bobProfile.display_name === "Test Bob" &&
+      bobProfile.peer_id === bob.peer_id &&
+      bobProfile.curve25519_key === bob.curve25519_key
+  );
+
+  bob6.ws.sendJson({ type: "get_profile", peer_id: alice.peer_id });
+  await waitFor("get_profile(alice) reply", () =>
+    bob6.ws.messages.some((m) => m.type === "profile")
+  );
+  const aliceProfile = bob6.ws.messages.filter((m) => m.type === "profile").pop();
+  check(
+    "profile: get_profile(alice) returns alice_test",
+    aliceProfile &&
+      aliceProfile.username === "alice_test" &&
+      aliceProfile.curve25519_key === alice.curve25519_key
+  );
+
+  // (b) tampered signature -> bad_signature.
+  aliceConn.ws.sendJson({
+    type: "register_profile",
+    username: "tamper_test",
+    signature: tamper(signUsername(alice, "tamper_test")),
+  });
+  await waitFor("bad_signature error", () =>
+    aliceConn.ws.messages.some((m) => m.type === "error" && m.code === "bad_signature")
+  );
+  check("profile: tampered username signature -> bad_signature", true);
+
+  // (c) duplicate username -> username_taken.
+  bob6.ws.sendJson({
+    type: "register_profile",
+    username: "alice_test",
+    signature: signUsername(bob, "alice_test"),
+  });
+  await waitFor("username_taken error", () =>
+    bob6.ws.messages.some((m) => m.type === "error" && m.code === "username_taken")
+  );
+  check("profile: duplicate username -> username_taken", true);
+
+  // (d) reserved username -> invalid_username.
+  carolConn.ws.sendJson({
+    type: "register_profile",
+    username: "admin",
+    signature: signUsername(carol, "admin"),
+  });
+  await waitFor("invalid_username error", () =>
+    carolConn.ws.messages.some((m) => m.type === "error" && m.code === "invalid_username")
+  );
+  check("profile: reserved username rejected with invalid_username", true);
+
+  // (e) avatar upload -> /media/{hash} serves the blob.
+  const avatarB64 = AVATAR_PNG.toString("base64");
+  const avatarHash = createHash("sha256").update(AVATAR_PNG).digest("hex");
+  aliceConn.ws.sendJson({
+    type: "register_profile",
+    username: "alice_test",
+    signature: signUsername(alice, "alice_test"),
+    avatar: avatarB64,
+  });
+  await waitForCount(
+    "alice profile_registered (avatar)",
+    aliceConn.ws,
+    (m) => m.type === "profile_registered" && m.username === "alice_test",
+    2
+  );
+  check("profile: avatar upload acknowledged with profile_registered", true);
+
+  aliceConn.ws.sendJson({ type: "get_profile", peer_id: alice.peer_id });
+  await waitFor("get_profile with avatar_url", () =>
+    aliceConn.ws.messages
+      .filter((m) => m.type === "profile")
+      .some((m) => m.avatar_url === `/media/${avatarHash}`)
+  );
+  check("profile: get_profile exposes avatar_url = /media/{sha256}", true);
+
+  const mediaRes = await fetch(`${HTTP_URL}/media/${avatarHash}`);
+  const mediaBlob = Buffer.from(await mediaRes.arrayBuffer());
+  check(
+    "profile: GET /media/{hash} serves the uploaded avatar bytes",
+    mediaRes.status === 200 &&
+      mediaRes.headers.get("content-type") === "image/png" &&
+      mediaBlob.equals(AVATAR_PNG)
+  );
+
+  // (f) unknown peer get_profile -> no_profile.
+  aliceConn.ws.sendJson({ type: "get_profile", peer_id: "000000000000000000000000" });
+  await waitFor("no_profile error", () =>
+    aliceConn.ws.messages.some((m) => m.type === "error" && m.code === "no_profile")
+  );
+  check("profile: unknown peer get_profile -> no_profile", true);
+
+  aliceConn.ws.close();
+  bob6.ws.close();
   carolConn.ws.close();
 
   console.log(failures === 0 ? "\nALL TESTS PASSED" : `\n${failures} TEST(S) FAILED`);

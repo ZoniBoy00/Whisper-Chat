@@ -1,0 +1,15 @@
+# Dependabot configuration — Whisper
+version: 2
+updates:
+  - package-ecosystem: "cargo"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+    ignore:
+      - dependency-name: "glib"
+        versions: [">= 0.19.0, < 1.0"]
+        # BLOCKED UPSTREAM: gtk 0.18 (pinned by tauri 2.11) requires glib ^0.18.
+        # glib 0.20 cannot be selected without breaking the Linux build.
+        # Revisit when tauri moves to gtk 0.19+ (which uses glib 0.20).
+        # Tracked in docs/ROADMAP.md (Security/Dependencies section).
