@@ -51,3 +51,14 @@ export function playNotificationSound(): void {
   playTone(context, 880, now, 0.15, 0.3);
   playTone(context, 1174.66, now + 0.12, 0.22, 0.25);
 }
+
+/** Play a short preview of the notification chime for the "Test sound" button
+ *  in the Notifications settings tab. A softer, single ascending tone so it
+ *  is clearly distinguishable from a real incoming-message chime. */
+export function playTestSound(): void {
+  const context = getAudioContext();
+  if (!context) return;
+  const now = context.currentTime;
+  playTone(context, 659.25, now, 0.12, 0.2);
+  playTone(context, 880, now + 0.1, 0.2, 0.22);
+}

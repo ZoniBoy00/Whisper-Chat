@@ -58,6 +58,13 @@ impl RelayClient {
             Some(lang) if !lang.is_empty() => store.set_setting("language", lang)?,
             _ => store.delete_setting("language")?,
         }
+        store.set_setting("minimize_to_tray", setting_str(settings.minimize_to_tray))?;
+        store.set_setting("enter_to_send", setting_str(settings.enter_to_send))?;
+        match &settings.message_font_scale {
+            Some(scale) if !scale.is_empty() => store.set_setting("message_font_scale", scale)?,
+            _ => store.delete_setting("message_font_scale")?,
+        }
+        store.set_setting("autostart", setting_str(settings.autostart))?;
         *write_guard(&self.inner.settings)? = settings.clone();
         Ok(())
     }
@@ -119,6 +126,18 @@ impl RelayClient {
         }
         if let Some(value) = patch.language.clone() {
             settings.language = (!value.is_empty()).then_some(value);
+        }
+        if let Some(value) = patch.minimize_to_tray {
+            settings.minimize_to_tray = value;
+        }
+        if let Some(value) = patch.enter_to_send {
+            settings.enter_to_send = value;
+        }
+        if let Some(value) = patch.message_font_scale.clone() {
+            settings.message_font_scale = (!value.is_empty()).then_some(value);
+        }
+        if let Some(value) = patch.autostart {
+            settings.autostart = value;
         }
         self.save_settings(&settings)
     }
@@ -280,12 +299,18 @@ mod tests {
         assert!(settings.notification_preview);
         assert!(settings.notification_sound);
         assert_eq!(settings.language, None);
+        // New behavioral preferences keep their documented defaults too:
+        // minimize-to-tray and autostart opt OUT by default, Enter-to-send is on.
+        assert!(!settings.minimize_to_tray);
+        assert!(settings.enter_to_send);
+        assert_eq!(settings.message_font_scale, None);
+        assert!(!settings.autostart);
     }
 
     #[test]
     fn settings_parse_honours_explicit_opt_out_fields() {
         let settings: Settings = serde_json::from_str(
-            r#"{"presence_visible":false,"read_receipts":false,"typing_indicator":false,"notifications_enabled":false,"notification_preview":false,"notification_sound":false,"language":"fi"}"#,
+            r#"{"presence_visible":false,"read_receipts":false,"typing_indicator":false,"notifications_enabled":false,"notification_preview":false,"notification_sound":false,"language":"fi","minimize_to_tray":true,"enter_to_send":false,"message_font_scale":"large","autostart":true}"#,
         )
         .expect("full settings must parse");
         assert!(!settings.presence_visible);
@@ -295,6 +320,10 @@ mod tests {
         assert!(!settings.notification_preview);
         assert!(!settings.notification_sound);
         assert_eq!(settings.language.as_deref(), Some("fi"));
+        assert!(settings.minimize_to_tray);
+        assert!(!settings.enter_to_send);
+        assert_eq!(settings.message_font_scale.as_deref(), Some("large"));
+        assert!(settings.autostart);
     }
 
     #[test]
@@ -307,15 +336,24 @@ mod tests {
         assert_eq!(patch.notification_preview, None);
         assert_eq!(patch.notification_sound, None);
         assert_eq!(patch.language, None);
+        assert_eq!(patch.minimize_to_tray, None);
+        assert_eq!(patch.enter_to_send, None);
+        assert_eq!(patch.message_font_scale, None);
+        assert_eq!(patch.autostart, None);
     }
 
     #[test]
     fn settings_patch_carries_language_and_sound() {
-        let patch: SettingsPatch =
-            serde_json::from_str(r#"{"notification_sound":false,"language":"fi"}"#)
-                .expect("partial patch must parse");
+        let patch: SettingsPatch = serde_json::from_str(
+            r#"{"notification_sound":false,"language":"fi","minimize_to_tray":true,"enter_to_send":false,"message_font_scale":"small","autostart":true}"#,
+        )
+        .expect("partial patch must parse");
         assert_eq!(patch.notification_sound, Some(false));
         assert_eq!(patch.language.as_deref(), Some("fi"));
+        assert_eq!(patch.minimize_to_tray, Some(true));
+        assert_eq!(patch.enter_to_send, Some(false));
+        assert_eq!(patch.message_font_scale.as_deref(), Some("small"));
+        assert_eq!(patch.autostart, Some(true));
     }
 
     #[test]

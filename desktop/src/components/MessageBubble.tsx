@@ -84,7 +84,7 @@ export function MessageBubble({
         )}
         onContextMenu={onContextMenu}
       >
-        <p className="whitespace-pre-wrap break-words text-[15px] leading-relaxed text-wp-text">
+        <p className="wp-msg whitespace-pre-wrap break-words leading-relaxed text-wp-text">
           <HighlightedText
             text={message.text}
             query={searchQuery}

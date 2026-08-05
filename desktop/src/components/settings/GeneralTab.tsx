@@ -2,14 +2,19 @@ import { useEffect, useRef, useState } from "react";
 import {
   AtSign,
   CheckCircle2,
+  Download,
   KeyRound,
   Languages,
   Loader2,
+  Minimize2,
   Moon,
   Palette,
+  Rocket,
   Save,
+  Send,
   Sun,
   Trash2,
+  Type,
   Upload,
   User,
 } from "lucide-react";
@@ -20,7 +25,7 @@ import { useToast } from "../../hooks/useToast";
 import type { TFunction } from "../../i18n/types";
 import { Avatar } from "../Avatar";
 import { CopyButton } from "../CopyButton";
-import { SectionHeading } from "./controls";
+import { SectionHeading, ToggleRow } from "./controls";
 
 /** Reserved handles that can never be claimed. */
 const RESERVED_USERNAMES = new Set([
@@ -78,7 +83,29 @@ interface GeneralTabProps {
   /** Report an in-flight save/register so the dialog can block closing until
    *  the operation settles. */
   onBusyChange: (busy: boolean) => void;
+  /** Whether the app registers itself to launch at system startup. */
+  autostart: boolean;
+  onAutostartChange: (value: boolean) => void;
+  /** Whether closing the window hides to the system tray instead of quitting. */
+  minimizeToTray: boolean;
+  onMinimizeToTrayChange: (value: boolean) => void;
+  /** Whether Enter sends a message (off: Enter = new line, Ctrl+Enter sends). */
+  enterToSend: boolean;
+  onEnterToSendChange: (value: boolean) => void;
+  /** Message bubble font scale: "small" | "normal" | "large". */
+  messageFontScale: string;
+  onMessageFontScaleChange: (value: string) => void;
+  /** Back up / restore the identity file through a native file dialog. */
+  onExportIdentity: () => Promise<void>;
+  onImportIdentity: () => Promise<void>;
 }
+
+/** Message font scale options; labels are translated through `t`. */
+const FONT_SCALE_OPTIONS: { value: string; labelKey: "general.font_small" | "general.font_normal" | "general.font_large" }[] = [
+  { value: "small", labelKey: "general.font_small" },
+  { value: "normal", labelKey: "general.font_normal" },
+  { value: "large", labelKey: "general.font_large" },
+];
 
 export function GeneralTab({
   active,
@@ -94,6 +121,16 @@ export function GeneralTab({
   onSetAvatar,
   onReset,
   onBusyChange,
+  autostart,
+  onAutostartChange,
+  minimizeToTray,
+  onMinimizeToTrayChange,
+  enterToSend,
+  onEnterToSendChange,
+  messageFontScale,
+  onMessageFontScaleChange,
+  onExportIdentity,
+  onImportIdentity,
 }: GeneralTabProps) {
   const { t, language, setLanguage } = useI18n();
   const { toast } = useToast();
@@ -231,6 +268,12 @@ export function GeneralTab({
   /** Apply a theme choice and confirm it with a toast. */
   const handleThemeChange = (next: Theme) => {
     onThemeChange(next);
+    toast(t("toast.settings_saved"), "info");
+  };
+
+  /** Apply a message-font-scale choice and confirm it with a toast. */
+  const handleFontScaleChange = (next: string) => {
+    onMessageFontScaleChange(next);
     toast(t("toast.settings_saved"), "info");
   };
 
@@ -571,6 +614,84 @@ export function GeneralTab({
         </div>
       </section>
 
+      {/* Startup */}
+      <section aria-labelledby="settings-startup-title">
+        <SectionHeading
+          id="settings-startup-title"
+          icon={<Rocket className="h-3.5 w-3.5" />}
+          label={t("general.startup")}
+        />
+        <div className="space-y-3">
+          <ToggleRow
+            id="setting-autostart"
+            checked={autostart}
+            onChange={onAutostartChange}
+            icon={<Rocket className="h-4 w-4" />}
+            title={t("general.autostart_title")}
+            description={t("general.autostart_desc")}
+          />
+          <ToggleRow
+            id="setting-minimize-to-tray"
+            checked={minimizeToTray}
+            onChange={onMinimizeToTrayChange}
+            icon={<Minimize2 className="h-4 w-4" />}
+            title={t("general.minimize_to_tray_title")}
+            description={t("general.minimize_to_tray_desc")}
+          />
+        </div>
+      </section>
+
+      {/* Messaging */}
+      <section aria-labelledby="settings-messaging-title">
+        <SectionHeading
+          id="settings-messaging-title"
+          icon={<Send className="h-3.5 w-3.5" />}
+          label={t("general.messaging")}
+        />
+        <div className="rounded-xl border border-wp-line/10 bg-wp-panel-3 p-4">
+          <ToggleRow
+            id="setting-enter-to-send"
+            checked={enterToSend}
+            onChange={onEnterToSendChange}
+            icon={<Send className="h-4 w-4" />}
+            title={t("general.enter_to_send_title")}
+            description={t("general.enter_to_send_desc")}
+          />
+
+          <div className="my-4 h-px bg-wp-line/10" />
+
+          <div className="flex items-center justify-between gap-4">
+            <div>
+              <p className="text-xs font-medium text-wp-text">
+                {t("general.message_font_title")}
+              </p>
+              <p className="mt-0.5 text-xs leading-snug text-wp-faint">
+                {t("general.message_font_desc")}
+              </p>
+            </div>
+            <div className="flex shrink-0 gap-1 rounded-xl bg-wp-panel-2 p-1">
+              {FONT_SCALE_OPTIONS.map((option) => (
+                <button
+                  key={option.value}
+                  type="button"
+                  aria-pressed={messageFontScale === option.value}
+                  onClick={() => handleFontScaleChange(option.value)}
+                  className={cx(
+                    "inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-semibold transition",
+                    messageFontScale === option.value
+                      ? "bg-wp-accent text-wp-accent-fg"
+                      : "text-wp-dim hover:text-wp-text"
+                  )}
+                >
+                  <Type className="h-3.5 w-3.5" aria-hidden="true" />
+                  {t(option.labelKey)}
+                </button>
+              ))}
+            </div>
+          </div>
+        </div>
+      </section>
+
       {/* Identity */}
       <section aria-labelledby="settings-identity-title">
         <SectionHeading
@@ -595,6 +716,33 @@ export function GeneralTab({
             <Trash2 className="h-3.5 w-3.5" aria-hidden="true" />
             {confirmingReset ? t("common.confirm_again") : t("common.reset_identity")}
           </button>
+
+          <div className="my-4 h-px bg-wp-line/10" />
+
+          <p className="text-xs leading-relaxed text-wp-dim">
+            {t("general.identity_backup_hint")}
+          </p>
+          <p className="mt-1.5 text-xs leading-relaxed text-wp-faint">
+            {t("general.restore_identity_warn")}
+          </p>
+          <div className="mt-3 flex flex-wrap gap-2">
+            <button
+              type="button"
+              onClick={() => void onExportIdentity()}
+              className="inline-flex items-center gap-2 rounded-xl bg-wp-panel-2 px-4 py-2.5 text-xs font-semibold text-wp-text transition hover:bg-wp-panel-3"
+            >
+              <Download className="h-3.5 w-3.5" aria-hidden="true" />
+              {t("general.backup_identity")}
+            </button>
+            <button
+              type="button"
+              onClick={() => void onImportIdentity()}
+              className="inline-flex items-center gap-2 rounded-xl bg-wp-panel-2 px-4 py-2.5 text-xs font-semibold text-wp-text transition hover:bg-wp-panel-3"
+            >
+              <Upload className="h-3.5 w-3.5" aria-hidden="true" />
+              {t("general.restore_identity")}
+            </button>
+          </div>
         </div>
       </section>
     </div>

@@ -492,6 +492,15 @@ impl ChatStore {
         Ok(())
     }
 
+    /// Remove every message row across all peers. Used by the "clear chat
+    /// history" action, which wipes all message history but keeps contacts,
+    /// sessions and settings intact.
+    pub fn clear_messages(&self) -> Result<(), StoreError> {
+        let conn = self.conn()?;
+        conn.execute("DELETE FROM messages", [])?;
+        Ok(())
+    }
+
     /// Persist one settings value.
     pub fn set_setting(&self, key: &str, value: &str) -> Result<(), StoreError> {
         let conn = self.conn()?;
@@ -881,6 +890,47 @@ mod tests {
             1,
             "another peer's history must survive"
         );
+    }
+
+    #[test]
+    fn clear_messages_wipes_every_peers_history_but_keeps_contacts() {
+        let store = ChatStore::open_in_memory(TEST_KEY).expect("open in-memory store");
+        store
+            .upsert_message(
+                "peer-1",
+                &sample_message("m-1", "for peer 1", false, "delivered"),
+                None,
+            )
+            .expect("store for peer 1");
+        store
+            .upsert_message(
+                "peer-2",
+                &sample_message("m-2", "for peer 2", false, "delivered"),
+                None,
+            )
+            .expect("store for peer 2");
+        store
+            .upsert_contact(&ContactRow {
+                peer_id: "peer-1".into(),
+                display_name: Some("Alice".into()),
+                username: None,
+                avatar_url: None,
+                last_seen: None,
+            })
+            .expect("store a contact");
+
+        store.clear_messages().expect("clear message history");
+
+        assert!(store.all_messages().expect("load all").is_empty());
+        assert_eq!(
+            store.contacts().expect("contacts must survive").len(),
+            1,
+            "clear history must not remove contacts or sessions"
+        );
+        assert!(store
+            .get_setting("theme")
+            .expect("settings must survive")
+            .is_none());
     }
 
     #[test]

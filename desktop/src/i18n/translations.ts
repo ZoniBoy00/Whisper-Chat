@@ -137,6 +137,7 @@ export const translations = {
     // ---- Composer --------------------------------------------------------
     "composer.type_a_message": "Type a message",
     "composer.message_aria": "Message",
+    "composer.enter_for_newline": "Enter for a new line · Ctrl+Enter to send",
 
     // ---- Add-contact dialog ----------------------------------------------
     "addContact.hint":
@@ -243,6 +244,34 @@ export const translations = {
     "general.register_username_first":
       "Register a username before uploading an avatar.",
 
+    // ---- Settings: General — startup ------------------------------------
+    "general.startup": "Startup",
+    "general.autostart_title": "Open Whisper on system startup",
+    "general.autostart_desc":
+      "Registers Whisper to launch automatically when you sign in to your computer.",
+    "general.minimize_to_tray_title": "Minimize to tray on close",
+    "general.minimize_to_tray_desc":
+      "Closing the window hides Whisper to the system tray instead of quitting. Use the tray icon to bring it back or to quit.",
+
+    // ---- Settings: General — messaging ----------------------------------
+    "general.messaging": "Messaging",
+    "general.enter_to_send_title": "Enter to send",
+    "general.enter_to_send_desc":
+      "Press Enter to send a message. Turn off to use Enter for a new line (Ctrl+Enter still sends).",
+    "general.message_font_title": "Message font size",
+    "general.message_font_desc": "Scales the text inside message bubbles.",
+    "general.font_small": "Small",
+    "general.font_normal": "Normal",
+    "general.font_large": "Large",
+
+    // ---- Settings: General — identity backup ----------------------------
+    "general.identity_backup_hint":
+      "Back up your identity file so you can restore your Whisper ID and keys on another device or after a reinstall.",
+    "general.backup_identity": "Backup identity",
+    "general.restore_identity": "Restore identity",
+    "general.restore_identity_warn":
+      "Restoring replaces your current identity and requires an app restart.",
+
     // ---- Settings: Notifications ----------------------------------------
     "notifications.desktop_title": "Show desktop notifications",
     "notifications.desktop_desc":
@@ -253,6 +282,7 @@ export const translations = {
     "notifications.sound_title": "Notification sound",
     "notifications.sound_desc":
       "Plays a short chime for new incoming messages — even while the window is focused. Turn off to stay silent.",
+    "notifications.test_sound": "Test sound",
 
     // ---- Settings: Privacy ----------------------------------------------
     "privacy.intro":
@@ -265,6 +295,14 @@ export const translations = {
       "When off, we don\u2019t send receipts when you read messages. Receipts others send you are still shown — you can\u2019t stop others from seeing you\u2019ve read them.",
     "privacy.typing_title": "Typing indicator",
     "privacy.typing_desc": "When off, the peer never sees that you\u2019re typing.",
+
+    // ---- Settings: Privacy — history ------------------------------------
+    "privacy.history": "History",
+    "privacy.clear_history_title": "Clear chat history",
+    "privacy.clear_history_desc":
+      "Deletes every message on this device. Contacts and encryption sessions are kept.",
+    "privacy.clear_history_confirm":
+      "Click again to confirm — this cannot be undone.",
 
     // ---- Settings: About -------------------------------------------------
     "about.tagline": "your conversations are whispers",
@@ -298,6 +336,13 @@ export const translations = {
     "toast.member_demoted": "Member demoted to regular member",
     "toast.member_removed": "Member removed from the group",
     "toast.group_transferred": "Group ownership transferred",
+    "toast.history_cleared": "Chat history cleared",
+    "toast.identity_exported": "Identity backed up",
+    "toast.identity_imported": "Identity restored",
+    "toast.identity_import_restart":
+      "Restarting to apply your restored identity\u2026",
+    "toast.autostart_enabled": "Will open Whisper at startup",
+    "toast.autostart_disabled": "Whisper will no longer open at startup",
   },
 
   fi: {
@@ -428,6 +473,7 @@ export const translations = {
     // ---- Composer --------------------------------------------------------
     "composer.type_a_message": "Kirjoita viesti",
     "composer.message_aria": "Viesti",
+    "composer.enter_for_newline": "Enter rivinvaihtoon · Ctrl+Enter lähettää",
 
     // ---- Add-contact dialog ----------------------------------------------
     "addContact.hint":
@@ -532,6 +578,34 @@ export const translations = {
     "general.register_username_first":
       "Rekisteröi käyttäjänimi ennen profiilikuvan lataamista.",
 
+    // ---- Settings: General — startup ------------------------------------
+    "general.startup": "Käynnistys",
+    "general.autostart_title": "Avaa Whisper järjestelmän käynnistyessä",
+    "general.autostart_desc":
+      "Rekisteröi Whisperin käynnistymään automaattisesti, kun kirjaudut tietokoneellesi.",
+    "general.minimize_to_tray_title": "Pienennä ilmoitusalueelle suljettaessa",
+    "general.minimize_to_tray_desc":
+      "Ikkunan sulkeminen piilottaa Whisperin ilmoitusalueelle lopettamisen sijaan. Tuo ikkuna takaisin tai sulje sovellus ilmoitusalueen kuvakkeen valikosta.",
+
+    // ---- Settings: General — messaging ----------------------------------
+    "general.messaging": "Viestit",
+    "general.enter_to_send_title": "Enter lähettää viestin",
+    "general.enter_to_send_desc":
+      "Lähetä viesti Enter-näppäimellä. Poista käytöstä käyttääksesi Enteriä rivinvaihtoon (Ctrl+Enter lähettää silti).",
+    "general.message_font_title": "Viestien fonttikoko",
+    "general.message_font_desc": "Skaalaa viestikuplien tekstin kokoa.",
+    "general.font_small": "Pieni",
+    "general.font_normal": "Normaali",
+    "general.font_large": "Suuri",
+
+    // ---- Settings: General — identity backup ----------------------------
+    "general.identity_backup_hint":
+      "Varmuuskopioi henkilöllisyystiedostosi, jotta voit palauttaa Whisper-ID:n ja avaimesi toiselle laitteelle tai uudelleenasennuksen jälkeen.",
+    "general.backup_identity": "Varmuuskopioi henkilöllisyys",
+    "general.restore_identity": "Palauta henkilöllisyys",
+    "general.restore_identity_warn":
+      "Palautus korvaa nykyisen henkilöllisyytesi ja edellyttää sovelluksen uudelleenkäynnistystä.",
+
     // ---- Settings: Notifications ----------------------------------------
     "notifications.desktop_title": "Näytä työpöytäilmoitukset",
     "notifications.desktop_desc":
@@ -542,6 +616,7 @@ export const translations = {
     "notifications.sound_title": "Ilmoitusääni",
     "notifications.sound_desc":
       "Soittaa lyhyen äänimerkin uusista saapuvista viesteistä — myös ikkunan ollessa fokuksessa. Poista käytöstä pysyäksesi hiljaa.",
+    "notifications.test_sound": "Testaa ääni",
 
     // ---- Settings: Privacy ----------------------------------------------
     "privacy.intro":
@@ -555,6 +630,14 @@ export const translations = {
     "privacy.typing_title": "Kirjoitusilmoitus",
     "privacy.typing_desc":
       "Kun pois päältä, toinen osapuoli ei koskaan näe, että kirjoitat.",
+
+    // ---- Settings: Privacy — history ------------------------------------
+    "privacy.history": "Historia",
+    "privacy.clear_history_title": "Tyhjennä keskusteluhistoria",
+    "privacy.clear_history_desc":
+      "Poistaa kaikki viestit tältä laitteelta. Yhteystiedot ja salausistunnot säilyvät.",
+    "privacy.clear_history_confirm":
+      "Vahvista napsauttamalla uudelleen — tätä ei voi kumota.",
 
     // ---- Settings: About -------------------------------------------------
     "about.tagline": "keskustelusi ovat kuiskauksia",
@@ -588,5 +671,12 @@ export const translations = {
     "toast.member_demoted": "Ylläpitäjyys poistettu",
     "toast.member_removed": "Jäsen poistettu ryhmästä",
     "toast.group_transferred": "Ryhmän omistajuus siirretty",
+    "toast.history_cleared": "Keskusteluhistoria tyhjennetty",
+    "toast.identity_exported": "Henkilöllisyys varmuuskopioitu",
+    "toast.identity_imported": "Henkilöllisyys palautettu",
+    "toast.identity_import_restart":
+      "Käynnistetään uudelleen palautetun henkilöllisyyden käyttöönottamiseksi…",
+    "toast.autostart_enabled": "Whisper avautuu kirjautumisen yhteydessä",
+    "toast.autostart_disabled": "Whisper ei enää avaudu kirjautumisen yhteydessä",
   },
 };

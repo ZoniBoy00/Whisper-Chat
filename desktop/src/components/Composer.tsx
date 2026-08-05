@@ -7,6 +7,9 @@ interface ComposerProps {
   /** Called when the user starts/stops typing so the backend can emit the
    *  end-to-end typing indicator for the active conversation. */
   onTypingChange: (isTyping: boolean) => void;
+  /** When true, Enter sends the message (Shift+Enter inserts a new line). When
+   *  false, Enter inserts a new line and Ctrl+Enter sends. */
+  enterToSend: boolean;
 }
 
 /** How often the "typing" indicator is (re)sent while the user types. */
@@ -14,7 +17,7 @@ const TYPING_SEND_INTERVAL_MS = 3000;
 /** Send "stopped" after this much inactivity so the peer never gets stuck. */
 const TYPING_STOP_AFTER_MS = 4000;
 
-export function Composer({ onSend, onTypingChange }: ComposerProps) {
+export function Composer({ onSend, onTypingChange, enterToSend }: ComposerProps) {
   const { t } = useI18n();
   const [text, setText] = useState("");
   const inputRef = useRef<HTMLTextAreaElement>(null);
@@ -79,13 +82,21 @@ export function Composer({ onSend, onTypingChange }: ComposerProps) {
           value={text}
           onChange={(e) => handleChange(e.target.value)}
           onKeyDown={(e) => {
-            if (e.key === "Enter" && !e.shiftKey) {
+            if (e.key !== "Enter") return;
+            // Enter-to-send: Enter sends, Shift+Enter inserts a new line.
+            // Enter-for-newline: Enter inserts a new line, Ctrl/Cmd+Enter sends.
+            const send =
+              enterToSend ? !e.shiftKey : e.ctrlKey || e.metaKey;
+            if (send) {
               e.preventDefault();
               submit();
             }
           }}
           placeholder={t("composer.type_a_message")}
           aria-label={t("composer.message_aria")}
+          aria-describedby={
+            enterToSend ? undefined : "composer-enter-hint"
+          }
           className="max-h-36 min-h-[44px] flex-1 resize-none rounded-2xl bg-wp-panel-2 px-4 py-3 text-sm text-wp-text placeholder-wp-faint outline-none transition focus:ring-1 focus:ring-wp-accent/50"
         />
         <button
@@ -99,6 +110,14 @@ export function Composer({ onSend, onTypingChange }: ComposerProps) {
           <Send className="h-4 w-4" strokeWidth={2.2} />
         </button>
       </div>
+      {!enterToSend ? (
+        <p
+          id="composer-enter-hint"
+          className="mx-auto mt-2 max-w-3xl text-xs text-wp-faint"
+        >
+          {t("composer.enter_for_newline")}
+        </p>
+      ) : null}
     </div>
   );
 }
