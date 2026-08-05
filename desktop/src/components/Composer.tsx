@@ -51,7 +51,7 @@ export function Composer({ onSend }: ComposerProps) {
           disabled={!text.trim()}
           title="Send message"
           aria-label="Send message"
-          className="inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-wp-accent text-wp-deep shadow-lg shadow-wp-accent/25 transition hover:bg-wp-accent-strong disabled:cursor-not-allowed disabled:opacity-40"
+          className="inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-wp-accent text-wp-accent-fg shadow-lg shadow-wp-accent/25 transition hover:bg-wp-accent-strong disabled:cursor-not-allowed disabled:opacity-40"
         >
           <Send className="h-4 w-4" strokeWidth={2.2} />
         </button>

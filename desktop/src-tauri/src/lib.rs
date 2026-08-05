@@ -6,7 +6,7 @@ use tauri::{Manager, State};
 
 mod relay;
 
-use relay::{ChatState, RelayClient};
+use relay::{ChatState, RelayClient, Settings};
 
 /// Resolve the on-disk location of the persisted identity.
 ///
@@ -134,6 +134,25 @@ async fn reset_relay(state: State<'_, RelayClient>) -> Result<(), String> {
     state.reset().map_err(|e| e.to_string())
 }
 
+/// Return the currently persisted relay URL and theme.
+#[tauri::command]
+async fn get_settings(state: State<'_, RelayClient>) -> Result<Settings, String> {
+    state.get_settings().map_err(|e| e.to_string())
+}
+
+/// Persist a new relay URL and, if the connection is open to a different
+/// endpoint, drop it so the UI can reconnect to the new address.
+#[tauri::command]
+async fn set_relay_url(state: State<'_, RelayClient>, url: String) -> Result<(), String> {
+    state.set_relay_url(&url).map_err(|e| e.to_string())
+}
+
+/// Persist a new UI theme preference.
+#[tauri::command]
+async fn set_theme(state: State<'_, RelayClient>, theme: String) -> Result<(), String> {
+    state.set_theme(&theme).map_err(|e| e.to_string())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -151,7 +170,10 @@ pub fn run() {
             send_message,
             get_chat_state,
             disconnect_relay,
-            reset_relay
+            reset_relay,
+            get_settings,
+            set_relay_url,
+            set_theme
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

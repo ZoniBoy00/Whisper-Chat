@@ -1,6 +1,12 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
-import type { ChatMessageEvent, ChatState, RelayStatusEvent } from "../types";
+import type {
+  AppSettings,
+  ChatMessageEvent,
+  ChatState,
+  MessageStatusEvent,
+  RelayStatusEvent,
+} from "../types";
 
 /** Connect to the relay and authenticate with the stored identity. */
 export function connectRelay(): Promise<void> {
@@ -34,6 +40,21 @@ export function getChatState(): Promise<ChatState> {
   return invoke("get_chat_state");
 }
 
+/** Persisted app settings (relay URL, theme). */
+export function getSettings(): Promise<AppSettings> {
+  return invoke("get_settings");
+}
+
+/** Persist a relay URL. Reconnect afterwards for it to take effect. */
+export function setRelayUrl(url: string): Promise<void> {
+  return invoke("set_relay_url", { url });
+}
+
+/** Persist the theme choice. */
+export function setTheme(theme: "dark" | "light"): Promise<void> {
+  return invoke("set_theme", { theme });
+}
+
 /** Close the relay connection (used when resetting the identity). */
 export function disconnectRelay(): Promise<void> {
   return invoke("disconnect_relay");
@@ -58,6 +79,15 @@ export function onRelayStatus(
   handler: (event: RelayStatusEvent) => void
 ): Promise<UnlistenFn> {
   return listen<RelayStatusEvent>("relay-status", (event) =>
+    handler(event.payload)
+  );
+}
+
+/** Subscribe to delivery acknowledgements. Returns an unlisten function. */
+export function onMessageStatus(
+  handler: (event: MessageStatusEvent) => void
+): Promise<UnlistenFn> {
+  return listen<MessageStatusEvent>("message-status", (event) =>
     handler(event.payload)
   );
 }

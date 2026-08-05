@@ -131,7 +131,7 @@ export function AddContactDialog({
             disabled={adding || !value.trim()}
             className={cx(
               "inline-flex items-center justify-center gap-2 rounded-xl px-4 py-2.5 text-sm font-semibold transition",
-              "bg-wp-accent text-wp-deep hover:bg-wp-accent-strong",
+              "bg-wp-accent text-wp-accent-fg hover:bg-wp-accent-strong",
               "disabled:cursor-not-allowed disabled:opacity-50"
             )}
           >

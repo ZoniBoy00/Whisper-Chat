@@ -47,8 +47,8 @@ export function ChatView({ conversation, onSend }: ChatViewProps) {
           <p className="truncate font-mono text-sm font-semibold text-wp-text">
             {shortPeerId(conversation.peerId, 16)}
           </p>
-          <p className="flex items-center gap-1 text-xs text-wp-dim">
-            <Lock className="h-3 w-3 text-wp-accent" />
+          <p className="mt-0.5 inline-flex items-center gap-1.5 rounded-full border border-wp-line/10 bg-wp-panel-2 px-2.5 py-0.5 text-[10px] font-semibold tracking-wide text-wp-dim">
+            <Lock className="h-3 w-3 text-wp-accent" aria-hidden="true" />
             End-to-end encrypted
           </p>
         </div>

@@ -60,7 +60,7 @@ export default function App() {
         <button
           type="button"
           onClick={() => void loadIdentity()}
-          className="rounded-xl bg-wp-accent px-4 py-2 text-sm font-semibold text-wp-deep transition hover:bg-wp-accent-strong"
+          className="rounded-xl bg-wp-accent px-4 py-2 text-sm font-semibold text-wp-accent-fg transition hover:bg-wp-accent-strong"
         >
           Retry
         </button>

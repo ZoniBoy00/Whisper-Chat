@@ -8,7 +8,7 @@ interface AvatarProps {
 export function Avatar({ name, size = 40 }: AvatarProps) {
   return (
     <div
-      className="flex shrink-0 select-none items-center justify-center rounded-full bg-gradient-to-br from-wp-accent/85 to-wp-accent-strong text-wp-deep"
+      className="flex shrink-0 select-none items-center justify-center rounded-full bg-gradient-to-br from-wp-accent/85 to-wp-accent-strong text-wp-accent-fg"
       style={{ width: size, height: size }}
     >
       {name ? (

@@ -10,7 +10,7 @@
 //! both touch them.
 
 use std::collections::{HashMap, HashSet, VecDeque};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, RwLock, RwLockReadGuard, RwLockWriteGuard};
 
@@ -170,6 +170,9 @@ pub struct UIMessage {
     pub outgoing: bool,
     /// Epoch milliseconds when the message was decrypted or sent.
     pub timestamp: u64,
+    /// Delivery state shown by the UI: "sent" until the relay acks the
+    /// envelope, then "delivered". Incoming messages are always "delivered".
+    pub status: String,
 }
 
 /// Payload of the `chat-message` event emitted for new plaintext.
@@ -183,6 +186,26 @@ pub struct ChatMessageEvent {
 #[derive(Debug, Clone, Serialize)]
 pub struct RelayStatusEvent {
     pub connected: bool,
+}
+
+/// Payload of the `message-status` event emitted when the relay acks a sent
+/// envelope, flipping the message to "delivered".
+#[derive(Debug, Clone, Serialize)]
+pub struct MessageStatusEvent {
+    pub client_id: String,
+    pub status: String,
+}
+
+/// Persisted user preferences stored in `settings.json`.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct Settings {
+    /// Relay endpoint to connect to; falls back to the `WHISPER_RELAY_URL` env
+    /// var and then [`DEFAULT_RELAY_URL`].
+    #[serde(default)]
+    pub relay_url: Option<String>,
+    /// UI theme ("dark", "light", ...); the UI owns the valid values.
+    #[serde(default)]
+    pub theme: Option<String>,
 }
 
 /// Snapshot of everything the UI needs to render the chat surface.
@@ -207,6 +230,10 @@ struct RelayInner {
     identity_path: PathBuf,
     /// File where Double Ratchet sessions are persisted across restarts.
     sessions_path: PathBuf,
+    /// File where the relay URL and UI theme are persisted.
+    settings_path: PathBuf,
+    /// In-memory copy of the persisted settings.
+    settings: RwLock<Settings>,
     /// The local identity, loaded from disk on first connect.
     identity: Mutex<Option<Identity>>,
     /// Double Ratchet sessions, keyed by the remote peer ID.
@@ -232,6 +259,10 @@ struct RelayInner {
     /// offline envelopes at least once (pushed on connect, then drained via
     /// `fetch_since`).
     seen_envelopes: Mutex<HashSet<(String, u64)>>,
+    /// Envelope seqs awaiting a relay `ack`, mapped to the UI's client message
+    /// id so a delivery confirmation can flip the matching message to
+    /// "delivered".
+    pending_acks: Mutex<HashMap<u64, String>>,
 }
 
 /// Result channel type for a pre-key fetch.
@@ -246,11 +277,18 @@ impl RelayClient {
             .app_data_dir()
             .map(|dir| dir.join("sessions.json"))
             .unwrap_or_else(|_| PathBuf::from("sessions.json"));
+        let settings_path = app
+            .path()
+            .app_data_dir()
+            .map(|dir| dir.join("settings.json"))
+            .unwrap_or_else(|_| PathBuf::from("settings.json"));
         Self {
             inner: Arc::new(RelayInner {
                 app,
                 identity_path,
                 sessions_path,
+                settings_path,
+                settings: RwLock::new(Settings::default()),
                 identity: Mutex::new(None),
                 sessions: Mutex::new(HashMap::new()),
                 messages: RwLock::new(HashMap::new()),
@@ -262,6 +300,7 @@ impl RelayClient {
                 connecting: tokio::sync::Mutex::new(()),
                 pending_prekeys: Mutex::new(VecDeque::new()),
                 seen_envelopes: Mutex::new(HashSet::new()),
+                pending_acks: Mutex::new(HashMap::new()),
             }),
         }
     }
@@ -295,8 +334,11 @@ impl RelayClient {
             guard.as_ref().ok_or(RelayError::NoIdentity)?.signed_hello()
         };
 
-        let url =
-            std::env::var("WHISPER_RELAY_URL").unwrap_or_else(|_| DEFAULT_RELAY_URL.to_string());
+        let settings = self.load_settings()?;
+        let url = resolve_relay_url(
+            &settings,
+            std::env::var("WHISPER_RELAY_URL").ok().as_deref(),
+        );
         let (ws_stream, _) = tokio_tungstenite::connect_async(&url)
             .await
             .map_err(|err| RelayError::Connection(err.to_string()))?;
@@ -462,10 +504,12 @@ impl RelayClient {
             peer_id.to_string(),
             EnvelopeContent::Handshake(Handshake::new(my_peer_id.clone(), pre_key)),
         );
-        self.send_wire(&wire)?;
+        let seq = self.next_seq();
+        self.send_wire(&wire, seq)?;
 
         self.ensure_contact(peer_id)?;
         let msg = self.record_outgoing(peer_id, FIRST_MESSAGE_TEXT, "")?;
+        self.record_pending_ack(seq, &msg.id)?;
         let _ = self.inner.app.emit(
             "chat-message",
             ChatMessageEvent {
@@ -502,9 +546,28 @@ impl RelayClient {
             peer_id.to_string(),
             EnvelopeContent::Message(Message::new(my_peer_id.clone(), session_id, olm)),
         );
-        self.send_wire(&wire)?;
 
+        // Allocate the envelope seq before queueing so the (seq, client id)
+        // ack mapping is registered first: the relay acknowledges a received
+        // envelope immediately and the inbound loop may process that ack while
+        // this command is still returning.
+        let seq = self.next_seq();
         let msg = self.record_outgoing(peer_id, text, client_id)?;
+        self.record_pending_ack(seq, &msg.id)?;
+
+        if let Err(err) = self.send_wire(&wire, seq) {
+            // The envelope never left the client: drop the dangling ack
+            // mapping and roll back the optimistic record so a failed send
+            // does not surface as a sent message on the next refresh.
+            let _ = mutex_guard(&self.inner.pending_acks)?.remove(&seq);
+            if let Ok(mut messages) = write_guard(&self.inner.messages) {
+                if let Some(msgs) = messages.get_mut(peer_id) {
+                    msgs.retain(|m| m.id != msg.id);
+                }
+            }
+            return Err(err);
+        }
+
         let _ = self.inner.app.emit(
             "chat-message",
             ChatMessageEvent {
@@ -572,12 +635,7 @@ impl RelayClient {
                 }
                 Ok(())
             }
-            ServerMessage::Acknowledged { seq } => {
-                // Delivery confirmations carry no plaintext; the seq field is
-                // deliberately ignored on the client.
-                let _ = seq;
-                Ok(())
-            }
+            ServerMessage::Acknowledged { seq } => self.handle_ack(seq),
             ServerMessage::PrekeysPublished => Ok(()),
             ServerMessage::Error { code } => {
                 let mut pending = mutex_guard(&self.inner.pending_prekeys)?;
@@ -587,6 +645,31 @@ impl RelayClient {
                 Ok(())
             }
         }
+    }
+
+    /// Mark the message behind a relay `ack` as delivered and notify the UI.
+    ///
+    /// The relay acknowledges an envelope once it is received and queued; the
+    /// `seq` resolves back to the UI's client message id via `pending_acks`.
+    /// The emitted `message-status` event carries the client id so the UI can
+    /// flip its own optimistic message; a state refresh keeps the marker
+    /// because `pending_acks` and `messages` were updated here.
+    fn handle_ack(&self, seq: u64) -> Result<(), RelayError> {
+        let client_id = match mutex_guard(&self.inner.pending_acks)?.remove(&seq) {
+            Some(client_id) => client_id,
+            // A late duplicate or an ack for a seq we no longer track
+            // (e.g. after a restart) is simply ignored.
+            None => return Ok(()),
+        };
+        self.mark_delivered(&client_id)?;
+        let _ = self.inner.app.emit(
+            "message-status",
+            MessageStatusEvent {
+                client_id,
+                status: "delivered".to_string(),
+            },
+        );
+        Ok(())
     }
 
     /// Decode an opaque relay envelope, decrypt its payload and record it.
@@ -697,6 +780,55 @@ impl RelayClient {
     }
 
     // ---------------------------------------------------------------------
+    // Settings persistence
+    // ---------------------------------------------------------------------
+
+    /// Load the persisted settings from disk and cache them in memory. A
+    /// missing or unparseable file yields the defaults instead of an error.
+    fn load_settings(&self) -> Result<Settings, RelayError> {
+        let settings = read_settings_file(&self.inner.settings_path)?;
+        let mut guard = write_guard(&self.inner.settings)?;
+        *guard = settings.clone();
+        Ok(settings)
+    }
+
+    /// Return the currently persisted settings, reloaded from disk.
+    pub fn get_settings(&self) -> Result<Settings, RelayError> {
+        self.load_settings()?;
+        let settings = read_guard(&self.inner.settings)?.clone();
+        Ok(settings)
+    }
+
+    /// Persist `settings` to disk and cache them in memory.
+    fn save_settings(&self, settings: &Settings) -> Result<(), RelayError> {
+        write_settings_file(&self.inner.settings_path, settings)?;
+        let mut guard = write_guard(&self.inner.settings)?;
+        *guard = settings.clone();
+        Ok(())
+    }
+
+    /// Persist a new relay endpoint. If the client is connected to a different
+    /// URL, the connection is dropped so the UI can reconnect to the new
+    /// address.
+    pub fn set_relay_url(&self, url: &str) -> Result<(), RelayError> {
+        let mut settings = self.load_settings()?;
+        let changed = settings.relay_url.as_deref() != Some(url);
+        settings.relay_url = Some(url.to_string());
+        self.save_settings(&settings)?;
+        if changed && self.inner.connected.load(Ordering::SeqCst) {
+            self.disconnect()?;
+        }
+        Ok(())
+    }
+
+    /// Persist a new UI theme preference.
+    pub fn set_theme(&self, theme: &str) -> Result<(), RelayError> {
+        let mut settings = self.load_settings()?;
+        settings.theme = Some(theme.to_string());
+        self.save_settings(&settings)
+    }
+
+    // ---------------------------------------------------------------------
     // State recording
     // ---------------------------------------------------------------------
 
@@ -710,6 +842,7 @@ impl RelayClient {
             text,
             outgoing: false,
             timestamp: now_millis(),
+            status: "delivered".to_string(),
         };
         self.ensure_contact(peer_id)?;
         write_guard(&self.inner.messages)?
@@ -740,12 +873,21 @@ impl RelayClient {
             text: text.to_string(),
             outgoing: true,
             timestamp: now_millis(),
+            status: "sent".to_string(),
         };
         write_guard(&self.inner.messages)?
             .entry(peer_id.to_string())
             .or_default()
             .push(message.clone());
         Ok(message)
+    }
+
+    /// Flip the status of the message with `client_id` to "delivered" so a
+    /// state refresh keeps the delivery marker. Returns whether the message
+    /// was found.
+    fn mark_delivered(&self, client_id: &str) -> Result<bool, RelayError> {
+        let mut messages = write_guard(&self.inner.messages)?;
+        Ok(apply_delivered(&mut messages, client_id))
     }
 
     /// Add `peer_id` to the contact list if it is not already there.
@@ -761,14 +903,28 @@ impl RelayClient {
     // Sending helpers
     // ---------------------------------------------------------------------
 
-    /// Serialize a wire envelope, base64 it and queue it on the outbox.
-    fn send_wire(&self, wire: &Envelope) -> Result<(), RelayError> {
+    /// Allocate the next unique envelope sequence number. Each call returns a
+    /// fresh value, so acked seqs are never ambiguous.
+    fn next_seq(&self) -> u64 {
+        self.inner.seq.fetch_add(1, Ordering::SeqCst)
+    }
+
+    /// Remember that the envelope with `seq` is awaiting a relay ack, mapped
+    /// to the UI's client message id.
+    fn record_pending_ack(&self, seq: u64, client_id: &str) -> Result<(), RelayError> {
+        mutex_guard(&self.inner.pending_acks)?.insert(seq, client_id.to_string());
+        Ok(())
+    }
+
+    /// Serialize a wire envelope, base64 it and queue it on the outbox with the
+    /// caller-allocated `seq` (see [`RelayClient::next_seq`]).
+    fn send_wire(&self, wire: &Envelope, seq: u64) -> Result<(), RelayError> {
         let payload = BASE64.encode(serde_json::to_vec(wire)?);
         let envelope = RelayEnvelope {
             sender: wire.sender_peer_id.clone(),
             recipient: wire.recipient_peer_id.clone(),
             payload,
-            seq: self.inner.seq.fetch_add(1, Ordering::SeqCst),
+            seq,
         };
         self.send_json(&ClientMessage::Envelope { envelope })
     }
@@ -811,6 +967,52 @@ fn now_millis() -> u64 {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|duration| duration.as_millis() as u64)
         .unwrap_or(0)
+}
+
+/// Read the settings file at `path`, returning defaults when it is missing or
+/// unparseable so a corrupt file can never block startup or reconnect.
+fn read_settings_file(path: &Path) -> Result<Settings, RelayError> {
+    let json = match std::fs::read_to_string(path) {
+        Ok(json) => json,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Settings::default()),
+        Err(e) => return Err(e.into()),
+    };
+    Ok(serde_json::from_str(&json).unwrap_or_default())
+}
+
+/// Write the settings file at `path`, creating the parent directory on demand.
+fn write_settings_file(path: &Path, settings: &Settings) -> Result<(), RelayError> {
+    if let Some(dir) = path.parent() {
+        if !dir.as_os_str().is_empty() {
+            std::fs::create_dir_all(dir)?;
+        }
+    }
+    let json = serde_json::to_string_pretty(settings)?;
+    std::fs::write(path, json)?;
+    Ok(())
+}
+
+/// Resolve the relay endpoint: settings first, then the `WHISPER_RELAY_URL`
+/// env var, then the built-in default.
+fn resolve_relay_url(settings: &Settings, env_url: Option<&str>) -> String {
+    if let Some(url) = settings.relay_url.as_deref() {
+        if !url.is_empty() {
+            return url.to_string();
+        }
+    }
+    env_url.unwrap_or(DEFAULT_RELAY_URL).to_string()
+}
+
+/// Pure helper for [`RelayClient::mark_delivered`], separated so the ack
+/// bookkeeping can be unit-tested without a live WebSocket or Tauri app.
+fn apply_delivered(messages: &mut HashMap<String, Vec<UIMessage>>, client_id: &str) -> bool {
+    for msgs in messages.values_mut() {
+        if let Some(message) = msgs.iter_mut().find(|m| m.id == client_id) {
+            message.status = "delivered".to_string();
+            return true;
+        }
+    }
+    false
 }
 
 /// Lock a mutex, mapping poison onto a typed error.
@@ -1002,5 +1204,155 @@ mod tests {
                 .expect("decrypt"),
             b"got it"
         );
+    }
+
+    // ---------------------------------------------------------------------
+    // Settings persistence
+    // ---------------------------------------------------------------------
+
+    /// Unique per-test settings file path; tests run in parallel threads so
+    /// they must never share a file.
+    static SETTINGS_TEST_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+    fn temp_settings_path() -> PathBuf {
+        let n = SETTINGS_TEST_COUNTER.fetch_add(1, Ordering::SeqCst);
+        std::env::temp_dir().join(format!(
+            "whisper-settings-test-{}-{n}.json",
+            std::process::id()
+        ))
+    }
+
+    #[test]
+    fn settings_roundtrip_via_file_preserves_present_fields() {
+        let path = temp_settings_path();
+        write_settings_file(
+            &path,
+            &Settings {
+                relay_url: Some("ws://relay.example".into()),
+                theme: None,
+            },
+        )
+        .expect("write");
+
+        let loaded = read_settings_file(&path).expect("read");
+        assert_eq!(loaded.relay_url.as_deref(), Some("ws://relay.example"));
+        assert_eq!(loaded.theme, None);
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn settings_missing_file_loads_as_defaults() {
+        let path = temp_settings_path();
+        let _ = std::fs::remove_file(&path);
+
+        let loaded = read_settings_file(&path).expect("missing file must not error");
+        assert_eq!(loaded.relay_url, None);
+        assert_eq!(loaded.theme, None);
+    }
+
+    #[test]
+    fn settings_parse_handles_missing_fields() {
+        let settings: Settings =
+            serde_json::from_str(r#"{"theme":"dark"}"#).expect("partial file must parse");
+        assert_eq!(settings.relay_url, None);
+        assert_eq!(settings.theme.as_deref(), Some("dark"));
+    }
+
+    #[test]
+    fn settings_corrupt_file_loads_as_defaults() {
+        let path = temp_settings_path();
+        std::fs::write(&path, b"not json").expect("write corrupt file");
+
+        let loaded = read_settings_file(&path).expect("corrupt file must not error");
+        assert_eq!(loaded.relay_url, None);
+        assert_eq!(loaded.theme, None);
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn relay_url_resolution_prefers_settings_then_env_then_default() {
+        let custom = Settings {
+            relay_url: Some("ws://custom".into()),
+            theme: None,
+        };
+        assert_eq!(resolve_relay_url(&custom, Some("ws://env")), "ws://custom");
+
+        let blank = Settings {
+            relay_url: Some(String::new()),
+            theme: None,
+        };
+        assert_eq!(resolve_relay_url(&blank, Some("ws://env")), "ws://env");
+        assert_eq!(resolve_relay_url(&blank, None), DEFAULT_RELAY_URL);
+
+        let defaults = Settings::default();
+        assert_eq!(resolve_relay_url(&defaults, Some("ws://env")), "ws://env");
+        assert_eq!(resolve_relay_url(&defaults, None), DEFAULT_RELAY_URL);
+    }
+
+    // ---------------------------------------------------------------------
+    // Ack -> delivered bookkeeping
+    // ---------------------------------------------------------------------
+
+    /// The pure half of `handle_ack`: the envelope seq must resolve back to the
+    /// client id that `send_message` registered, and that message's status must
+    /// flip to "delivered". (The `message-status` event emission itself needs a
+    /// live Tauri app and is exercised by the end-to-end smoke test.)
+    #[test]
+    fn acknowledged_seq_resolves_to_client_id_and_flips_message_to_delivered() {
+        let mut pending: HashMap<u64, String> = HashMap::new();
+        pending.insert(7, "client-1".into());
+
+        let mut messages: HashMap<String, Vec<UIMessage>> = HashMap::new();
+        messages.insert(
+            "peer-1".into(),
+            vec![UIMessage {
+                id: "client-1".into(),
+                text: "hello".into(),
+                outgoing: true,
+                timestamp: 0,
+                status: "sent".into(),
+            }],
+        );
+
+        let client_id = pending.remove(&7).expect("seq must resolve to a client id");
+        assert_eq!(client_id, "client-1");
+        assert!(apply_delivered(&mut messages, &client_id));
+        assert_eq!(messages["peer-1"][0].status, "delivered");
+    }
+
+    #[test]
+    fn unknown_ack_seq_leaves_message_status_untouched() {
+        let mut messages: HashMap<String, Vec<UIMessage>> = HashMap::new();
+        messages.insert(
+            "peer-1".into(),
+            vec![UIMessage {
+                id: "client-1".into(),
+                text: "hello".into(),
+                outgoing: true,
+                timestamp: 0,
+                status: "sent".into(),
+            }],
+        );
+
+        assert!(!apply_delivered(&mut messages, "ghost"));
+        assert_eq!(messages["peer-1"][0].status, "sent");
+    }
+
+    #[test]
+    fn envelope_serialization_carries_the_allocated_seq() {
+        // The ack contract depends on the on-wire envelope seq matching the one
+        // registered in pending_acks; send_wire must forward it verbatim.
+        let envelope = RelayEnvelope {
+            sender: "alice".into(),
+            recipient: "bob".into(),
+            payload: "c2VjcmV0".into(),
+            seq: 42,
+        };
+        let json = serde_json::to_value(ClientMessage::Envelope { envelope })
+            .expect("envelope must serialize");
+        assert_eq!(json["type"], "envelope");
+        assert_eq!(json["envelope"]["seq"], 42);
     }
 }

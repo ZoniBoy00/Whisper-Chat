@@ -19,10 +19,34 @@
   --wp-text-faint: 132 142 152; /* #848e98 — muted text */
   --wp-accent: 20 184 166; /* #14b8a6 — Whisper teal accent */
   --wp-accent-strong: 13 148 136; /* #0d9488 — accent hover */
+  --wp-accent-fg: 11 14 16; /* #0b0e10 — text on accent surfaces */
   --wp-bubble-out: 15 87 79; /* #0f574f — own message bubble */
   --wp-bubble-out-2: 18 104 94; /* #12685e — own bubble gradient end */
   --wp-bubble-in: 32 37 41; /* #202529 — incoming bubble */
   --wp-danger: 248 113 113; /* #f87171 — destructive actions */
+}
+
+/* Whisper light theme — same semantic variables, light values. Every pair
+   keeps the WCAG 2.2 AA contrast the dark theme guarantees. */
+[data-theme="light"] {
+  color-scheme: light;
+
+  --wp-bg: 243 245 247; /* #f3f5f7 — app background */
+  --wp-bg-deep: 230 233 236; /* #e6e9ec — deepest surfaces */
+  --wp-panel: 255 255 255; /* #ffffff — sidebars / panels */
+  --wp-panel-2: 236 240 243; /* #ecf0f3 — raised surfaces / hover */
+  --wp-panel-3: 226 231 235; /* #e2e7eb — inputs / active items */
+  --wp-line: 0 0 0; /* borders — used with low alpha */
+  --wp-text: 25 30 35; /* #191e23 — primary text */
+  --wp-text-dim: 83 92 101; /* #535c65 — secondary text */
+  --wp-text-faint: 95 104 113; /* #5f6871 — muted text */
+  --wp-accent: 10 90 82; /* #0a5a52 — Whisper teal accent */
+  --wp-accent-strong: 7 70 64; /* #074640 — accent hover */
+  --wp-accent-fg: 255 255 255; /* #ffffff — text on accent surfaces */
+  --wp-bubble-out: 205 236 231; /* #cdece7 — own message bubble */
+  --wp-bubble-out-2: 189 228 221; /* #bde4dd — own bubble gradient end */
+  --wp-bubble-in: 255 255 255; /* #ffffff — incoming bubble */
+  --wp-danger: 220 38 38; /* #dc2626 — destructive actions */
 }
 
 html,
