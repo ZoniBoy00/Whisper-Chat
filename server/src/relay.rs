@@ -499,7 +499,7 @@ impl Relay {
         let blobs = self.inner.store.list_for(&peer_id, unix_now());
         for env in blobs {
             if let Ok(text) = serde_json::to_string(&ServerMessage::Envelope { envelope: env }) {
-                if tx.send(WsMessage::Text(text)).await.is_err() {
+                if tx.send(WsMessage::Text(text.into())).await.is_err() {
                     break;
                 }
             }
@@ -697,7 +697,9 @@ impl Relay {
                 tracing::warn!(code = %code, "hello rejected");
                 let _ = tx
                     .send(WsMessage::Text(
-                        serde_json::to_string(&ServerMessage::Error { code }).unwrap(),
+                        serde_json::to_string(&ServerMessage::Error { code })
+                            .unwrap()
+                            .into(),
                     ))
                     .await;
                 None
@@ -710,7 +712,8 @@ impl Relay {
                         serde_json::to_string(&ServerMessage::Error {
                             code: "hello_timeout".into(),
                         })
-                        .unwrap(),
+                        .unwrap()
+                        .into(),
                     ))
                     .await;
                 None
@@ -850,7 +853,7 @@ impl Relay {
                     });
                     match msg {
                         Ok(text) => {
-                            let _ = tx.send(WsMessage::Text(text));
+                            let _ = tx.send(WsMessage::Text(text.into()));
                             true
                         }
                         Err(_) => false,
@@ -914,7 +917,7 @@ impl Relay {
         match online.get(peer_id) {
             Some(tx) => match serde_json::to_string(&msg) {
                 Ok(text) => {
-                    let _ = tx.send(WsMessage::Text(text));
+                    let _ = tx.send(WsMessage::Text(text.into()));
                     true
                 }
                 Err(_) => false,

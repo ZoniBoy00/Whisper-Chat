@@ -155,7 +155,9 @@ impl Relay {
         let mut watchers = self.inner.presence_watchers.write().await;
         if let Some(list) = watchers.get_mut(peer_id) {
             match text {
-                Some(text) => list.retain(|w| w.tx.send(WsMessage::Text(text.clone())).is_ok()),
+                Some(text) => {
+                    list.retain(|w| w.tx.send(WsMessage::Text(text.clone().into())).is_ok())
+                }
                 None => list.clear(),
             }
             if list.is_empty() {

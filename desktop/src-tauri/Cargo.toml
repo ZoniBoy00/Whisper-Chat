@@ -20,7 +20,7 @@ base64 = "0.23"
 futures-util = "0.3"
 thiserror = "2"
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "net", "time", "sync"] }
-tokio-tungstenite = "0.24"
+tokio-tungstenite = "0.30"
 vodozemac = "0.10"
 sha2 = "0.11"
 # SQLCipher at-rest encryption (the `bundled-sqlcipher` /
