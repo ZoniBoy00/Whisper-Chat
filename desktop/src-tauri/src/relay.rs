@@ -1218,7 +1218,13 @@ impl RelayClient {
                 auto_reconnect: AtomicBool::new(true),
                 reconnect_loop_active: AtomicBool::new(false),
                 profile_synced: AtomicBool::new(false),
-                seq: AtomicU64::new(1),
+                // Start envelope seqs from a wall-clock value instead of 1.
+                // Seq is (sender, seq)-deduplicated by the RECIPIENT's
+                // `seen_envelopes` set; restarting at 1 would collide with
+                // seqs that peer already saw from a previous process run, and
+                // every envelope of this run would be silently dropped as a
+                // "duplicate" until the counter climbed past the old peak.
+                seq: AtomicU64::new(now_millis()),
                 next_msg_id: AtomicU64::new(1),
                 outbox: RwLock::new(None),
                 connecting: tokio::sync::Mutex::new(()),
