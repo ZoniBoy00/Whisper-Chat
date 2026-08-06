@@ -1,7 +1,14 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Check, Copy, RefreshCw, ScrollText, TriangleAlert } from "lucide-react";
+import {
+  Check,
+  Copy,
+  FolderOpen,
+  RefreshCw,
+  ScrollText,
+  TriangleAlert,
+} from "lucide-react";
 import type { LogEntry } from "../../types";
-import { getClientLogs } from "../../lib/relay";
+import { getClientLogs, openLogsFolder } from "../../lib/relay";
 import { copyText } from "../../lib/clipboard";
 import { cx } from "../../lib/format";
 import { useI18n } from "../../i18n/I18nContext";
@@ -111,6 +118,16 @@ export function LogsTab({ active }: { active: boolean }) {
     }
   };
 
+  /** Open the daily log folder in the OS file manager. */
+  const handleOpenFolder = async () => {
+    try {
+      await openLogsFolder();
+    } catch (err) {
+      const message = String(err).replace(/^Error:\s*/, "");
+      toast(message, "error");
+    }
+  };
+
   const CopyIcon = copied ? Check : Copy;
 
   return (
@@ -171,6 +188,14 @@ export function LogsTab({ active }: { active: boolean }) {
           >
             <CopyIcon className="h-3.5 w-3.5" aria-hidden="true" />
             {copied ? t("common.copied") : t("logs.copy")}
+          </button>
+          <button
+            type="button"
+            onClick={() => void handleOpenFolder()}
+            className="inline-flex items-center gap-1.5 rounded-lg border border-wp-line/10 bg-wp-panel-2 px-3 py-1.5 text-xs font-semibold text-wp-text transition hover:bg-wp-panel-3"
+          >
+            <FolderOpen className="h-3.5 w-3.5" aria-hidden="true" />
+            {t("logs.open_folder")}
           </button>
         </div>
       </div>
