@@ -253,8 +253,8 @@ cargo fmt --check
 
 ## Testing & TDD
 
-- **317 unit tests** across the workspace (e2ee-core 81, whisper-desktop 96,
-  whisper-relay 140)
+- **328 unit tests** across the workspace (e2ee-core 88, whisper-desktop 99,
+  whisper-relay 141)
 - **92 smoke tests** covering live routing, offline delivery, SQLite
   persistence, `fetch_since` sync, rate limiting and signed-hello spoofing
   protection
