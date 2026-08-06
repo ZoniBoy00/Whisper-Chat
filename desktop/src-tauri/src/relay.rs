@@ -2389,6 +2389,7 @@ impl RelayClient {
                             my_role: Some("owner".to_string()),
                             avatar_url: meta_avatar,
                             outbound: Some(outbound),
+                key_shared_this_session: false,
                         },
                     );
                 }
@@ -2413,6 +2414,7 @@ impl RelayClient {
                         my_role: None,
                         avatar_url: meta_avatar,
                         outbound: None,
+                key_shared_this_session: false,
                     });
                 }
             }

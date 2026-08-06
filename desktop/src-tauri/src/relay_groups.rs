@@ -30,6 +30,11 @@ pub(crate) struct GroupInfoState {
     /// holds one (created automatically when they first receive the group's
     /// key), so each member can send to the group.
     pub(crate) outbound: Option<OutboundGroup>,
+    /// Whether the outbound session key has been shared with the other members
+    /// during THIS process run. Hydrated sessions (after a restart) have not
+    /// shared yet — the recipients may hold a stale/absent inbound session, so
+    /// the key is re-shared before the first group send.
+    pub(crate) key_shared_this_session: bool,
 }
 
 /// The plaintext JSON of a Megolm session-key share. A member encrypts it
@@ -132,6 +137,8 @@ impl RelayClient {
                 my_role: Some("owner".to_string()),
                 avatar_url: None,
                 outbound: Some(outbound),
+                // The key is shared to every member during group creation.
+                key_shared_this_session: true,
             },
         );
         // Surface the group in the chat list (the group ID acts as a contact
@@ -919,6 +926,7 @@ impl RelayClient {
                 my_role: None,
                 avatar_url: None,
                 outbound: None,
+                key_shared_this_session: false,
             });
         // The group ID acts as a contact whose display name is the group name.
         self.remember_contact_name(&payload.group_id, &payload.group_name)?;
@@ -953,20 +961,40 @@ impl RelayClient {
     /// with "has no outbound session yet". Calling this before the first send
     /// heals those groups lazily, with no user action required.
     pub(crate) async fn ensure_outbound_session(&self, group_id: &str) -> Result<(), RelayError> {
-        // Fast path: we already own an outbound session.
+        // Fast path: we already own an outbound session AND have shared its
+        // key during this process run.
         {
             let groups = read_guard(&self.inner.groups)?;
             if let Some(group) = groups.get(group_id) {
-                if group.outbound.is_some() {
+                if group.outbound.is_some() && group.key_shared_this_session {
                     return Ok(());
                 }
             }
         }
-        // An unknown group cannot be made sendable; surface the classic error.
         let group_name = read_guard(&self.inner.groups)?
             .get(group_id)
             .map(|group| group.name.clone())
             .ok_or_else(|| RelayError::NoOutboundGroup(group_id.to_string()))?;
+        // Hydrated outbound session (survived a restart) but the key has not
+        // been shared this run: re-share it so recipients with a stale inbound
+        // session can decrypt again — this is the "restart breaks group
+        // messages" heal.
+        let needs_reshare = {
+            let groups = read_guard(&self.inner.groups)?;
+            match groups.get(group_id) {
+                Some(group) => group.outbound.is_some() && !group.key_shared_this_session,
+                None => false,
+            }
+        };
+        if needs_reshare {
+            self.share_existing_key(group_id, &group_name).await?;
+            if let Ok(mut groups) = write_guard(&self.inner.groups) {
+                if let Some(group) = groups.get_mut(group_id) {
+                    group.key_shared_this_session = true;
+                }
+            }
+            return Ok(());
+        }
         self.establish_outbound_and_share(group_id, &group_name)
             .await
     }
@@ -1004,6 +1032,7 @@ impl RelayClient {
                     group.members = info.members.clone();
                     group.my_role = info.my_role.clone();
                     group.outbound = Some(outbound);
+                    group.key_shared_this_session = false; // shared below
                     true
                 }
                 _ => false,
@@ -1030,6 +1059,52 @@ impl RelayClient {
             .await;
             if let Err(err) = result {
                 tracing::warn!(peer = %member.peer_id, group = %group_id, error = %err, "failed to share group key");
+            }
+        }
+        if let Ok(mut groups) = write_guard(&self.inner.groups) {
+            if let Some(group) = groups.get_mut(group_id) {
+                group.key_shared_this_session = true;
+            }
+        }
+        Ok(())
+    }
+
+    /// Re-share the EXISTING outbound session key with every other member.
+    /// Called before the first group send of a process run when the outbound
+    /// session was hydrated from the store: recipients may hold a stale or
+    /// absent inbound session (their persisted ratchet can lag or predate a
+    /// crash), so re-sharing heals the group without requiring a 1:1 message.
+    async fn share_existing_key(
+        &self,
+        group_id: &str,
+        group_name: &str,
+    ) -> Result<(), RelayError> {
+        let my_peer_id = self.my_peer_id()?;
+        let (session_key, members) = {
+            let groups = read_guard(&self.inner.groups)?;
+            let group = groups
+                .get(group_id)
+                .ok_or_else(|| RelayError::NoOutboundGroup(group_id.to_string()))?;
+            let session_key = group
+                .outbound
+                .as_ref()
+                .map(|outbound| outbound.session_key())
+                .ok_or_else(|| RelayError::NoOutboundGroup(group_id.to_string()))?;
+            (session_key, group.members.clone())
+        };
+        for member in &members {
+            if member.peer_id == my_peer_id {
+                continue;
+            }
+            let result = async {
+                if !mutex_guard(&self.inner.sessions)?.contains_key(&member.peer_id) {
+                    self.start_chat(&member.peer_id).await?;
+                }
+                self.send_group_key(&member.peer_id, group_id, &session_key, group_name)
+            }
+            .await;
+            if let Err(err) = result {
+                tracing::warn!(peer = %member.peer_id, group = %group_id, error = %err, "failed to re-share group key");
             }
         }
         Ok(())
@@ -1067,6 +1142,7 @@ impl RelayClient {
                 my_role: Some("owner".to_string()),
                 avatar_url: None,
                 outbound: None,
+                key_shared_this_session: false,
             });
         Ok(())
     }
@@ -1296,6 +1372,7 @@ impl RelayClient {
                             my_role: my_role.clone(),
                             avatar_url: avatar_url.clone(),
                             outbound: None,
+                key_shared_this_session: false,
                         },
                     );
                 }
