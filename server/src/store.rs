@@ -1043,12 +1043,8 @@ impl Store {
             .collect()
     }
 
-    /// Every ACCEPTED contact peer ID of `peer`.
-    ///
-    /// Currently exercised by tests; the relay answers contact queries through
-    /// `are_contacts` and the pending-request lists, so no production caller
-    /// consumes the full contact list yet.
-    #[cfg(test)]
+    /// Every ACCEPTED contact peer ID of `peer`. Used by `list_contacts` to
+    /// rehydrate a client's contact list after a database reset/restore.
     pub fn list_contacts(&self, peer: &str) -> Vec<String> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn

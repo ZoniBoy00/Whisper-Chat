@@ -40,3 +40,9 @@ rusqlite = { version = "0.40", features = ["bundled-sqlcipher-vendored-openssl"]
 e2ee-core = { path = "../../e2ee-core" }
 tauri-plugin-deep-link = "2"
 tauri-plugin-single-instance = "2"
+
+# The vendored OpenSSL static lib ships without PDB files, so the MSVC linker
+# emits a LNK4099 warning per object file on every debug build. Harmless (no
+# debug info exists to load), but it floods the console — silence it.
+[lints.rust]
+linker_messages = "allow"
