@@ -135,11 +135,38 @@ fn persist_onboarding_name(
         .map_err(|e| e.to_string())
 }
 
-/// Delete the persisted identity file, returning it to the onboarding state.
+/// Delete the persisted identity file AND the identity-keyed local database
+/// (messages, contacts, settings), returning to the onboarding state.
 /// Missing files are treated as success so the command is idempotent.
+///
+/// Without the database wipe, a reset would leave the old `whisper-{peer}.db`
+/// orphaned in the app data folder forever — encrypted with a key derived from
+/// a now-deleted identity, so it can never be opened again, only reclaimed.
 #[tauri::command]
 fn delete_identity(app: tauri::AppHandle) -> Result<(), String> {
     let path = identity_path(&app)?;
+    // Derive the peer ID before removing the identity file so the matching
+    // database (named after the peer ID) can be removed too.
+    if let Ok(json) = fs::read_to_string(&path) {
+        if let Ok(identity) = e2ee_core::Identity::from_json(&json) {
+            let db_path = relay::resolve_store_path(&app, &identity.peer_id());
+            for variant in ["", "-wal", "-shm"] {
+                let candidate = db_path.with_file_name(format!(
+                    "{}{}",
+                    db_path
+                        .file_name()
+                        .map(|n| n.to_string_lossy())
+                        .unwrap_or_default(),
+                    variant
+                ));
+                match fs::remove_file(&candidate) {
+                    Ok(()) => {}
+                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                    Err(e) => return Err(e.to_string()),
+                }
+            }
+        }
+    }
     match fs::remove_file(&path) {
         Ok(()) => Ok(()),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
