@@ -244,7 +244,9 @@ mod tests {
                 assert_eq!(text.text, "hello");
                 assert_eq!(text.quote, None);
             }
-            ChatPayload::Reaction(_) | ChatPayload::Typing(_) | ChatPayload::Read(_) => panic!("expected text payload"),
+            ChatPayload::Reaction(_) | ChatPayload::Typing(_) | ChatPayload::Read(_) => {
+                panic!("expected text payload")
+            }
         }
     }
 
@@ -343,7 +345,9 @@ mod tests {
                 assert_eq!(text.text, "just some text");
                 assert_eq!(text.quote, None);
             }
-            ParsedPayload::Reaction(_) | ParsedPayload::Typing(_) | ParsedPayload::Read(_) => panic!("expected text"),
+            ParsedPayload::Reaction(_) | ParsedPayload::Typing(_) | ParsedPayload::Read(_) => {
+                panic!("expected text")
+            }
         }
     }
 
@@ -357,7 +361,9 @@ mod tests {
                 assert_eq!(quote.message_id, "m1");
                 assert_eq!(quote.sender_name.as_deref(), Some("Bob"));
             }
-            ParsedPayload::Reaction(_) | ParsedPayload::Typing(_) | ParsedPayload::Read(_) => panic!("expected text"),
+            ParsedPayload::Reaction(_) | ParsedPayload::Typing(_) | ParsedPayload::Read(_) => {
+                panic!("expected text")
+            }
         }
     }
 
@@ -369,7 +375,9 @@ mod tests {
                 assert_eq!(text.text, "hi");
                 assert_eq!(text.quote, None);
             }
-            ParsedPayload::Reaction(_) | ParsedPayload::Typing(_) | ParsedPayload::Read(_) => panic!("expected text"),
+            ParsedPayload::Reaction(_) | ParsedPayload::Typing(_) | ParsedPayload::Read(_) => {
+                panic!("expected text")
+            }
         }
     }
 
@@ -383,7 +391,9 @@ mod tests {
             ChatPayload::Text(text) => {
                 assert_eq!(text.message_id.as_deref(), Some("out-7"));
             }
-            ChatPayload::Reaction(_) | ChatPayload::Typing(_) | ChatPayload::Read(_) => panic!("expected text"),
+            ChatPayload::Reaction(_) | ChatPayload::Typing(_) | ChatPayload::Read(_) => {
+                panic!("expected text")
+            }
         }
     }
 
@@ -394,7 +404,9 @@ mod tests {
             ParsedPayload::Text(text) => {
                 assert_eq!(text.message_id.as_deref(), Some("9f8e-3ab"));
             }
-            ParsedPayload::Reaction(_) | ParsedPayload::Typing(_) | ParsedPayload::Read(_) => panic!("expected text"),
+            ParsedPayload::Reaction(_) | ParsedPayload::Typing(_) | ParsedPayload::Read(_) => {
+                panic!("expected text")
+            }
         }
     }
 
@@ -402,7 +414,9 @@ mod tests {
     fn legacy_raw_text_has_no_message_id() {
         match parse_plaintext(b"plain legacy text") {
             ParsedPayload::Text(text) => assert_eq!(text.message_id, None),
-            ParsedPayload::Reaction(_) | ParsedPayload::Typing(_) | ParsedPayload::Read(_) => panic!("expected text"),
+            ParsedPayload::Reaction(_) | ParsedPayload::Typing(_) | ParsedPayload::Read(_) => {
+                panic!("expected text")
+            }
         }
     }
 
@@ -473,7 +487,9 @@ mod tests {
                 assert_eq!(text.text, r#"{"kind":"voice_message","data":"xyz"}"#);
                 assert_eq!(text.quote, None);
             }
-            ParsedPayload::Reaction(_) | ParsedPayload::Typing(_) | ParsedPayload::Read(_) => panic!("expected text"),
+            ParsedPayload::Reaction(_) | ParsedPayload::Typing(_) | ParsedPayload::Read(_) => {
+                panic!("expected text")
+            }
         }
     }
 
@@ -485,7 +501,9 @@ mod tests {
             br#"{"kind":"group_key","group_id":"g-1","session_key":"abc","group_name":"Squad"}"#;
         match parse_plaintext(bytes) {
             ParsedPayload::Text(text) => assert_eq!(text.quote, None),
-            ParsedPayload::Reaction(_) | ParsedPayload::Typing(_) | ParsedPayload::Read(_) => panic!("expected text"),
+            ParsedPayload::Reaction(_) | ParsedPayload::Typing(_) | ParsedPayload::Read(_) => {
+                panic!("expected text")
+            }
         }
     }
 
@@ -496,7 +514,9 @@ mod tests {
             ParsedPayload::Text(text) => {
                 assert!(text.text.contains("broken"));
             }
-            ParsedPayload::Reaction(_) | ParsedPayload::Typing(_) | ParsedPayload::Read(_) => panic!("expected text"),
+            ParsedPayload::Reaction(_) | ParsedPayload::Typing(_) | ParsedPayload::Read(_) => {
+                panic!("expected text")
+            }
         }
     }
 
@@ -508,7 +528,9 @@ mod tests {
                 // Invalid bytes become U+FFFD replacement characters.
                 assert!(text.text.contains('\u{FFFD}'));
             }
-            ParsedPayload::Reaction(_) | ParsedPayload::Typing(_) | ParsedPayload::Read(_) => panic!("expected text"),
+            ParsedPayload::Reaction(_) | ParsedPayload::Typing(_) | ParsedPayload::Read(_) => {
+                panic!("expected text")
+            }
         }
     }
 
@@ -518,7 +540,9 @@ mod tests {
         let bytes = br#"{"hello":"world"}"#;
         match parse_plaintext(bytes) {
             ParsedPayload::Text(text) => assert_eq!(text.text, r#"{"hello":"world"}"#),
-            ParsedPayload::Reaction(_) | ParsedPayload::Typing(_) | ParsedPayload::Read(_) => panic!("expected text"),
+            ParsedPayload::Reaction(_) | ParsedPayload::Typing(_) | ParsedPayload::Read(_) => {
+                panic!("expected text")
+            }
         }
     }
 }
