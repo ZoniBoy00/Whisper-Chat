@@ -5,8 +5,8 @@
 > general-purpose chat — a WhatsApp/Signal/Telegram replacement without
 > backdoors or scanning mechanisms.
 >
-> **Date:** 2026-08-06 (updated: SQLCipher at-rest, Megolm key rotation, disappearing messages + countdown, message editing, delete for everyone, group read receipts, rename, system messages, daily logs + local time, autobackup, restart-proof sessions, CSP, CI hardening; backlog updated from Hermes review: media/voice/export priorities, E2EE PIN backup, device list before 6.11, WASM deferred)
-> **Status:** Phases 0–6.10 done — full local MVP; relay deployment to a real VPS is the next milestone
+> **Date:** 2026-08-06 (updated: SQLCipher at-rest, Megolm key rotation, disappearing messages + countdown, message editing, delete for everyone, group read receipts, rename, system messages, daily logs + local time, autobackup, restart-proof sessions, CSP, CI hardening; backlog updated from Hermes review: media/voice/export priorities, E2EE PIN backup, device list before 6.11, WASM deferred; **E2EE backup encryption flagged 🔴 critical release blocker** after code review of `build_backup_package`)
+> **Status:** Phases 0–6.10 done — full local MVP. **Two release blockers:** (1) real two-machine E2EE test on Hetzner, (2) E2EE backup encryption — autobackup currently writes the identity key as plaintext into a (typically cloud-synced) folder
 > **Origin:** App specification + Gemini cross-check + Byte evaluation
 > **Working title (before branding):** Operation Ghost
 
@@ -293,7 +293,7 @@ impact and effort. Pull items into the phase table when they get scheduled.
 | 🧠 Nice-to-have | **Message padding** | random-size padding to flatten traffic patterns (metadata) |
 | 🧠 Nice-to-have | **Web client (WASM)** | e2ee-core → wasm-bindgen; read-only companion or full client — **deliberately deferred**: browser crypto = JS-held keys = larger XSS surface; the Tauri desktop is the differentiator |
 | 🧠 Nice-to-have | **Testnet mode** | a shared demo relay for trying the app without self-hosting |
-| 🔒 Security | **E2EE PIN backup** | Signal-style: backup encrypted with a PIN-derived key. Today `build_backup_package` stores the identity pickle as plaintext JSON and the DB key is derived from that same pickle — anyone holding the backup file can restore the whole profile. Fix before autobackup is advertised |
+| 🔒 Security | **E2EE PIN backup (phase 2)** | Beyond the release-blocking fix (§13 Next up): split identity and data — password-protected "vault" (DB + sessions) + separate Signal-style recovery key for the identity; or derive the DB key from a password/PIN instead of the identity so a leaked identity alone opens nothing |
 | 🧠 Nice-to-have | **Multi-account / profile switcher** | one install, several identities (power-user feature) |
 | 🧠 Nice-to-have | **Email / recovery-key onboarding** | "save your recovery key" flow for users who find a bare key confusing — keeps the no-phone-number/no-account selling point (no email accounts, no extra metadata) |
 
@@ -343,7 +343,8 @@ inside existing encrypted envelopes; invites/join links/avatar pushes added
 relay handlers with their own tests).
 
 **⏳ Next up:**
-- [ ] Deploy the relay to Hetzner (systemd unit ready) → real two-machine E2EE test — the one thing between "works locally" and "works for real"; blocks public release
+- [ ] 🔴 **E2EE backup encryption (CRITICAL — release blocker).** `build_backup_package` (lib.rs:643) stores the identity pickle — the **private keys** — as plaintext JSON next to the base64 SQLCipher DB whose key is derived from that same pickle (`derive_db_key`). Key and lock in one file; anyone holding a backup file can decrypt the whole history and impersonate the user. Autobackup writes this to a cloud folder by default (Dropbox/OneDrive). Fix (confirmed missing in earlier reviews): Argon2id/scrypt from a user-chosen password → AES-256-GCM over the whole package; restore asks for the password (wrong = error, no data); block password-less autobackup to disk. Follow-up design: separate identity and data — password-protected vault (DB + sessions) + Signal-style recovery key, or derive the DB key from a password instead of the identity
+- [ ] Deploy the relay to Hetzner (systemd unit ready) → real two-machine E2EE test — blocks public release
 - [ ] Chat export (Signal-style plaintext/JSON) — small, high-trust, GDPR-friendly
 - [ ] Media: images & files (MEDIA-SYSTEM.md ready) → voice messages on the same channel
 - [ ] Production hardening: binary integrity check (devtools already disabled in release; no console)
