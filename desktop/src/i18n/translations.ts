@@ -48,6 +48,7 @@ export const translations = {
     "common.reset_identity": "Reset identity",
     "common.copy": "Copy",
     "common.copied": "Copied",
+    "common.share_invite": "Share invite",
     "common.copy_whisper_id": "Copy Whisper ID",
     "common.online": "Online",
     "common.end_to_end_encrypted": "End-to-end encrypted",
@@ -123,6 +124,9 @@ export const translations = {
     "chat.actions_for_message": "Actions for message from {name}",
     "chat.copy_text": "Copy Text",
     "chat.delete_for_me": "Delete for me",
+    "chat.reply": "Reply",
+    "chat.add_reaction": "Add reaction",
+    "chat.react_to_message": "React to message",
     "chat.date_today": "Today",
     "chat.date_yesterday": "Yesterday",
     "chat.new_messages": "New messages",
@@ -138,11 +142,29 @@ export const translations = {
     "bubble.read": "Read",
     "bubble.delivered": "Delivered",
     "bubble.sent": "Sent",
+    "bubble.react": "React",
+
+    // ---- Safety number ---------------------------------------------------
+    "safety.title": "Safety number",
+    "safety.loading": "Computing…",
+    "safety.unknown_key":
+      "Start a chat with this contact first — the safety number is derived from your keys.",
+    "safety.verified": "Verified",
+    "safety.qr_alt": "Safety number QR code",
+    "safety.short": "Short: {tag}",
+    "safety.verify_hint":
+      "Compare this number with {name} through another channel. If it matches, the chat is secure.",
+    "safety.verify": "Mark as verified",
+    "safety.unverify": "Remove verification",
 
     // ---- Composer --------------------------------------------------------
     "composer.type_a_message": "Type a message",
     "composer.message_aria": "Message",
     "composer.enter_for_newline": "Enter for a new line · Ctrl+Enter to send",
+    "composer.replying_to": "Replying to {name}",
+    "composer.cancel_reply": "Cancel reply",
+    "composer.yourself": "You",
+    "composer.unknown_sender": "Unknown sender",
 
     // ---- Add-contact dialog ----------------------------------------------
     "addContact.title": "Add contact",
@@ -433,6 +455,7 @@ export const translations = {
     "common.reset_identity": "Nollaa henkilöllisyys",
     "common.copy": "Kopioi",
     "common.copied": "Kopioitu",
+    "common.share_invite": "Jaa kutsu",
     "common.copy_whisper_id": "Kopioi Whisper-ID",
     "common.online": "Paikalla",
     "common.end_to_end_encrypted": "End-to-end-salattu",
@@ -517,15 +540,36 @@ export const translations = {
     "chat.search_no_results": "Ei osumia",
     "chat.search_prev_aria": "Edellinen osuma",
     "chat.search_next_aria": "Seuraava osuma",
+    "chat.reply": "Vastaa",
+    "chat.add_reaction": "Lisää reaktio",
+    "chat.react_to_message": "Reagoi viestiin",
 
     // ---- Message bubble --------------------------------------------------
     "bubble.read": "Luettu",
     "bubble.delivered": "Toimitettu",
     "bubble.sent": "Lähetetty",
+    "bubble.react": "Reagoi",
+
+    // ---- Safety number ---------------------------------------------------
+    "safety.title": "Varmistusnumero",
+    "safety.loading": "Lasketaan…",
+    "safety.unknown_key":
+      "Aloita ensin keskustelu tämän kontaktin kanssa — varmistusnumero johdetaan avaimistanne.",
+    "safety.verified": "Varmistettu",
+    "safety.qr_alt": "Varmistusnumeron QR-koodi",
+    "safety.short": "Lyhyt: {tag}",
+    "safety.verify_hint":
+      "Vertaa tätä numeroa {name}:n kanssa toisen kanavan kautta. Jos se täsmää, keskustelu on suojattu.",
+    "safety.verify": "Merkitse varmistetuksi",
+    "safety.unverify": "Poista varmistus",
 
     // ---- Composer --------------------------------------------------------
     "composer.type_a_message": "Kirjoita viesti",
     "composer.message_aria": "Viesti",
+    "composer.replying_to": "Vastataan: {name}",
+    "composer.cancel_reply": "Peruuta vastaus",
+    "composer.yourself": "Sinä",
+    "composer.unknown_sender": "Tuntematon lähettäjä",
     "composer.enter_for_newline": "Enter rivinvaihtoon · Ctrl+Enter lähettää",
 
     // ---- Add-contact dialog ----------------------------------------------

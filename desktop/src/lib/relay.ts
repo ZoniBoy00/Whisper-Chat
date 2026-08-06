@@ -17,8 +17,11 @@ import type {
   PresenceEvent,
   PresenceInfo,
   ProfileInfo,
+  QuoteInfo,
+  ReactionEvent,
   ReconnectingEvent,
   RelayStatusEvent,
+  SafetyNumberInfo,
   TypingEvent,
 } from "../types";
 
@@ -52,13 +55,30 @@ export function startChat(peerId: string): Promise<void> {
 /**
  * Encrypt and send a message. `clientId` is echoed back inside the
  * `chat-message` event so the UI can deduplicate its optimistic insertion.
+ * `quote` turns the message into a quoted reply (the snapshot travels inside
+ * the encrypted payload).
  */
 export function sendMessage(
   peerId: string,
   text: string,
-  clientId: string
+  clientId: string,
+  quote?: QuoteInfo | null
 ): Promise<void> {
-  return invoke("send_message", { peerId, text, clientId });
+  return invoke("send_message", { peerId, text, clientId, quote });
+}
+
+/**
+ * React to a message with an emoji. `active` is the sender's freshly computed
+ * absolute state (true = react, false = unreact) and travels inside the
+ * encrypted payload — no server changes involved.
+ */
+export function sendReaction(
+  peerId: string,
+  messageId: string,
+  emoji: string,
+  active: boolean
+): Promise<void> {
+  return invoke("send_reaction", { peerId, messageId, emoji, active });
 }
 
 /** Snapshot of identity, connection, contacts and messages. */
@@ -374,6 +394,49 @@ export function onTyping(
   handler: (event: TypingEvent) => void
 ): Promise<UnlistenFn> {
   return listen<TypingEvent>("typing", (event) => handler(event.payload));
+}
+
+/** Subscribe to emoji reaction updates. Returns an unlisten function. */
+export function onMessageReaction(
+  handler: (event: ReactionEvent) => void
+): Promise<UnlistenFn> {
+  return listen<ReactionEvent>("message-reaction", (event) =>
+    handler(event.payload)
+  );
+}
+
+/** Build a `whisper://invite` link for our own identity (with profile hints
+ *  when a display name / username is registered). */
+export function getInviteLink(): Promise<string> {
+  return invoke<string>("get_invite_link");
+}
+
+/** Compute the safety number shared with `peerId` plus our verification
+ *  state. Rejects until the peer's identity key has been learned. */
+export function getSafetyNumber(peerId: string): Promise<SafetyNumberInfo> {
+  return invoke<SafetyNumberInfo>("get_safety_number", { peerId });
+}
+
+/** Set (or clear) the locally-stored verified flag for a contact. */
+export function markContactVerified(
+  peerId: string,
+  verified: boolean
+): Promise<void> {
+  return invoke("mark_contact_verified", { peerId, verified });
+}
+
+/** Drain deep links that arrived before the webview was ready (app launched
+ *  by clicking a `whisper://` link). Call once on startup. */
+export function getPendingDeepLink(): Promise<string[]> {
+  return invoke<string[]>("take_pending_deep_link");
+}
+
+/** Subscribe to live `whisper://` deep links (second instance or OS open
+ *  while running). Returns an unlisten function. */
+export function onDeepLink(
+  handler: (url: string) => void
+): Promise<UnlistenFn> {
+  return listen<string>("deep-link", (event) => handler(event.payload));
 }
 
 /** Subscribe to contact display-name updates. Returns an unlisten fn. */

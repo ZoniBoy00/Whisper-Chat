@@ -1,5 +1,6 @@
 import { useEffect, useRef } from "react";
-import { Send } from "lucide-react";
+import { Send, X } from "lucide-react";
+import type { Message } from "../types";
 import { useI18n } from "../i18n/I18nContext";
 
 interface ComposerProps {
@@ -8,6 +9,13 @@ interface ComposerProps {
   /** Called with the new text on every user edit. */
   onChange: (text: string) => void;
   onSend: (text: string) => void;
+  /** The message being replied to, when a reply is armed. */
+  replyTo?: Message | null;
+  /** Display name of the replied-to message's sender, pre-resolved by the
+   *  caller (the UI resolves sender from the conversation/group context). */
+  replyToName?: string;
+  /** Dismiss the armed reply. */
+  onCancelReply?: () => void;
   /** Called when the user starts/stops typing so the backend can emit the
    *  end-to-end typing indicator for the active conversation. */
   onTypingChange: (isTyping: boolean) => void;
@@ -28,6 +36,9 @@ export function Composer({
   value,
   onChange,
   onSend,
+  replyTo,
+  replyToName,
+  onCancelReply,
   onTypingChange,
   enterToSend,
   conversationId,
@@ -103,6 +114,24 @@ export function Composer({
 
   return (
     <div className="border-t border-wp-line/10 bg-wp-panel px-4 py-3">
+      {replyTo ? (
+        <div className="mx-auto mb-2 flex max-w-3xl items-center gap-3 rounded-xl bg-wp-panel-2 px-3 py-2 ring-1 ring-wp-line/10">
+          <div className="min-w-0 flex-1">
+            <p className="truncate text-xs font-semibold text-wp-accent">
+              {t("composer.replying_to", { name: replyToName ?? t("composer.unknown_sender") })}
+            </p>
+            <p className="truncate text-xs text-wp-dim">{replyTo.text}</p>
+          </div>
+          <button
+            type="button"
+            onClick={onCancelReply}
+            aria-label={t("composer.cancel_reply")}
+            className="shrink-0 rounded-full p-1.5 text-wp-faint transition hover:bg-wp-panel-3 hover:text-wp-text"
+          >
+            <X className="h-4 w-4" />
+          </button>
+        </div>
+      ) : null}
       <div className="mx-auto flex max-w-3xl items-end gap-3">
         <textarea
           ref={inputRef}

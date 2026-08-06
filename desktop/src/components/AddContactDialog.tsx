@@ -13,6 +13,9 @@ interface AddContactDialogProps {
   onAdd: (peerId: string) => Promise<void>;
   /** Our own peer ID, rejected client-side with a clean message. */
   myPeerId: string;
+  /** Pre-fill the input when the dialog opens (e.g. from a pasted invite
+   *  link or a `whisper://` deep link). */
+  initialValue?: string;
 }
 
 /** Whisper IDs are 24 lowercase hex characters. */
@@ -23,11 +26,12 @@ export function AddContactDialog({
   onOpenChange,
   onAdd,
   myPeerId,
+  initialValue = "",
 }: AddContactDialogProps) {
   const { t } = useI18n();
   const dialogRef = useRef<HTMLDialogElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
-  const [value, setValue] = useState("");
+  const [value, setValue] = useState(initialValue);
   const [error, setError] = useState<string | null>(null);
   const [adding, setAdding] = useState(false);
   // The peer a request was successfully sent to; the dialog then shows a
@@ -43,12 +47,13 @@ export function AddContactDialog({
     if (open && !dialog.open) {
       setClosing(false);
       setSentTo(null);
+      setValue(initialValue);
       dialog.showModal();
       inputRef.current?.focus();
     } else if (!open && dialog.open) {
       dialog.close();
     }
-  }, [open]);
+  }, [open, initialValue]);
 
   const requestClose = () => {
     if (closing) return;
@@ -68,7 +73,11 @@ export function AddContactDialog({
   };
 
   const submit = async () => {
-    const peerId = value.trim().toLowerCase();
+    const raw = value.trim();
+    // Accept either a bare Whisper ID or a `whisper://invite?peer=..` link
+    // (shared from another device via "Share invite").
+    const invite = raw.match(/^whisper:\/\/invite\?[^]*\bpeer=([0-9a-f]{24})\b/i);
+    const peerId = (invite ? invite[1] : raw).toLowerCase();
     if (!PEER_ID_PATTERN.test(peerId)) {
       setError(t("addContact.invalid_peer_id"));
       return;
@@ -183,7 +192,7 @@ export function AddContactDialog({
               type="text"
               value={value}
               onChange={(e) => setValue(e.target.value)}
-              placeholder="e.g. 3f2a91c07b44d8e5a1b2c3d4"
+              placeholder="whisper://invite?peer=… or 3f2a91c07b44d8e5a1b2c3d4"
               autoComplete="off"
               spellCheck={false}
               aria-invalid={error ? true : undefined}

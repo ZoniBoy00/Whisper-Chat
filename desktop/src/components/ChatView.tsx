@@ -5,13 +5,20 @@ import {
   Copy,
   Info,
   Lock,
+  MessageSquarePlus,
   MessagesSquare,
+  Plus,
   Search,
   Trash2,
   Users,
   X,
 } from "lucide-react";
-import type { Conversation, Message, PresenceInfo } from "../types";
+import type {
+  Conversation,
+  Message,
+  PresenceInfo,
+  QuoteInfo,
+} from "../types";
 import {
   cx,
   dayKey,
@@ -31,6 +38,9 @@ import { ContextMenu } from "./ContextMenu";
 /** Scrolling is considered "at the bottom" within this distance in px. */
 const BOTTOM_THRESHOLD = 120;
 
+/** The emoji palette offered by the reaction picker (Signal-style presets). */
+const REACTION_EMOJIS = ["👍", "❤️", "😂", "😮", "😢", "🙏", "🔥", "🎉"];
+
 interface ChatViewProps {
   conversation: Conversation | null;
   /** Whether the active peer is currently typing (from the `typing` event). */
@@ -39,7 +49,9 @@ interface ChatViewProps {
   presence: PresenceInfo | null;
   /** Relay endpoint; used to resolve `/media/{hash}` avatar paths. */
   relayUrl: string;
-  onSend: (text: string) => void;
+  /** Our own peer ID; used to mark our own reactions. */
+  myPeerId: string | null;
+  onSend: (text: string, quote?: QuoteInfo | null) => void;
   onTypingChange: (isTyping: boolean) => void;
   /** Whether Enter sends a message in the composer (off: Enter = new line). */
   enterToSend: boolean;
@@ -53,6 +65,8 @@ interface ChatViewProps {
   onOpenGroupInfo: (() => void) | undefined;
   /** Deletes one message locally ("delete for me"). */
   onDeleteMessage: (messageId: string) => void;
+  /** React or un-react to a message. `active` is the caller-computed state. */
+  onReact: (messageId: string, emoji: string, active: boolean) => void;
 }
 
 /** The right-click state of a message: where to open the menu + the target. */
@@ -74,6 +88,7 @@ export function ChatView({
   isTyping,
   presence,
   relayUrl,
+  myPeerId,
   onSend,
   onTypingChange,
   enterToSend,
@@ -82,10 +97,15 @@ export function ChatView({
   onOpenProfile,
   onOpenGroupInfo,
   onDeleteMessage,
+  onReact,
 }: ChatViewProps) {
   const { t, language } = useI18n();
   const scrollRef = useRef<HTMLDivElement>(null);
   const [menu, setMenu] = useState<MessageMenuState | null>(null);
+  /** The message we are replying to, arming the composer reply bar. */
+  const [replyTo, setReplyTo] = useState<Message | null>(null);
+  /** The reaction picker popover target (position + message). */
+  const [emojiPicker, setEmojiPicker] = useState<MessageMenuState | null>(null);
 
   // ---- In-chat message search --------------------------------------------
   const [searchOpen, setSearchOpen] = useState(false);
@@ -99,9 +119,12 @@ export function ChatView({
   const [unseenCount, setUnseenCount] = useState(0);
   const [showJumpToBottom, setShowJumpToBottom] = useState(false);
 
-  // A context menu belongs to one conversation: switching chats dismisses it.
+  // A context menu, reply and reaction picker belong to one conversation:
+  // switching chats dismisses all of them.
   useEffect(() => {
     setMenu(null);
+    setReplyTo(null);
+    setEmojiPicker(null);
   }, [conversation?.peerId]);
 
   // Every newly-opened conversation starts at its newest message.
@@ -476,9 +499,20 @@ export function ChatView({
                   >
                     <MessageBubble
                       message={message}
+                      myPeerId={myPeerId}
                       animate={newMessageIds.has(message.id)}
                       searchQuery={searchQuery.trim()}
                       searchActiveRange={activeRange}
+                      onReact={(target, emoji) => {
+                        const mine = (target.reactions ?? []).find(
+                          (r) => r.sender === myPeerId
+                        );
+                        onReact(
+                          target.id,
+                          emoji,
+                          !(mine?.emoji === emoji)
+                        );
+                      }}
                       onContextMenu={(event) => {
                         event.preventDefault();
                         setMenu({ x: event.clientX, y: event.clientY, message });
@@ -516,6 +550,25 @@ export function ChatView({
           onClose={() => setMenu(null)}
           items={[
             {
+              id: "reply",
+              label: t("chat.reply"),
+              icon: <MessageSquarePlus className="h-4 w-4" />,
+              onSelect: () => {
+                setReplyTo(menu.message);
+                setMenu(null);
+              },
+            },
+            {
+              id: "add-reaction",
+              label: t("chat.add_reaction"),
+              icon: <Plus className="h-4 w-4" />,
+              onSelect: () => {
+                // Replace the menu with the reaction picker at the same spot.
+                setEmojiPicker({ x: menu.x, y: menu.y, message: menu.message });
+                setMenu(null);
+              },
+            },
+            {
               id: "copy-text",
               label: t("chat.copy_text"),
               icon: <Copy className="h-4 w-4" />,
@@ -532,11 +585,64 @@ export function ChatView({
         />
       ) : null}
 
+      {emojiPicker ? (
+        <ContextMenu
+          x={emojiPicker.x}
+          y={emojiPicker.y}
+          label={t("chat.react_to_message")}
+          onClose={() => setEmojiPicker(null)}
+          items={REACTION_EMOJIS.map((emoji) => ({
+            id: `react-${emoji}`,
+            label: emoji,
+            icon: (
+              <span className="text-base leading-none" aria-hidden="true">
+                {emoji}
+              </span>
+            ),
+            onSelect: () => {
+              const mine = (emojiPicker.message.reactions ?? []).find(
+                (r) => r.sender === myPeerId
+              );
+              onReact(
+                emojiPicker.message.id,
+                emoji,
+                !(mine?.emoji === emoji)
+              );
+              setEmojiPicker(null);
+            },
+          }))}
+        />
+      ) : null}
+
       <Composer
         value={draft}
         onChange={onDraftChange}
         conversationId={conversationId}
-        onSend={onSend}
+        onSend={(text) => {
+          if (replyTo) {
+            const quote: QuoteInfo = {
+              message_id: replyTo.id,
+              text: replyTo.text,
+              sender: replyTo.outgoing ? myPeerId ?? "" : conversation?.peerId ?? "",
+              sender_name: replyTo.outgoing
+                ? t("composer.yourself")
+                : (conversation?.displayName ?? shortPeerId(conversation?.peerId ?? "")),
+            };
+            onSend(text, quote);
+            setReplyTo(null);
+          } else {
+            onSend(text);
+          }
+        }}
+        replyTo={replyTo}
+        replyToName={
+          replyTo
+            ? replyTo.outgoing
+              ? t("composer.yourself")
+              : (conversation?.displayName ?? shortPeerId(conversation?.peerId ?? ""))
+            : undefined
+        }
+        onCancelReply={() => setReplyTo(null)}
         onTypingChange={onTypingChange}
         enterToSend={enterToSend}
       />

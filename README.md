@@ -28,6 +28,12 @@ sender and the recipient can read them.
   group UI).
 - **Read receipts, typing & presence** — blue double ticks when a message is
   read, live "typing…" indicators and Online / Last seen status (WhatsApp-style).
+- **Emoji reactions & quoted replies** — react to any message (end-to-end
+  encrypted state signals), reply to a message with the quoted bubble rendered
+  in the composer (Signal-style). Works in 1:1 chats and groups.
+- **Safety numbers & invite links** — Signal-style 60-digit verification
+  fingerprint with QR code and a local "verified" flag; share your identity as
+  a `whisper://invite` link and paste it to add a contact.
 - **Username & profile system** — register a unique signed username (Ed25519
   binding), set a display name and avatar, search by username or UID.
 - **Friend system (anti-spam)** — contacts are established via signed friend
@@ -223,7 +229,7 @@ cargo fmt --check
 
 ## Testing & TDD
 
-- **277 unit tests** across the workspace (e2ee-core 48, whisper-desktop 89,
+- **311 unit tests** across the workspace (e2ee-core 75, whisper-desktop 96,
   whisper-relay 140)
 - **92 smoke tests** covering live routing, offline delivery, SQLite
   persistence, `fetch_since` sync, rate limiting and signed-hello spoofing

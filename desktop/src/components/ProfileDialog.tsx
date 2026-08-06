@@ -15,6 +15,7 @@ import type { TFunction } from "../i18n/types";
 import { useI18n } from "../i18n/I18nContext";
 import { Avatar } from "./Avatar";
 import { CopyButton } from "./CopyButton";
+import { SafetyNumberCard } from "./SafetyNumberCard";
 
 /** Optional group member role badge (owner/admin); null outside groups. The
  *  group side of the app is built separately, so this stays optional. */
@@ -210,6 +211,9 @@ export function ProfileDialog({
               <CopyButton value={peerId} label={t("common.copy")} />
             </div>
           </div>
+
+          {/* Safety number + verification (Signal-style) */}
+          <SafetyNumberCard peerId={peerId} displayName={name} />
 
           {/* Actions */}
           <div className="flex gap-2">

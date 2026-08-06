@@ -12,6 +12,43 @@ export interface Message {
   /** Outgoing only: "sent" by default, "delivered" once the relay acks,
    *  "read" once the peer's client decrypts an end-to-end read receipt. */
   status?: MessageStatus;
+  /** Quoted-reply context, when this message replies to an earlier one. */
+  quote?: QuoteInfo;
+  /** Emoji reactions attached to this message, in arrival order. */
+  reactions?: ReactionInfo[];
+}
+
+/** The quoted message a reply refers to (snapshot sent inside the encrypted
+ *  payload, so the reply renders even if the original is later deleted). */
+export interface QuoteInfo {
+  message_id: string;
+  /** Snapshot of the quoted message's plaintext. */
+  text: string;
+  /** Peer ID of the quoted message's sender. */
+  sender: string;
+  /** Display name of the quoted sender, when known. */
+  sender_name?: string | null;
+}
+
+/** One emoji reaction attached to a message by a peer. */
+export interface ReactionInfo {
+  sender: string;
+  emoji: string;
+}
+
+/** Payload of the `message-reaction` event emitted when a reaction is applied.
+ *  The UI toggles the pill under the affected bubble. */
+export interface ReactionEvent {
+  /** Conversation key: peer ID for 1:1 chats, group ID for groups. */
+  peer_id: string;
+  /** The id of the reacted-to message. */
+  message_id: string;
+  /** Peer ID of the reacting peer. */
+  sender: string;
+  /** The reaction emoji. */
+  emoji: string;
+  /** Whether the reaction was added (`true`) or removed (`false`). */
+  active: boolean;
 }
 
 export interface Conversation {
@@ -88,6 +125,16 @@ export interface ProfileInfo {
   peer_id: string;
   display_name: string | null;
   avatar_url: string | null;
+}
+
+/** Safety number info for one contact, returned by `get_safety_number`. */
+export interface SafetyNumberInfo {
+  /** The 60-digit grouped safety number shared with the peer. */
+  safety_number: string;
+  /** The compact 8-hex tag, for quick verbal comparison. */
+  short: string;
+  /** Whether we have marked this contact as verified. */
+  verified: boolean;
 }
 
 /** A peer's presence snapshot: online right now, plus last-seen unix seconds

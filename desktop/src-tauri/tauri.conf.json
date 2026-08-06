@@ -38,6 +38,13 @@
       "csp": null
     }
   },
+  "plugins": {
+    "deep-link": {
+      "desktop": {
+        "schemes": ["whisper"]
+      }
+    }
+  },
   "bundle": {
     "active": true,
     "targets": "all",

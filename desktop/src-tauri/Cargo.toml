@@ -38,3 +38,5 @@ sha2 = "0.11"
 # identity-derived key; on a plain build the same code runs unencrypted.
 rusqlite = { version = "0.40", features = ["bundled"] }
 e2ee-core = { path = "../../e2ee-core" }
+tauri-plugin-deep-link = "2"
+tauri-plugin-single-instance = "2"

@@ -21,13 +21,25 @@
 //! - [`session`]: Double Ratchet sessions on top of the X3DH handshake.
 //! - [`group`]: Megolm group sessions for end-to-end encrypted group chat.
 //! - [`wire`]: versioned, serde-compatible protocol types used by the relay.
+//! - [`payload`]: tagged plaintext payloads (quoted replies, reactions).
+//! - [`safety`]: safety numbers and `whisper://` invite links.
 
 pub mod group;
 pub mod identity;
+pub mod payload;
 pub mod prekey;
 pub mod profile;
+pub mod safety;
 pub mod session;
 pub mod wire;
+
+pub use payload::{
+    parse_plaintext, ChatPayload, ParsedPayload, Quote, ReactionPayload, TextPayload,
+};
+pub use safety::{
+    build_invite_link, is_valid_peer_id, parse_invite_link, safety_number, short_safety_number,
+    InviteLink, SAFETY_NUMBER_DIGITS_PER_GROUP, SAFETY_NUMBER_GROUPS, SHORT_SAFETY_NUMBER_LENGTH,
+};
 
 pub use group::{GroupError, InboundGroup, OutboundGroup};
 pub use identity::{HelloError, Identity, IdentityError, SignedHello};

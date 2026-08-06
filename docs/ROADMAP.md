@@ -180,8 +180,8 @@ talks to whom, IP) is visible just as in Signal/WhatsApp — this is an
 | **6.6** | **i18n + notifications:** EN/FI translations, native notifications + sounds, unread badges, pinned chats, in-chat message search, day separators, context menus, auto-reconnect | 1–2 | ✅ **done** |
 | **6.7** | **Group multi-sender:** every member sends with their own outbound Megolm session (created on first group-key receipt); connection toasts | 1 | ✅ **done** |
 | **6.8** | **Friend system (anti-spam):** signed friend requests + accept/decline/remove, server-enforced `not_contacts` gating (1:1 envelopes, pre-keys, group member adds), Contacts tab with live Online / Last seen + one-click removal | 2 | ✅ **done** |
-| **6.9** | **Message interactions:** emoji reactions, quoted replies, edit + delete-for-everyone | 2 | 🔒 Next |
-| **6.10** | **Invite links + safety numbers:** `whisper://` deep links (peer ID + username), QR verification of contacts | 1–2 | 🔒 Next |
+| **6.9** | **Message interactions:** emoji reactions (E2EE state-signal envelopes, reaction pills on bubbles, emoji picker), quoted replies (tagged plaintext payload, reply bar in the composer) | 2 | ✅ **done** |
+| **6.10** | **Invite links + safety numbers:** `whisper://invite` links (share via clipboard, parse on add-contact), Signal-style safety numbers (60-digit + short tag, QR code, local verified flag) | 1–2 | ✅ **done** |
 | **6.11** | **Multi-device sync:** one identity on several devices (Signal-style key backup / signed device list) | 2 | 🔒 After MVP |
 | **7** | **Media + calls:** encrypted file transfer (AES-GCM key exchange, `/media` extension), WebRTC (DTLS-SRTP) + coturn, voice messages | 2 | 🔒 After MVP |
 | **8** | **Mobile:** Flutter + flutter_rust_bridge; push (APNs/FCM — only "you have a message") | separate | 🔒 After MVP |
@@ -310,6 +310,11 @@ impact and effort. Pull items into the phase table when they get scheduled.
 
 ## 14. Status & Next Steps (TODO)
 
+**✅ Done (2026-08-06):**
+- [x] Phase 6.9: emoji reactions (E2EE state-signal envelopes, pills + emoji picker) and quoted replies (tagged plaintext payload `{"kind":"text",..}`, composer reply bar) — both 1:1 and groups, no server changes
+- [x] Phase 6.10: invite links (`whisper://invite?peer=..`, share via clipboard, paste-to-add parsing) and safety numbers (60-digit + 8-hex short tag via SHA-256 over sorted identity keys, QR code, local verified flag)
+- [x] OS-level deep links: `tauri-plugin-deep-link` + `tauri-plugin-single-instance` — clicking a `whisper://` link in a browser opens Whisper with the invite pre-loaded in the Add-contact dialog (Windows: HKCU scheme registration)
+
 **✅ Done (2026-08-05):**
 - [x] Phase 0: workspace, CI (test/clippy/fmt/smoke jobs), AGENTS.md, .gitignore
 - [x] Phase 1: `e2ee-core` (vodozemac) — 48/48 tests
@@ -323,14 +328,14 @@ impact and effort. Pull items into the phase table when they get scheduled.
 - [x] Relay ops: structured logging (`RUST_LOG`-controllable, peer-ID level only) + graceful shutdown on Ctrl+C/SIGTERM
 - [x] Robustness fixes: FIFO→keyed request resolution (get_group_info), error-code→queue routing (stale groups evicted), legacy avatar sync, contact-only group cleanup
 
-**Test counts (2026-08-05):** 277 unit tests — e2ee-core 48, whisper-relay 140,
-whisper-desktop 89; smoke suite 92/92 checks. CI green (4 jobs incl. smoke).
+**Test counts (2026-08-06):** 311 unit tests — e2ee-core 75, whisper-relay 140,
+whisper-desktop 96; smoke suite all green (relay untouched by 6.9/6.10 — both
+features travel inside existing encrypted envelopes).
 
 **⏳ Next up:**
+- [ ] Phase 6.9 follow-up: message editing + delete-for-everyone (E2EE edit/delete receipts)
 - [ ] Deploy the relay to Hetzner (systemd unit ready) → real two-machine E2EE test
 - [ ] Phase 6.5: disappearing messages (per-chat TTL, auto-delete both ends)
-- [ ] Phase 6.9: emoji reactions + quoted replies (backlog item, high priority)
-- [ ] Phase 6.10: invite links + safety-number QR verification
 - [ ] Public repo (open source) once remote testing is solid
 
 ---

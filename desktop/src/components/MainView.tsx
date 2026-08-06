@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { Theme } from "../types";
+import type { QuoteInfo, Theme } from "../types";
 import {
   addGroupMember,
   clearChatHistory,
@@ -7,8 +7,10 @@ import {
   demoteMember,
   exportIdentity,
   getGroupInfo,
+  getPendingDeepLink,
   getSettings,
   importIdentity,
+  onDeepLink,
   promoteMember,
   registerProfile,
   reloadIdentity,
@@ -42,6 +44,15 @@ interface MainViewProps {
   onReset: () => void;
 }
 
+/** Extract the target peer ID from a whisper:// deep link (invite or verify).
+ *  Returns null for anything that is not a well-formed link. */
+function extractPeerIdFromLink(url: string): string | null {
+  const match = url.match(
+    /^whisper:\/\/(?:invite|verify)\?[^]*\bpeer=([0-9a-f]{24})\b/i
+  );
+  return match ? match[1] : null;
+}
+
 export function MainView({ peerId, onReset }: MainViewProps) {
   const { t } = useI18n();
   const { toast } = useToast();
@@ -66,6 +77,9 @@ export function MainView({ peerId, onReset }: MainViewProps) {
   const [newGroupOpen, setNewGroupOpen] = useState(false);
   const [groupInfoGroupId, setGroupInfoGroupId] = useState<string | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  // Pre-fill for the Add-contact dialog: set when a whisper:// deep link or
+  // invite paste opens it, so the target peer is already in the field.
+  const [inviteValue, setInviteValue] = useState("");
   // Peer whose profile dialog is open; null when closed.
   const [profilePeerId, setProfilePeerId] = useState<string | null>(null);
   // Pinned conversations (client-side, persisted per identity in localStorage).
@@ -109,6 +123,31 @@ export function MainView({ peerId, onReset }: MainViewProps) {
   useEffect(() => {
     document.documentElement.dataset.messageScale = messageFontScale;
   }, [messageFontScale]);
+
+  // Deep links: a whisper:// invite that launched the app (drained from the
+  // pending queue) or arrived while running (live event) pre-fills the
+  // Add-contact dialog so the target peer is one click away.
+  useEffect(() => {
+    let disposed = false;
+    let unlisten: (() => void) | undefined;
+    const openInvite = (url: string) => {
+      if (disposed || !extractPeerIdFromLink(url)) return;
+      setInviteValue(url);
+      setAddDialogOpen(true);
+    };
+    void getPendingDeepLink().then((links) => {
+      if (disposed) return;
+      for (const link of links) openInvite(link);
+    });
+    void onDeepLink((url) => openInvite(url)).then((fn) => {
+      if (disposed) fn();
+      else unlisten = fn;
+    });
+    return () => {
+      disposed = true;
+      unlisten?.();
+    };
+  }, []);
 
   // Load persisted settings (relay URL + theme) once on mount so the UI
   // reflects the user's saved choices immediately.
@@ -185,10 +224,10 @@ export function MainView({ peerId, onReset }: MainViewProps) {
   }, []);
 
   const handleSend = useCallback(
-    (text: string) => {
+    (text: string, quote?: QuoteInfo | null) => {
       const active = chat.activePeerId;
       if (!active) return;
-      void chat.sendMessage(active, text);
+      void chat.sendMessage(active, text, quote);
       // Sending ends the draft for this conversation and the typing state.
       setDrafts((prev) =>
         prev[active] !== undefined ? { ...prev, [active]: "" } : prev
@@ -641,6 +680,7 @@ export function MainView({ peerId, onReset }: MainViewProps) {
         isTyping={active ? chat.typing[active.peerId] ?? false : false}
         presence={active ? chat.presence[active.peerId] ?? null : null}
         relayUrl={relayUrl}
+        myPeerId={peerId}
         onSend={handleSend}
         onTypingChange={handleTypingChange}
         enterToSend={enterToSend}
@@ -649,6 +689,14 @@ export function MainView({ peerId, onReset }: MainViewProps) {
           active?.isGroup ? () => setGroupInfoGroupId(active.peerId) : undefined
         }
         onDeleteMessage={handleDeleteMessage}
+        onReact={(messageId, emoji, activeState) =>
+          chat.reactToMessage(
+            chat.activePeerId ?? "",
+            messageId,
+            emoji,
+            activeState
+          )
+        }
         draft={chat.activePeerId ? drafts[chat.activePeerId] ?? "" : ""}
         onDraftChange={handleDraftChange}
       />
@@ -657,6 +705,7 @@ export function MainView({ peerId, onReset }: MainViewProps) {
         onOpenChange={setAddDialogOpen}
         onAdd={handleSendFriendRequest}
         myPeerId={peerId}
+        initialValue={inviteValue}
       />
       <NewGroupDialog
         open={newGroupOpen}

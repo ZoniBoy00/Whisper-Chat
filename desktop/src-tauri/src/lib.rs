@@ -1,11 +1,12 @@
 use std::fs;
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use serde::Serialize;
-use tauri::{Listener, Manager, State};
+use tauri::{Emitter, Listener, Manager, State};
 use tauri_plugin_autostart::ManagerExt;
+use tauri_plugin_deep_link::DeepLinkExt;
 use tokio::sync::Notify;
 
 mod log_buffer;
@@ -30,6 +31,34 @@ fn identity_path(app: &tauri::AppHandle) -> Result<PathBuf, String> {
     }
     let dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
     Ok(dir.join("identity.json"))
+}
+
+/// Incoming `whisper://` deep links that arrived before the webview was ready
+/// (app launched by clicking a link) or while it was booting. The frontend
+/// drains them with `take_pending_deep_link` on startup; live links are also
+/// pushed via the `deep-link` event.
+struct PendingDeepLink(Mutex<Vec<String>>);
+
+/// Drain and return every deep link received so far (app launch or second
+/// instance). The frontend calls this once on startup so a link that opened
+/// the app is never lost to a race with the webview boot.
+#[tauri::command]
+fn take_pending_deep_link(state: State<'_, PendingDeepLink>) -> Vec<String> {
+    match state.0.lock() {
+        Ok(mut pending) => std::mem::take(&mut *pending),
+        Err(_) => Vec::new(),
+    }
+}
+
+/// Forward one deep link to the webview and park it in the pending queue (so
+/// a startup drain can still see it if the webview was not listening yet).
+fn handle_deep_link(app: &tauri::AppHandle, url: String) {
+    if let Some(state) = app.try_state::<PendingDeepLink>() {
+        if let Ok(mut pending) = state.0.lock() {
+            pending.push(url.clone());
+        }
+    }
+    let _ = app.emit("deep-link", url);
 }
 
 /// Report whether a local identity already exists, including its peer ID.
@@ -194,17 +223,64 @@ async fn start_chat(state: State<'_, RelayClient>, peer_id: String) -> Result<()
 
 /// Encrypt and send a message over the established session. `client_id` is a
 /// UI-generated id that travels back inside the emitted `chat-message` event so
-/// the UI can deduplicate optimistic insertions.
+/// the UI can deduplicate optimistic insertions. `quote` makes the message a
+/// quoted reply (the snapshot travels inside the encrypted payload).
 #[tauri::command]
 async fn send_message(
     state: State<'_, RelayClient>,
     peer_id: String,
     text: String,
     client_id: String,
+    quote: Option<e2ee_core::Quote>,
 ) -> Result<(), String> {
     state
-        .send_message(&peer_id, &text, &client_id)
+        .send_message(&peer_id, &text, &client_id, quote)
         .await
+        .map_err(|e| e.to_string())
+}
+
+/// React to a message with an emoji. `active` is the sender's freshly computed
+/// absolute state (true = react, false = unreact) and travels inside the
+/// encrypted payload, so no relay or server changes are involved.
+#[tauri::command]
+async fn send_reaction(
+    state: State<'_, RelayClient>,
+    peer_id: String,
+    message_id: String,
+    emoji: String,
+    active: bool,
+) -> Result<(), String> {
+    state
+        .send_reaction(&peer_id, &message_id, &emoji, active)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// Build a `whisper://invite` link for our own identity (with profile hints).
+#[tauri::command]
+fn get_invite_link(state: State<'_, RelayClient>) -> Result<String, String> {
+    state.get_invite_link().map_err(|e| e.to_string())
+}
+
+/// Compute the safety number shared with `peer_id` plus our verification
+/// state. Fails until the peer's identity key has been learned.
+#[tauri::command]
+fn get_safety_number(
+    state: State<'_, RelayClient>,
+    peer_id: String,
+) -> Result<relay::SafetyNumberInfo, String> {
+    state.get_safety_number(&peer_id).map_err(|e| e.to_string())
+}
+
+/// Set (or clear) the locally-stored verified flag for a contact.
+#[tauri::command]
+fn mark_contact_verified(
+    state: State<'_, RelayClient>,
+    peer_id: String,
+    verified: bool,
+) -> Result<(), String> {
+    state
+        .set_contact_verified(&peer_id, verified)
         .map_err(|e| e.to_string())
 }
 
@@ -653,6 +729,18 @@ pub fn run() {
             tauri_plugin_autostart::MacosLauncher::LaunchAgent,
             None,
         ))
+        // Single instance: opening a `whisper://` link (or launching the app
+        // again) while it is already running forwards the URL to the first
+        // instance instead of spawning a second window.
+        .plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
+            if let Some(url) = args.iter().find(|arg| arg.starts_with("whisper://")) {
+                handle_deep_link(app, url.clone());
+            }
+        }))
+        // Deep links: registers the `whisper://` scheme (Windows: HKCU
+        // Software\Classes\whisper -> our exe "%1") so clicking an invite
+        // link in a browser opens Whisper with the invite pre-loaded.
+        .plugin(tauri_plugin_deep_link::init())
         // Re-injected on every page load so a navigation (or a window that was
         // still booting when the setup hook ran) can never bring the browser
         // menu back.
@@ -691,7 +779,30 @@ pub fn run() {
             init_tracing(&log_buffer);
             app.manage(log_buffer);
 
+            app.manage(PendingDeepLink(Mutex::new(Vec::new())));
+
             app.manage(RelayClient::new(app.handle().clone()));
+
+            // Register the whisper:// scheme (best-effort: in installed
+            // bundles the installer does it; this covers dev/portable runs).
+            // Both `register` and the CLI-argument pickup are best-effort so a
+            // missing registration never blocks the app from starting.
+            let _ = app.deep_link().register("whisper");
+            // The app was launched by clicking a whisper:// link: the plugin
+            // parsed the CLI argument into `get_current()`.
+            if let Ok(Some(urls)) = app.deep_link().get_current() {
+                for url in urls {
+                    handle_deep_link(app.handle(), url.to_string());
+                }
+            }
+            // The app is already running and another instance handed us a URL
+            // (single-instance plugin) or the OS opened one while running.
+            let handle = app.handle().clone();
+            app.deep_link().on_open_url(move |event| {
+                for url in event.urls() {
+                    handle_deep_link(&handle, url.to_string());
+                }
+            });
 
             setup_tray(app.handle())?;
 
@@ -703,10 +814,15 @@ pub fn run() {
             get_identity,
             generate_identity,
             delete_identity,
+            take_pending_deep_link,
             connect_relay,
             publish_prekeys,
             start_chat,
             send_message,
+            send_reaction,
+            get_invite_link,
+            get_safety_number,
+            mark_contact_verified,
             get_chat_state,
             disconnect_relay,
             reset_relay,
