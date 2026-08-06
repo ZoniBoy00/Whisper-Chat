@@ -2,12 +2,14 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ChangeEvent } from "react";
 import {
   ArrowLeftRight,
+  Check,
   Crown,
   ImagePlus,
   Link2,
   Loader2,
   LogOut,
   ShieldCheck,
+  SquarePen,
   Trash2,
   UserMinus,
   UserPlus,
@@ -44,6 +46,8 @@ interface GroupInfoDialogProps {
   myPeerId: string;
   /** Copy the group's shareable join link (any member). */
   onCopyJoinLink: (groupId: string) => Promise<void>;
+  /** Rename the group (owner/admin). */
+  onRenameGroup: (groupId: string, name: string) => Promise<void>;
   onOpenChange: (open: boolean) => void;
   onFetchInfo: (groupId: string) => Promise<GroupInfo>;
   /** Add a member to the group's roster after creation (owner/admin). */
@@ -106,6 +110,7 @@ export function GroupInfoDialog({
   groupId,
   myPeerId,
   onCopyJoinLink,
+  onRenameGroup,
   onOpenChange,
   onFetchInfo,
   onAddMember,
@@ -131,6 +136,9 @@ export function GroupInfoDialog({
   // Add-member input: the Whisper ID of the peer being invited.
   const [addMemberInput, setAddMemberInput] = useState("");
   const [addMemberError, setAddMemberError] = useState<string | null>(null);
+  // Rename-group state (owner/admin).
+  const [renaming, setRenaming] = useState(false);
+  const [nameInput, setNameInput] = useState("");
   // Group-photo upload errors (type / size validation happens client-side).
   const [avatarError, setAvatarError] = useState<string | null>(null);
   // Profiles fetched for roster members the contact list does not know yet.
@@ -377,8 +385,21 @@ export function GroupInfoDialog({
     }
   };
 
-  const handleTransfer = async () => {
-    if (!groupId || !transferTarget) return;
+  /** Rename the group (owner/admin); reloads so the new name shows everywhere. */
+  const handleRenameSubmit = async () => {
+    if (!groupId || !nameInput.trim()) return;
+    setRenaming(false);
+    try {
+      await onRenameGroup(groupId, nameInput.trim());
+      if (groupId) await reload(groupId);
+    } catch (err) {
+      const message = String(err).replace(/^Error:\s*/, "");
+      setError(message);
+      toast(message, "error");
+    }
+  };
+
+  const handleTransfer = async () => {    if (!groupId || !transferTarget) return;
     if (!confirmingTransfer) {
       setConfirmingTransfer(true);
       return;
@@ -444,6 +465,55 @@ export function GroupInfoDialog({
                 </p>
               ) : null}
             </div>
+            {canManage && info ? (
+              renaming ? (
+                <form
+                  className="flex items-center gap-1.5"
+                  onSubmit={(e) => {
+                    e.preventDefault();
+                    void handleRenameSubmit();
+                  }}
+                >
+                  <input
+                    value={nameInput}
+                    onChange={(e) => setNameInput(e.target.value)}
+                    maxLength={64}
+                    autoFocus
+                    aria-label={t("groupInfo.rename_group")}
+                    className="w-40 rounded-lg border border-wp-line/10 bg-wp-panel-3 px-2.5 py-1.5 text-xs text-wp-text outline-none focus:ring-1 focus:ring-wp-accent/50"
+                  />
+                  <button
+                    type="submit"
+                    disabled={!nameInput.trim()}
+                    aria-label={t("common.confirm")}
+                    className="rounded-lg bg-wp-accent p-1.5 text-wp-accent-fg transition hover:bg-wp-accent-strong disabled:opacity-40"
+                  >
+                    <Check className="h-3.5 w-3.5" aria-hidden="true" />
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setRenaming(false)}
+                    aria-label={t("common.cancel")}
+                    className="rounded-lg p-1.5 text-wp-dim transition hover:bg-wp-panel-3 hover:text-wp-text"
+                  >
+                    <X className="h-3.5 w-3.5" aria-hidden="true" />
+                  </button>
+                </form>
+              ) : (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setNameInput(info.name ?? "");
+                    setRenaming(true);
+                  }}
+                  title={t("groupInfo.rename_group")}
+                  aria-label={t("groupInfo.rename_group")}
+                  className="shrink-0 rounded-lg p-1.5 text-wp-dim transition hover:bg-wp-panel-3 hover:text-wp-text"
+                >
+                  <SquarePen className="h-4 w-4" aria-hidden="true" />
+                </button>
+              )
+            ) : null}
           </div>
           <button
             type="button"

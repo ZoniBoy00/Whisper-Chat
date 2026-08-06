@@ -15,6 +15,9 @@ interface MessageBubbleProps {
   onContextMenu?: (event: MouseEvent<HTMLDivElement>) => void;
   /** Clicking an existing reaction pill toggles it (React / un-react). */
   onReact?: (message: Message, emoji: string) => void;
+  /** Group chats: every other member has read this outgoing message (blue
+   *  tick even though there is no 1:1 read receipt for groups). */
+  readAll?: boolean;
   /** Active in-chat search query; empty disables highlighting. */
   searchQuery?: string;
   /** The exact match range (inside this message's text) that is the active
@@ -81,6 +84,7 @@ export function MessageBubble({
   animate = false,
   onContextMenu,
   onReact,
+  readAll = false,
   searchQuery = "",
   searchActiveRange = null,
 }: MessageBubbleProps) {
@@ -105,12 +109,29 @@ export function MessageBubble({
     }
   };
   // Read receipts: "sent" = single gray tick, "delivered" = double gray tick,
-  // "read" = double blue tick.
-  const read = outgoing && message.status === "read";
+  // "read" = double blue tick. Groups use readAll (every member read it).
+  const read = outgoing && (message.status === "read" || readAll);
   const delivered = outgoing && message.status === "delivered";
   const doubleTick = read || delivered;
   const StatusIcon = doubleTick ? CheckCheck : Check;
   const reactions = groupReactions(message, myPeerId);
+
+  // System events (member joined/left) render as a centered pill, not a bubble.
+  if (message.system) {
+    return (
+      <div className={cx("flex justify-center", animate && "animate-msg-in")}>
+        <span className="max-w-full rounded-full bg-wp-panel-2/80 px-3 py-1 text-center text-[11px] font-medium text-wp-faint shadow-sm ring-1 ring-wp-line/10">
+          {message.system.kind === "joined"
+            ? t("chat.member_joined", {
+                name: shortPeerId(message.system.peer_id, 16),
+              })
+            : t("chat.member_left", {
+                name: shortPeerId(message.system.peer_id, 16),
+              })}
+        </span>
+      </div>
+    );
+  }
 
   return (
     <div

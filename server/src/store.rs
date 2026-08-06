@@ -639,6 +639,15 @@ impl Store {
         .unwrap_or(None)
     }
 
+    /// Rename a group (owner/admin). Returns the number of rows changed.
+    pub fn rename_group(&self, group_id: &str, name: &str) -> SqlResult<usize> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "UPDATE groups SET name = ?1 WHERE id = ?2",
+            params![name, group_id],
+        )
+    }
+
     /// Add `peer_id` to a group's membership with the default "member" role.
     /// Idempotent: adding an existing member is a no-op.
     pub fn add_group_member(&self, group_id: &str, peer_id: &str, joined_at: i64) -> SqlResult<()> {

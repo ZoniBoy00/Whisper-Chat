@@ -357,6 +357,8 @@ enum ClientMessage {
     GetGroupJoinLink { group_id: String },
     #[serde(rename = "join_group")]
     JoinGroup { group_id: String, token: String },
+    #[serde(rename = "rename_group")]
+    RenameGroup { group_id: String, name: String },
 }
 
 /// Messages the SERVER sends to the client (matches `server/src/relay.rs`).
@@ -526,6 +528,8 @@ enum ServerMessage {
         group_id: String,
         group_name: String,
     },
+    #[serde(rename = "group_renamed")]
+    GroupRenamed { group_id: String, name: String },
     /// A protocol error code.
     Error { code: String },
 }
@@ -617,6 +621,16 @@ pub struct GroupUpdatedEvent {
     pub group_id: String,
 }
 
+/// Payload of the `message-read-by` event emitted when another member reads
+/// one of our group messages. The UI flips the tick blue once every member
+/// has read it.
+#[derive(Debug, Clone, Serialize)]
+pub struct MessageReadByEvent {
+    pub group_id: String,
+    pub message_id: String,
+    pub read_by_count: usize,
+}
+
 /// A message in a shape the UI can render directly.
 #[derive(Debug, Clone, Serialize)]
 pub struct UIMessage {
@@ -637,6 +651,14 @@ pub struct UIMessage {
     /// Emoji reactions attached to this message, oldest first.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub reactions: Vec<ReactionView>,
+    /// System event (member joined/left), rendered as a centered pill.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub system: Option<SystemInfo>,
+    /// Peer IDs that have read this outgoing group message (group read
+    /// receipts). In-memory only; the UI renders a blue tick when every other
+    /// member has read it.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub read_by: Vec<String>,
 }
 
 /// One emoji reaction attached to a message by a peer.
@@ -646,6 +668,17 @@ pub struct ReactionView {
     pub sender: String,
     /// The reaction emoji.
     pub emoji: String,
+}
+
+/// A system event rendered as a centered pill in the chat (WhatsApp-style
+/// "X joined the group" / "X left the group"). Local, non-E2EE metadata that
+/// every member derives from the same roster pushes.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SystemInfo {
+    /// "joined" or "left".
+    pub kind: String,
+    /// The peer ID the event is about.
+    pub peer_id: String,
 }
 
 /// Payload of the `message-reaction` event emitted when a reaction is applied.
@@ -1893,6 +1926,9 @@ impl RelayClient {
                 group_id,
                 group_name,
             } => self.handle_group_join_ok(&group_id, &group_name),
+            ServerMessage::GroupRenamed { group_id, name } => {
+                self.handle_group_renamed(&group_id, &name)
+            }
             ServerMessage::Error { code } => {
                 // Route the error to the queue that actually owns the failed
                 // request. A blind "oldest waiter across every queue" fallback
@@ -2133,6 +2169,7 @@ impl RelayClient {
                         Ok(None)
                     }
                     ParsedPayload::Typing(_) => Ok(None),
+                    ParsedPayload::Read(_) => Ok(None),
                 }
             }
             EnvelopeContent::Message(message) => {
@@ -2207,6 +2244,7 @@ impl RelayClient {
                     // unexpected (1:1 typing uses the receipt channel); ignore
                     // it defensively.
                     ParsedPayload::Typing(_) => Ok(None),
+                    ParsedPayload::Read(_) => Ok(None),
                 }
             }
             // A bundle is published, never delivered as a chat envelope.
@@ -2591,6 +2629,8 @@ impl RelayClient {
             status: "delivered".to_string(),
             quote,
             reactions: Vec::new(),
+            system: None,
+            read_by: Vec::new(),
         };
         self.ensure_contact(peer_id)?;
         write_guard(&self.inner.messages)?
@@ -2650,6 +2690,8 @@ impl RelayClient {
             status: "sent".to_string(),
             quote,
             reactions: Vec::new(),
+            system: None,
+            read_by: Vec::new(),
         };
         write_guard(&self.inner.messages)?
             .entry(peer_id.to_string())
@@ -3284,6 +3326,8 @@ mod tests {
                 status: "sent".into(),
                 quote: None,
                 reactions: Vec::new(),
+                system: None,
+                read_by: Vec::new(),
             }],
         );
 
@@ -3306,6 +3350,8 @@ mod tests {
                 status: "sent".into(),
                 quote: None,
                 reactions: Vec::new(),
+                system: None,
+                read_by: Vec::new(),
             }],
         );
 
@@ -3329,6 +3375,8 @@ mod tests {
                 status: "read".into(),
                 quote: None,
                 reactions: Vec::new(),
+                system: None,
+                read_by: Vec::new(),
             }],
         );
 
@@ -3349,6 +3397,8 @@ mod tests {
                 status: "delivered".into(),
                 quote: None,
                 reactions: Vec::new(),
+                system: None,
+                read_by: Vec::new(),
             }],
         );
 
@@ -3448,6 +3498,8 @@ mod tests {
                 sender: "bob".into(),
                 emoji: "🔥".into(),
             }],
+            system: None,
+            read_by: Vec::new(),
         };
         let json = serde_json::to_value(&message).expect("serialize");
         assert_eq!(json["quote"]["message_id"], "m-0");
@@ -3465,6 +3517,8 @@ mod tests {
             status: "sent".into(),
             quote: None,
             reactions: Vec::new(),
+            system: None,
+            read_by: Vec::new(),
         };
         let json = serde_json::to_value(&message).expect("serialize");
         assert!(json.get("quote").is_none(), "absent quote must be skipped");

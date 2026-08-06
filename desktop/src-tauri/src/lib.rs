@@ -356,6 +356,19 @@ async fn join_group_by_link(
         .map_err(|e| e.to_string())
 }
 
+/// Rename a group (owner/admin only).
+#[tauri::command]
+async fn rename_group(
+    state: State<'_, RelayClient>,
+    group_id: String,
+    name: String,
+) -> Result<(), String> {
+    state
+        .rename_group(&group_id, &name)
+        .await
+        .map_err(|e| e.to_string())
+}
+
 /// Snapshot of identity, connection, contacts and messages for the UI.
 #[tauri::command]
 async fn get_chat_state(state: State<'_, RelayClient>) -> Result<ChatState, String> {
@@ -1144,6 +1157,7 @@ pub fn run() {
             get_group_invites,
             get_group_join_link,
             join_group_by_link,
+            rename_group,
             get_chat_state,
             disconnect_relay,
             reset_relay,

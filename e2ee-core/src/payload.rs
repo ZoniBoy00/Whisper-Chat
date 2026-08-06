@@ -37,6 +37,8 @@ pub enum ParsedPayload {
     Reaction(ReactionPayload),
     /// A group typing indicator.
     Typing(TypingPayload),
+    /// A group read receipt.
+    Read(ReadPayload),
 }
 
 /// The tagged wire form of a modern payload. The `kind` field selects the
@@ -51,6 +53,8 @@ pub enum ChatPayload {
     Reaction(ReactionPayload),
     /// A group typing indicator.
     Typing(TypingPayload),
+    /// A group read receipt.
+    Read(ReadPayload),
 }
 
 /// An ordinary text message with an optional quoted reply context.
@@ -167,6 +171,25 @@ impl TypingPayload {
     }
 }
 
+/// A group read receipt. Travels inside a Megolm-encrypted group envelope so
+/// every member can count how many peers have read a message. The `message_id`
+/// is the SENDER's id (the one embedded in the text payload), which is shared
+/// across all recipients.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReadPayload {
+    /// The id of the read message (the sender's id).
+    pub message_id: String,
+}
+
+impl ReadPayload {
+    /// Create a read receipt for `message_id`.
+    pub fn new(message_id: impl Into<String>) -> Self {
+        Self {
+            message_id: message_id.into(),
+        }
+    }
+}
+
 /// Default for [`ReactionPayload::active`]: a payload without the field (older
 /// senders) is treated as "reaction present".
 fn default_reaction_active() -> bool {
@@ -198,6 +221,7 @@ pub fn parse_plaintext(bytes: &[u8]) -> ParsedPayload {
             ChatPayload::Text(text) => ParsedPayload::Text(text),
             ChatPayload::Reaction(reaction) => ParsedPayload::Reaction(reaction),
             ChatPayload::Typing(typing) => ParsedPayload::Typing(typing),
+            ChatPayload::Read(read) => ParsedPayload::Read(read),
         };
     }
     let text = String::from_utf8_lossy(bytes).to_string();
@@ -220,7 +244,7 @@ mod tests {
                 assert_eq!(text.text, "hello");
                 assert_eq!(text.quote, None);
             }
-            ChatPayload::Reaction(_) | ChatPayload::Typing(_) => panic!("expected text payload"),
+            ChatPayload::Reaction(_) | ChatPayload::Typing(_) | ChatPayload::Read(_) => panic!("expected text payload"),
         }
     }
 
@@ -319,7 +343,7 @@ mod tests {
                 assert_eq!(text.text, "just some text");
                 assert_eq!(text.quote, None);
             }
-            ParsedPayload::Reaction(_) | ParsedPayload::Typing(_) => panic!("expected text"),
+            ParsedPayload::Reaction(_) | ParsedPayload::Typing(_) | ParsedPayload::Read(_) => panic!("expected text"),
         }
     }
 
@@ -333,7 +357,7 @@ mod tests {
                 assert_eq!(quote.message_id, "m1");
                 assert_eq!(quote.sender_name.as_deref(), Some("Bob"));
             }
-            ParsedPayload::Reaction(_) | ParsedPayload::Typing(_) => panic!("expected text"),
+            ParsedPayload::Reaction(_) | ParsedPayload::Typing(_) | ParsedPayload::Read(_) => panic!("expected text"),
         }
     }
 
@@ -345,7 +369,7 @@ mod tests {
                 assert_eq!(text.text, "hi");
                 assert_eq!(text.quote, None);
             }
-            ParsedPayload::Reaction(_) | ParsedPayload::Typing(_) => panic!("expected text"),
+            ParsedPayload::Reaction(_) | ParsedPayload::Typing(_) | ParsedPayload::Read(_) => panic!("expected text"),
         }
     }
 
@@ -359,7 +383,7 @@ mod tests {
             ChatPayload::Text(text) => {
                 assert_eq!(text.message_id.as_deref(), Some("out-7"));
             }
-            ChatPayload::Reaction(_) | ChatPayload::Typing(_) => panic!("expected text"),
+            ChatPayload::Reaction(_) | ChatPayload::Typing(_) | ChatPayload::Read(_) => panic!("expected text"),
         }
     }
 
@@ -370,7 +394,7 @@ mod tests {
             ParsedPayload::Text(text) => {
                 assert_eq!(text.message_id.as_deref(), Some("9f8e-3ab"));
             }
-            ParsedPayload::Reaction(_) | ParsedPayload::Typing(_) => panic!("expected text"),
+            ParsedPayload::Reaction(_) | ParsedPayload::Typing(_) | ParsedPayload::Read(_) => panic!("expected text"),
         }
     }
 
@@ -378,7 +402,7 @@ mod tests {
     fn legacy_raw_text_has_no_message_id() {
         match parse_plaintext(b"plain legacy text") {
             ParsedPayload::Text(text) => assert_eq!(text.message_id, None),
-            ParsedPayload::Reaction(_) | ParsedPayload::Typing(_) => panic!("expected text"),
+            ParsedPayload::Reaction(_) | ParsedPayload::Typing(_) | ParsedPayload::Read(_) => panic!("expected text"),
         }
     }
 
@@ -424,6 +448,23 @@ mod tests {
     }
 
     #[test]
+    fn read_payload_roundtrips_and_parses() {
+        let payload = ChatPayload::Read(ReadPayload::new("out-7"));
+        let json = serde_json::to_string(&payload).expect("serialize");
+        let restored: ChatPayload = serde_json::from_str(&json).expect("deserialize");
+        match restored {
+            ChatPayload::Read(read) => assert_eq!(read.message_id, "out-7"),
+            _ => panic!("expected read"),
+        }
+
+        let bytes = "{\"kind\":\"read\",\"message_id\":\"out-7\"}".as_bytes();
+        match parse_plaintext(bytes) {
+            ParsedPayload::Read(read) => assert_eq!(read.message_id, "out-7"),
+            _ => panic!("expected read payload"),
+        }
+    }
+
+    #[test]
     fn parse_unknown_kind_falls_back_to_raw_text() {
         // A future payload kind must degrade to raw text, never crash.
         let bytes = br#"{"kind":"voice_message","data":"xyz"}"#;
@@ -432,7 +473,7 @@ mod tests {
                 assert_eq!(text.text, r#"{"kind":"voice_message","data":"xyz"}"#);
                 assert_eq!(text.quote, None);
             }
-            ParsedPayload::Reaction(_) | ParsedPayload::Typing(_) => panic!("expected text"),
+            ParsedPayload::Reaction(_) | ParsedPayload::Typing(_) | ParsedPayload::Read(_) => panic!("expected text"),
         }
     }
 
@@ -444,7 +485,7 @@ mod tests {
             br#"{"kind":"group_key","group_id":"g-1","session_key":"abc","group_name":"Squad"}"#;
         match parse_plaintext(bytes) {
             ParsedPayload::Text(text) => assert_eq!(text.quote, None),
-            ParsedPayload::Reaction(_) | ParsedPayload::Typing(_) => panic!("expected text"),
+            ParsedPayload::Reaction(_) | ParsedPayload::Typing(_) | ParsedPayload::Read(_) => panic!("expected text"),
         }
     }
 
@@ -455,7 +496,7 @@ mod tests {
             ParsedPayload::Text(text) => {
                 assert!(text.text.contains("broken"));
             }
-            ParsedPayload::Reaction(_) | ParsedPayload::Typing(_) => panic!("expected text"),
+            ParsedPayload::Reaction(_) | ParsedPayload::Typing(_) | ParsedPayload::Read(_) => panic!("expected text"),
         }
     }
 
@@ -467,7 +508,7 @@ mod tests {
                 // Invalid bytes become U+FFFD replacement characters.
                 assert!(text.text.contains('\u{FFFD}'));
             }
-            ParsedPayload::Reaction(_) | ParsedPayload::Typing(_) => panic!("expected text"),
+            ParsedPayload::Reaction(_) | ParsedPayload::Typing(_) | ParsedPayload::Read(_) => panic!("expected text"),
         }
     }
 
@@ -477,7 +518,7 @@ mod tests {
         let bytes = br#"{"hello":"world"}"#;
         match parse_plaintext(bytes) {
             ParsedPayload::Text(text) => assert_eq!(text.text, r#"{"hello":"world"}"#),
-            ParsedPayload::Reaction(_) | ParsedPayload::Typing(_) => panic!("expected text"),
+            ParsedPayload::Reaction(_) | ParsedPayload::Typing(_) | ParsedPayload::Read(_) => panic!("expected text"),
         }
     }
 }

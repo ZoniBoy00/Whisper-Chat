@@ -344,6 +344,16 @@ impl RelayClient {
         .await
     }
 
+    /// Rename the group (owner/admin). The relay fans the new name to every
+    /// member; refresh the roster so the chat list updates immediately.
+    pub async fn rename_group(&self, group_id: &str, name: &str) -> Result<(), RelayError> {
+        self.group_op(ClientMessage::RenameGroup {
+            group_id: group_id.to_string(),
+            name: name.to_string(),
+        })
+        .await
+    }
+
     /// Send a promote/demote/remove/leave request and wait for its
     /// confirmation, then refresh the cached roster so the UI reflects the new
     /// membership immediately.
@@ -753,13 +763,83 @@ impl RelayClient {
                 );
                 Ok(None)
             }
-            e2ee_core::ParsedPayload::Text(text) => Ok(Some(self.record_incoming(
-                group_id,
-                text.text,
-                text.quote,
-                text.message_id,
-            )?)),
+            e2ee_core::ParsedPayload::Read(read) => {
+                // A member read one of our (or another member's) group
+                // messages: count them so the sender's tick turns blue.
+                self.apply_read_by(group_id, &read.message_id, &wire.sender_peer_id)?;
+                Ok(None)
+            }
+            e2ee_core::ParsedPayload::Text(text) => {
+                // Acknowledge end-to-end: tell the sender we read their group
+                // message. Best-effort like 1:1 receipts.
+                if let Some(message_id) = &text.message_id {
+                    let _ = self.send_group_read_receipt(group_id, message_id);
+                }
+                Ok(Some(self.record_incoming(
+                    group_id,
+                    text.text,
+                    text.quote,
+                    text.message_id,
+                )?))
+            }
         }
+    }
+
+    /// Megolm-encrypt a group read receipt (we read `message_id`) and fan it
+    /// out to every member. Best-effort, never recorded.
+    pub(crate) fn send_group_read_receipt(
+        &self,
+        group_id: &str,
+        message_id: &str,
+    ) -> Result<(), RelayError> {
+        let payload = e2ee_core::ChatPayload::Read(e2ee_core::ReadPayload::new(message_id));
+        let bytes = serde_json::to_vec(&payload)?;
+        self.send_group_payload(
+            group_id,
+            &bytes,
+            GroupSend {
+                record: false,
+                client_id: String::new(),
+                quote: None,
+                message_id: None,
+                display_text: None,
+            },
+        )
+    }
+
+    /// Record that `reader` has read the group message `message_id` and notify
+    /// the UI (which flips the tick blue once every other member has read it).
+    fn apply_read_by(
+        &self,
+        group_id: &str,
+        message_id: &str,
+        reader: &str,
+    ) -> Result<(), RelayError> {
+        let count = {
+            let mut messages = write_guard(&self.inner.messages)?;
+            let thread = messages.entry(group_id.to_string()).or_default();
+            let message = thread.iter_mut().find(|m| m.id == message_id);
+            match message {
+                Some(message)
+                    if message.outgoing && !message.read_by.iter().any(|r| r == reader) =>
+                {
+                    message.read_by.push(reader.to_string());
+                    message.read_by.len()
+                }
+                _ => 0,
+            }
+        };
+        if count > 0 {
+            let _ = self.inner.app.emit(
+                "message-read-by",
+                MessageReadByEvent {
+                    group_id: group_id.to_string(),
+                    message_id: message_id.to_string(),
+                    read_by_count: count,
+                },
+            );
+        }
+        Ok(())
     }
 
     /// Decrypt a Megolm ciphertext with the inbound session built from that
@@ -1024,7 +1104,52 @@ impl RelayClient {
                 tracing::warn!(group = %group, member = %member, error = %err, "failed to share group key to new member");
             }
         });
+        // WhatsApp-style system message: "X joined the group".
+        if peer_id != self.my_peer_id()? {
+            self.add_system_message(group_id, "joined", peer_id)?;
+        }
         self.emit_group_updated(group_id);
+        Ok(())
+    }
+
+    /// Record a WhatsApp-style system event (member joined/left) into the
+    /// group's thread and surface it to the UI.
+    fn add_system_message(
+        &self,
+        group_id: &str,
+        kind: &str,
+        peer_id: &str,
+    ) -> Result<(), RelayError> {
+        let message = UIMessage {
+            id: format!(
+                "sys-{}",
+                self.inner.next_msg_id.fetch_add(1, Ordering::SeqCst)
+            ),
+            text: String::new(),
+            outgoing: false,
+            timestamp: now_millis(),
+            status: "delivered".to_string(),
+            quote: None,
+            reactions: Vec::new(),
+            system: Some(SystemInfo {
+                kind: kind.to_string(),
+                peer_id: peer_id.to_string(),
+            }),
+            read_by: Vec::new(),
+        };
+        write_guard(&self.inner.messages)?
+            .entry(group_id.to_string())
+            .or_default()
+            .push(message.clone());
+        self.persist_message(group_id, &message, None)?;
+        self.persist_next_msg_id()?;
+        let _ = self.inner.app.emit(
+            "chat-message",
+            ChatMessageEvent {
+                peer_id: group_id.to_string(),
+                message,
+            },
+        );
         Ok(())
     }
 
@@ -1076,6 +1201,36 @@ impl RelayClient {
                 group.members.retain(|m| m.peer_id != peer_id);
             }
         }
+        if let Some(tx) = mutex_guard(&self.inner.pending_group_op)?.pop_front() {
+            let _ = tx.send(Ok(()));
+        }
+        // WhatsApp-style system message: "X left the group". The leaver itself
+        // is dropping the group, so only other members get the event.
+        if peer_id != self.my_peer_id()? {
+            self.add_system_message(group_id, "left", peer_id)?;
+        }
+        self.emit_group_updated(group_id);
+        Ok(())
+    }
+
+    /// A `group_renamed` push: update the cached name (and the persisted
+    /// metadata, keeping the avatar), resolve the in-flight request and wake
+    /// the UI so the chat list and header show the new name.
+    pub(crate) fn handle_group_renamed(
+        &self,
+        group_id: &str,
+        name: &str,
+    ) -> Result<(), RelayError> {
+        let avatar = {
+            let groups = read_guard(&self.inner.groups)?;
+            groups.get(group_id).and_then(|g| g.avatar_url.clone())
+        };
+        if let Ok(mut groups) = write_guard(&self.inner.groups) {
+            if let Some(group) = groups.get_mut(group_id) {
+                group.name = name.to_string();
+            }
+        }
+        self.persist_group_meta(group_id, name, avatar.as_deref());
         if let Some(tx) = mutex_guard(&self.inner.pending_group_op)?.pop_front() {
             let _ = tx.send(Ok(()));
         }
