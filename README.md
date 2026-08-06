@@ -61,11 +61,14 @@ sender and the recipient can read them.
 - **Offline delivery** — SQLite-backed offline queue with a 7-day TTL and
   `fetch_since` sync, so you never miss a message while away.
 - **Encrypted local history** — messages, sessions, contacts and settings
-  persist in a keyed SQLite store across restarts. The store is
-  SQLCipher-encrypted **when the build ships the SQLCipher codec** (detected
-  at runtime via `PRAGMA cipher_version`); the stock `bundled` SQLite build
-  used on Windows-MSVC is unencrypted at rest. Enabling the SQLCipher feature
-  is tracked on the roadmap.
+  persist in a **SQLCipher-encrypted** SQLite store across restarts. The key is
+  derived from the identity (SHA-256 of the identity pickle) and never leaves
+  the device; SQLCipher + OpenSSL are statically linked into the binary, so
+  users need no extra installs. The codec is detected at runtime via
+  `PRAGMA cipher_version` and the database is keyed transparently.
+- **Group key rotation** — Megolm group keys rotate every 200 messages
+  (backward secrecy): a leaked key can only decrypt messages up to the
+  rotation, never anything after it.
 - **Rate limiting & DoS guards** — per-IP token bucket (60/min default) and an
   8 MiB envelope size cap.
 - **Modern dark UI** — clean, minimalist, Signal/Telegram-grade desktop shell
