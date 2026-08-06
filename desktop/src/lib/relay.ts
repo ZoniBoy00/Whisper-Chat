@@ -503,6 +503,16 @@ export function onGroupRemoved(
   );
 }
 
+/** Subscribe to group roster changes (member count/roles) so the chat list
+ *  stays current without a full refresh. Returns an unlisten function. */
+export function onGroupUpdated(
+  handler: (event: { group_id: string }) => void
+): Promise<UnlistenFn> {
+  return listen<{ group_id: string }>("group-updated", (event) =>
+    handler(event.payload)
+  );
+}
+
 /** Subscribe to new incoming friend requests. Returns an unlisten function. */
 export function onFriendRequest(
   handler: (event: FriendRequestEvent) => void

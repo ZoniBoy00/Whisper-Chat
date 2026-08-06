@@ -39,7 +39,12 @@ impl RelayClient {
         tokio::time::timeout(PREKEY_FETCH_TIMEOUT, rx)
             .await
             .map_err(|_| RelayError::GroupTimeout)?
-            .map_err(|_| RelayError::GroupRequestFailed)?
+            .map_err(|_| RelayError::GroupRequestFailed)??;
+        // We were not a member while the invite was pending, so the group is
+        // not in our local roster yet — fetch it so the chat list shows it
+        // with the correct member count.
+        let _ = self.get_group_info(group_id).await;
+        Ok(())
     }
 
     /// Decline a pending invite to `group_id`.

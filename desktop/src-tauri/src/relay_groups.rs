@@ -1020,6 +1020,7 @@ impl RelayClient {
                 tracing::warn!(group = %group, member = %member, error = %err, "failed to share group key to new member");
             }
         });
+        self.emit_group_updated(group_id);
         Ok(())
     }
 
@@ -1074,7 +1075,19 @@ impl RelayClient {
         if let Some(tx) = mutex_guard(&self.inner.pending_group_op)?.pop_front() {
             let _ = tx.send(Ok(()));
         }
+        self.emit_group_updated(group_id);
         Ok(())
+    }
+
+    /// Notify the UI that a group's roster changed (member count/roles), so it
+    /// can refresh the chat list without waiting for the next full refresh.
+    fn emit_group_updated(&self, group_id: &str) {
+        let _ = self.inner.app.emit(
+            "group-updated",
+            GroupUpdatedEvent {
+                group_id: group_id.to_string(),
+            },
+        );
     }
 
     /// A `group_info` reply caches the fresh roster for the chat list / group
@@ -1155,6 +1168,7 @@ impl RelayClient {
         if let Some(tx) = mutex_guard(&self.inner.pending_group_op)?.pop_front() {
             let _ = tx.send(Ok(()));
         }
+        self.emit_group_updated(group_id);
         Ok(())
     }
 
@@ -1169,6 +1183,7 @@ impl RelayClient {
         if let Some(tx) = mutex_guard(&self.inner.pending_group_op)?.pop_front() {
             let _ = tx.send(Ok(()));
         }
+        self.emit_group_updated(group_id);
         Ok(())
     }
 
@@ -1183,6 +1198,7 @@ impl RelayClient {
         if let Some(tx) = mutex_guard(&self.inner.pending_group_op)?.pop_front() {
             let _ = tx.send(Ok(()));
         }
+        self.emit_group_updated(group_id);
         Ok(())
     }
 
@@ -1220,6 +1236,7 @@ impl RelayClient {
         if let Some(tx) = mutex_guard(&self.inner.pending_group_op)?.pop_front() {
             let _ = tx.send(Ok(()));
         }
+        self.emit_group_updated(group_id);
         Ok(())
     }
 

@@ -564,6 +564,7 @@ async fn send_typing(
 ) -> Result<(), String> {
     state
         .send_typing(&peer_id, is_typing)
+        .await
         .map_err(|e| e.to_string())
 }
 

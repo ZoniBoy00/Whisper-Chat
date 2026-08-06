@@ -105,17 +105,16 @@ export function MessageBubble({
   const [pickerClamped, setPickerClamped] = useState<{ x: number; y: number } | null>(null);
 
   const togglePicker = () => {
-    setPickerOpen((open) => {
-      const next = !open;
-      if (next && bubbleRef.current) {
-        const rect = bubbleRef.current.getBoundingClientRect();
-        setPickerPos({
-          x: rect.left + rect.width / 2,
-          y: rect.top,
-        });
-      }
-      return next;
-    });
+    const next = !pickerOpen;
+    setPickerOpen(next);
+    if (next && bubbleRef.current) {
+      const rect = bubbleRef.current.getBoundingClientRect();
+      setPickerPos({
+        x: rect.left + rect.width / 2,
+        y: rect.top,
+      });
+      setPickerClamped(null);
+    }
   };
 
   // Measure the picker once and clamp it to the viewport so it never gets cut
