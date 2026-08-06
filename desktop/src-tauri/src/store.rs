@@ -169,7 +169,8 @@ impl ChatStore {
                 client_id TEXT,
                 quote_json TEXT,
                 system_json TEXT,
-                expires_at INTEGER
+                expires_at INTEGER,
+                edited INTEGER NOT NULL DEFAULT 0
             );
             CREATE INDEX IF NOT EXISTS idx_messages_peer_timestamp
                 ON messages (peer_id, timestamp);
@@ -270,6 +271,12 @@ impl ChatStore {
             "CREATE INDEX IF NOT EXISTS idx_messages_expires_at
              ON messages (expires_at);",
         )?;
+        // Migration: `messages` gained an `edited` flag for edited messages.
+        if !message_columns.iter().any(|c| c.as_str() == "edited") {
+            conn.execute_batch(
+                "ALTER TABLE messages ADD COLUMN edited INTEGER NOT NULL DEFAULT 0;",
+            )?;
+        }
 
         // Migration: `contacts` gained `curve25519_key` (for safety numbers)
         // and `verified` (contact verification state).
@@ -428,8 +435,8 @@ impl ChatStore {
         let conn = self.conn()?;
         conn.execute(
             "INSERT INTO messages
-                 (id, peer_id, text, outgoing, timestamp, status, client_id, quote_json, system_json, expires_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+                 (id, peer_id, text, outgoing, timestamp, status, client_id, quote_json, system_json, expires_at, edited)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
              ON CONFLICT(id) DO UPDATE SET
                  peer_id   = excluded.peer_id,
                  text      = excluded.text,
@@ -439,7 +446,8 @@ impl ChatStore {
                  client_id = excluded.client_id,
                  quote_json = excluded.quote_json,
                  system_json = excluded.system_json,
-                 expires_at = excluded.expires_at",
+                 expires_at = excluded.expires_at,
+                 edited     = excluded.edited",
             params![
                 message.id,
                 peer_id,
@@ -450,8 +458,20 @@ impl ChatStore {
                 client_id,
                 quote_json,
                 system_json,
-                message.expires_at.map(|millis| millis as i64)
+                message.expires_at.map(|millis| millis as i64),
+                message.edited as i64
             ],
+        )?;
+        Ok(())
+    }
+
+    /// Replace a message's text and mark it edited (edit-for-everyone). The
+    /// id is the SENDER's shared message id. No-op when the row is gone.
+    pub fn edit_message(&self, id: &str, new_text: &str) -> Result<(), StoreError> {
+        let conn = self.conn()?;
+        conn.execute(
+            "UPDATE messages SET text = ?1, edited = 1 WHERE id = ?2",
+            params![new_text, id],
         )?;
         Ok(())
     }
@@ -605,7 +625,7 @@ impl ChatStore {
         let reactions = self.reactions_for(peer_id)?;
         let conn = self.conn()?;
         let mut stmt = conn.prepare(
-            "SELECT id, text, outgoing, timestamp, status, quote_json, system_json, expires_at
+            "SELECT id, text, outgoing, timestamp, status, quote_json, system_json, expires_at, edited
              FROM messages WHERE peer_id = ?1
              ORDER BY timestamp, id",
         )?;
@@ -629,8 +649,9 @@ impl ChatStore {
                 quote,
                 reactions: Vec::new(), // hydrated below
                 system,
-                read_by: Vec::new(),
+                read_by: Vec::new(), // not persisted; re-derived from receipts
                 expires_at: row.get::<_, Option<i64>>(7)?.map(|millis| millis as u64),
+                edited: row.get::<_, bool>(8)?,
             })
         })?;
         let mut messages = Vec::new();
@@ -849,6 +870,7 @@ mod tests {
             system: None,
             read_by: Vec::new(),
             expires_at: None,
+            edited: false,
         }
     }
 

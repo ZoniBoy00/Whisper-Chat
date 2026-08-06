@@ -23,7 +23,9 @@ import {
   connectRelay,
   declineFriendRequest as relayDeclineFriendRequest,
   declineGroupInvite as relayDeclineGroupInvite,
+  deleteForEveryoneCommand,
   deleteMessage as relayDeleteMessage,
+  editMessageCommand,
   getChatState,
   getFriendRequests,
   getGroupInvites,
@@ -41,6 +43,7 @@ import {
   onMessageReadBy,  onMessageReaction,
   onMessageStatus,
   onMessageDeleted,
+  onMessageEdited,
   onPresence,
   onReconnecting,
   onRelayStatus,
@@ -189,6 +192,10 @@ export interface ChatStateApi {
   declineFriendRequest: (peerId: string) => Promise<void>;
   updatePresence: (peerId: string, info: PresenceInfo) => void;
   deleteMessage: (peerId: string, messageId: string) => Promise<void>;
+  /** Edit one of our own messages: replace its text on every device. */
+  editMessage: (peerId: string, messageId: string, newText: string) => Promise<void>;
+  /** Delete one of our own messages on every device. */
+  deleteForEveryone: (peerId: string, messageId: string) => Promise<void>;
   /** Remove the caller from a group and drop it from every local list. */
   leaveGroup: (groupId: string) => Promise<void>;
   /** Confirm we still have access to a group; drops it locally when not. */
@@ -456,6 +463,24 @@ export function useChatState({
           });
         })
       );
+      // Message edits: replace the target's text and mark it edited so the
+      // "(edited)" marker appears on every device.
+      const messageEditedUnlisten = await register(() =>
+        onMessageEdited(({ peer_id, message_id, text }) => {
+          if (disposed) return;
+          setMessages((prev) => {
+            const list = prev[peer_id];
+            if (!list) return prev;
+            let changed = false;
+            const next = list.map((m) => {
+              if (m.id !== message_id) return m;
+              changed = true;
+              return { ...m, text, edited: true };
+            });
+            return changed ? { ...prev, [peer_id]: next } : prev;
+          });
+        })
+      );
       const typingUnlisten = await register(() =>
         onTyping(({ peer_id, is_typing, sender }) => {
           if (disposed) return;
@@ -708,6 +733,7 @@ export function useChatState({
         !reconnectingUnlisten ||
         !messageStatusUnlisten ||
         !messageDeletedUnlisten ||
+        !messageEditedUnlisten ||
         !typingUnlisten ||
         !reactionUnlisten ||
         !groupInviteUnlisten ||
@@ -869,6 +895,55 @@ export function useChatState({
           [targetPeerId]: list.filter((m) => m.id !== messageId),
         };
       });
+    },
+    []
+  );
+
+  /** Edit one of our own messages: replace its text on every device. The
+   *  backend applies the local edit and broadcasts the E2EE edit signal; the
+   *  `chat-message-edited` event is deduped against the optimistic update. */
+  const editMessage = useCallback(
+    async (targetPeerId: string, messageId: string, newText: string) => {
+      // Optimistic: reflect the change locally before the round-trip.
+      setMessages((prev) => {
+        const list = prev[targetPeerId];
+        if (!list) return prev;
+        let changed = false;
+        const next = list.map((m) => {
+          if (m.id !== messageId) return m;
+          changed = true;
+          return { ...m, text: newText, edited: true };
+        });
+        return changed ? { ...prev, [targetPeerId]: next } : prev;
+      });
+      try {
+        await editMessageCommand(targetPeerId, messageId, newText);
+      } catch {
+        // The local edit already applied for this session; the store copy is
+        // updated by the backend on success, so a failure is only cosmetic.
+      }
+    },
+    []
+  );
+
+  /** Delete one of our own messages on every device. The backend removes the
+   *  local copy and broadcasts the E2EE delete signal. */
+  const deleteForEveryone = useCallback(
+    async (targetPeerId: string, messageId: string) => {
+      // Optimistic: remove locally before the round-trip.
+      setMessages((prev) => {
+        const list = prev[targetPeerId];
+        if (!list || !list.some((m) => m.id === messageId)) return prev;
+        return {
+          ...prev,
+          [targetPeerId]: list.filter((m) => m.id !== messageId),
+        };
+      });
+      try {
+        await deleteForEveryoneCommand(targetPeerId, messageId);
+      } catch {
+        // Best-effort: the local copy is already gone for this session.
+      }
     },
     []
   );
@@ -1115,6 +1190,8 @@ export function useChatState({
     declineFriendRequest,
     updatePresence,
     deleteMessage,
+    editMessage,
+    deleteForEveryone,
     leaveGroup,
     verifyGroupAccess,
     transferOwnership,

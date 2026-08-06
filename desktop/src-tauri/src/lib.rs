@@ -297,6 +297,34 @@ async fn send_reaction(
         .map_err(|e| e.to_string())
 }
 
+/// Edit one of our own messages: replace its text on every recipient's
+/// device. The edit travels as an encrypted control payload — the relay only
+/// ever sees ciphertext.
+#[tauri::command]
+fn edit_message(
+    state: State<'_, RelayClient>,
+    peer_id: String,
+    message_id: String,
+    new_text: String,
+) -> Result<(), String> {
+    state
+        .edit_message(&peer_id, &message_id, &new_text)
+        .map_err(|e| e.to_string())
+}
+
+/// Delete one of our own messages on every recipient's device. Like edits,
+/// the signal is end-to-end encrypted.
+#[tauri::command]
+fn delete_for_everyone(
+    state: State<'_, RelayClient>,
+    peer_id: String,
+    message_id: String,
+) -> Result<(), String> {
+    state
+        .delete_for_everyone(&peer_id, &message_id)
+        .map_err(|e| e.to_string())
+}
+
 /// Build a `whisper://invite` link for our own identity (with profile hints).
 #[tauri::command]
 fn get_invite_link(state: State<'_, RelayClient>) -> Result<String, String> {
@@ -1273,6 +1301,8 @@ pub fn run() {
             send_message,
             set_chat_expiration,
             send_reaction,
+            edit_message,
+            delete_for_everyone,
             get_invite_link,
             get_safety_number,
             mark_contact_verified,

@@ -793,6 +793,17 @@ impl RelayClient {
                 self.apply_read_by(group_id, &read.message_id, &wire.sender_peer_id)?;
                 Ok(None)
             }
+            e2ee_core::ParsedPayload::Edit(edit) => {
+                // A member edited one of their messages: update the text on
+                // every device. Best-effort — an unknown id is a no-op.
+                self.handle_edit(group_id, &edit.message_id, &edit.text)?;
+                Ok(None)
+            }
+            e2ee_core::ParsedPayload::Delete(delete) => {
+                // A member deleted one of their messages for everyone.
+                self.handle_delete(group_id, &delete.message_id)?;
+                Ok(None)
+            }
             e2ee_core::ParsedPayload::Text(text) => {
                 // No read receipt here: the UI sends it (via mark_read) once
                 // the message is actually visible on screen — never merely on
@@ -1300,6 +1311,7 @@ impl RelayClient {
             }),
             read_by: Vec::new(),
             expires_at: None,
+            edited: false,
         };
         write_guard(&self.inner.messages)?
             .entry(group_id.to_string())

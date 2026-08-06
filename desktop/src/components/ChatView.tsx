@@ -13,6 +13,7 @@ import {
   Lock,
   MessageSquarePlus,
   MessagesSquare,
+  PenLine,
   Plus,
   Search,
   Timer,
@@ -79,6 +80,10 @@ interface ChatViewProps {
   onOpenGroupInfo: (() => void) | undefined;
   /** Deletes one message locally ("delete for me"). */
   onDeleteMessage: (messageId: string) => void;
+  /** Edit one of our own messages: replace its text on every device. */
+  onEditMessage: (messageId: string, newText: string) => void;
+  /** Delete one of our own messages on every device. */
+  onDeleteForEveryone: (messageId: string) => void;
   /** React or un-react to a message. `active` is the caller-computed state. */
   onReact: (messageId: string, emoji: string, active: boolean) => void;
   /** Mark the conversation as read end-to-end when its messages are visible. */
@@ -118,6 +123,8 @@ export function ChatView({
   onOpenProfile,
   onOpenGroupInfo,
   onDeleteMessage,
+  onEditMessage,
+  onDeleteForEveryone,
   onReact,
   onMarkRead,
   expireSeconds,
@@ -128,6 +135,8 @@ export function ChatView({
   const [menu, setMenu] = useState<MessageMenuState | null>(null);
   /** The message we are replying to, arming the composer reply bar. */
   const [replyTo, setReplyTo] = useState<Message | null>(null);
+  /** The message being edited, arming the composer edit bar. */
+  const [editingMessage, setEditingMessage] = useState<Message | null>(null);
   /** The reaction picker popover target (position + message). */
   const [emojiPicker, setEmojiPicker] = useState<MessageMenuState | null>(null);
   /** Whether the disappearing-message timer dropdown in the header is open. */
@@ -712,6 +721,27 @@ export function ChatView({
               icon: <Copy className="h-4 w-4" />,
               onSelect: () => void copyText(menu.message.text),
             },
+            ...(menu.message.outgoing
+              ? [
+                  {
+                    id: "edit",
+                    label: t("chat.edit"),
+                    icon: <PenLine className="h-4 w-4" />,
+                    onSelect: () => {
+                      setEditingMessage(menu.message);
+                      setReplyTo(null);
+                      setMenu(null);
+                    },
+                  } as const,
+                  {
+                    id: "delete-for-everyone",
+                    label: t("chat.delete_for_everyone"),
+                    danger: true,
+                    icon: <Trash2 className="h-4 w-4" />,
+                    onSelect: () => onDeleteForEveryone(menu.message.id),
+                  } as const,
+                ]
+              : []),
             {
               id: "delete-for-me",
               label: t("chat.delete_for_me"),
@@ -747,6 +777,11 @@ export function ChatView({
         onChange={onDraftChange}
         conversationId={conversationId}
         onSend={(text) => {
+          if (editingMessage) {
+            onEditMessage(editingMessage.id, text);
+            setEditingMessage(null);
+            return;
+          }
           if (replyTo) {
             const quote: QuoteInfo = {
               message_id: replyTo.id,
@@ -771,6 +806,8 @@ export function ChatView({
             : undefined
         }
         onCancelReply={() => setReplyTo(null)}
+        editing={editingMessage}
+        onCancelEdit={() => setEditingMessage(null)}
         onTypingChange={onTypingChange}
         enterToSend={enterToSend}
       />

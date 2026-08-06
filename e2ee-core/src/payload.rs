@@ -39,6 +39,10 @@ pub enum ParsedPayload {
     Typing(TypingPayload),
     /// A group read receipt.
     Read(ReadPayload),
+    /// A request to edit an earlier message's text.
+    Edit(EditPayload),
+    /// A request to delete an earlier message on every recipient's device.
+    Delete(DeletePayload),
 }
 
 /// The tagged wire form of a modern payload. The `kind` field selects the
@@ -55,6 +59,10 @@ pub enum ChatPayload {
     Typing(TypingPayload),
     /// A group read receipt.
     Read(ReadPayload),
+    /// Edit an earlier message's text on every recipient's device.
+    Edit(EditPayload),
+    /// Delete an earlier message on every recipient's device.
+    Delete(DeletePayload),
 }
 
 /// An ordinary text message with an optional quoted reply context.
@@ -214,6 +222,46 @@ impl ReadPayload {
     }
 }
 
+/// An edit of an earlier message: replace the target message's text on every
+/// recipient's device. `message_id` is the SENDER's id (the shared id both
+/// ends stored the message under). Best-effort: if the target is unknown
+/// (already expired or never delivered), the edit is a harmless no-op.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EditPayload {
+    /// The id of the message being edited (the sender's id).
+    pub message_id: String,
+    /// The replacement plaintext.
+    pub text: String,
+}
+
+impl EditPayload {
+    /// Create an edit payload for `message_id` with the new `text`.
+    pub fn new(message_id: impl Into<String>, text: impl Into<String>) -> Self {
+        Self {
+            message_id: message_id.into(),
+            text: text.into(),
+        }
+    }
+}
+
+/// A delete-for-everyone request: remove the target message from every
+/// recipient's device. `message_id` is the sender's id. Best-effort like
+/// edits — an unknown target is a harmless no-op.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DeletePayload {
+    /// The id of the message to delete (the sender's id).
+    pub message_id: String,
+}
+
+impl DeletePayload {
+    /// Create a delete payload for `message_id`.
+    pub fn new(message_id: impl Into<String>) -> Self {
+        Self {
+            message_id: message_id.into(),
+        }
+    }
+}
+
 /// Default for [`ReactionPayload::active`]: a payload without the field (older
 /// senders) is treated as "reaction present".
 fn default_reaction_active() -> bool {
@@ -246,6 +294,8 @@ pub fn parse_plaintext(bytes: &[u8]) -> ParsedPayload {
             ChatPayload::Reaction(reaction) => ParsedPayload::Reaction(reaction),
             ChatPayload::Typing(typing) => ParsedPayload::Typing(typing),
             ChatPayload::Read(read) => ParsedPayload::Read(read),
+            ChatPayload::Edit(edit) => ParsedPayload::Edit(edit),
+            ChatPayload::Delete(delete) => ParsedPayload::Delete(delete),
         };
     }
     let text = String::from_utf8_lossy(bytes).to_string();
@@ -268,7 +318,11 @@ mod tests {
                 assert_eq!(text.text, "hello");
                 assert_eq!(text.quote, None);
             }
-            ChatPayload::Reaction(_) | ChatPayload::Typing(_) | ChatPayload::Read(_) => {
+            ChatPayload::Reaction(_)
+            | ChatPayload::Typing(_)
+            | ChatPayload::Read(_)
+            | ChatPayload::Edit(_)
+            | ChatPayload::Delete(_) => {
                 panic!("expected text payload")
             }
         }
@@ -369,7 +423,11 @@ mod tests {
                 assert_eq!(text.text, "just some text");
                 assert_eq!(text.quote, None);
             }
-            ParsedPayload::Reaction(_) | ParsedPayload::Typing(_) | ParsedPayload::Read(_) => {
+            ParsedPayload::Reaction(_)
+            | ParsedPayload::Typing(_)
+            | ParsedPayload::Read(_)
+            | ParsedPayload::Edit(_)
+            | ParsedPayload::Delete(_) => {
                 panic!("expected text")
             }
         }
@@ -385,7 +443,11 @@ mod tests {
                 assert_eq!(quote.message_id, "m1");
                 assert_eq!(quote.sender_name.as_deref(), Some("Bob"));
             }
-            ParsedPayload::Reaction(_) | ParsedPayload::Typing(_) | ParsedPayload::Read(_) => {
+            ParsedPayload::Reaction(_)
+            | ParsedPayload::Typing(_)
+            | ParsedPayload::Read(_)
+            | ParsedPayload::Edit(_)
+            | ParsedPayload::Delete(_) => {
                 panic!("expected text")
             }
         }
@@ -399,7 +461,11 @@ mod tests {
                 assert_eq!(text.text, "hi");
                 assert_eq!(text.quote, None);
             }
-            ParsedPayload::Reaction(_) | ParsedPayload::Typing(_) | ParsedPayload::Read(_) => {
+            ParsedPayload::Reaction(_)
+            | ParsedPayload::Typing(_)
+            | ParsedPayload::Read(_)
+            | ParsedPayload::Edit(_)
+            | ParsedPayload::Delete(_) => {
                 panic!("expected text")
             }
         }
@@ -415,7 +481,11 @@ mod tests {
             ChatPayload::Text(text) => {
                 assert_eq!(text.message_id.as_deref(), Some("out-7"));
             }
-            ChatPayload::Reaction(_) | ChatPayload::Typing(_) | ChatPayload::Read(_) => {
+            ChatPayload::Reaction(_)
+            | ChatPayload::Typing(_)
+            | ChatPayload::Read(_)
+            | ChatPayload::Edit(_)
+            | ChatPayload::Delete(_) => {
                 panic!("expected text")
             }
         }
@@ -436,7 +506,11 @@ mod tests {
                 assert_eq!(text.text, "secret");
                 assert_eq!(text.expires_in_seconds, Some(30));
             }
-            ChatPayload::Reaction(_) | ChatPayload::Typing(_) | ChatPayload::Read(_) => {
+            ChatPayload::Reaction(_)
+            | ChatPayload::Typing(_)
+            | ChatPayload::Read(_)
+            | ChatPayload::Edit(_)
+            | ChatPayload::Delete(_) => {
                 panic!("expected text")
             }
         }
@@ -459,7 +533,11 @@ mod tests {
             ParsedPayload::Text(text) => {
                 assert_eq!(text.expires_in_seconds, Some(3600));
             }
-            ParsedPayload::Reaction(_) | ParsedPayload::Typing(_) | ParsedPayload::Read(_) => {
+            ParsedPayload::Reaction(_)
+            | ParsedPayload::Typing(_)
+            | ParsedPayload::Read(_)
+            | ParsedPayload::Edit(_)
+            | ParsedPayload::Delete(_) => {
                 panic!("expected text")
             }
         }
@@ -472,7 +550,11 @@ mod tests {
             ParsedPayload::Text(text) => {
                 assert_eq!(text.message_id.as_deref(), Some("9f8e-3ab"));
             }
-            ParsedPayload::Reaction(_) | ParsedPayload::Typing(_) | ParsedPayload::Read(_) => {
+            ParsedPayload::Reaction(_)
+            | ParsedPayload::Typing(_)
+            | ParsedPayload::Read(_)
+            | ParsedPayload::Edit(_)
+            | ParsedPayload::Delete(_) => {
                 panic!("expected text")
             }
         }
@@ -482,7 +564,11 @@ mod tests {
     fn legacy_raw_text_has_no_message_id() {
         match parse_plaintext(b"plain legacy text") {
             ParsedPayload::Text(text) => assert_eq!(text.message_id, None),
-            ParsedPayload::Reaction(_) | ParsedPayload::Typing(_) | ParsedPayload::Read(_) => {
+            ParsedPayload::Reaction(_)
+            | ParsedPayload::Typing(_)
+            | ParsedPayload::Read(_)
+            | ParsedPayload::Edit(_)
+            | ParsedPayload::Delete(_) => {
                 panic!("expected text")
             }
         }
@@ -536,13 +622,61 @@ mod tests {
         let restored: ChatPayload = serde_json::from_str(&json).expect("deserialize");
         match restored {
             ChatPayload::Read(read) => assert_eq!(read.message_id, "out-7"),
-            _ => panic!("expected read"),
+            ChatPayload::Reaction(_)
+            | ChatPayload::Typing(_)
+            | ChatPayload::Edit(_)
+            | ChatPayload::Delete(_)
+            | ChatPayload::Text(_) => panic!("expected read"),
         }
 
         let bytes = "{\"kind\":\"read\",\"message_id\":\"out-7\"}".as_bytes();
         match parse_plaintext(bytes) {
             ParsedPayload::Read(read) => assert_eq!(read.message_id, "out-7"),
-            _ => panic!("expected read payload"),
+            ParsedPayload::Reaction(_)
+            | ParsedPayload::Typing(_)
+            | ParsedPayload::Edit(_)
+            | ParsedPayload::Delete(_)
+            | ParsedPayload::Text(_) => panic!("expected read payload"),
+        }
+    }
+
+    #[test]
+    fn edit_payload_roundtrips_and_parses() {
+        let payload = ChatPayload::Edit(EditPayload::new("out-7", "corrected text"));
+        let json = serde_json::to_string(&payload).expect("serialize");
+        let restored: ChatPayload = serde_json::from_str(&json).expect("deserialize");
+        match restored {
+            ChatPayload::Edit(edit) => {
+                assert_eq!(edit.message_id, "out-7");
+                assert_eq!(edit.text, "corrected text");
+            }
+            _ => panic!("expected edit"),
+        }
+
+        let bytes = br#"{"kind":"edit","message_id":"out-7","text":"new body"}"#;
+        match parse_plaintext(bytes) {
+            ParsedPayload::Edit(edit) => {
+                assert_eq!(edit.message_id, "out-7");
+                assert_eq!(edit.text, "new body");
+            }
+            _ => panic!("expected edit payload"),
+        }
+    }
+
+    #[test]
+    fn delete_payload_roundtrips_and_parses() {
+        let payload = ChatPayload::Delete(DeletePayload::new("out-7"));
+        let json = serde_json::to_string(&payload).expect("serialize");
+        let restored: ChatPayload = serde_json::from_str(&json).expect("deserialize");
+        match restored {
+            ChatPayload::Delete(delete) => assert_eq!(delete.message_id, "out-7"),
+            _ => panic!("expected delete"),
+        }
+
+        let bytes = br#"{"kind":"delete","message_id":"out-7"}"#;
+        match parse_plaintext(bytes) {
+            ParsedPayload::Delete(delete) => assert_eq!(delete.message_id, "out-7"),
+            _ => panic!("expected delete payload"),
         }
     }
 
@@ -555,7 +689,11 @@ mod tests {
                 assert_eq!(text.text, r#"{"kind":"voice_message","data":"xyz"}"#);
                 assert_eq!(text.quote, None);
             }
-            ParsedPayload::Reaction(_) | ParsedPayload::Typing(_) | ParsedPayload::Read(_) => {
+            ParsedPayload::Reaction(_)
+            | ParsedPayload::Typing(_)
+            | ParsedPayload::Read(_)
+            | ParsedPayload::Edit(_)
+            | ParsedPayload::Delete(_) => {
                 panic!("expected text")
             }
         }
@@ -569,7 +707,11 @@ mod tests {
             br#"{"kind":"group_key","group_id":"g-1","session_key":"abc","group_name":"Squad"}"#;
         match parse_plaintext(bytes) {
             ParsedPayload::Text(text) => assert_eq!(text.quote, None),
-            ParsedPayload::Reaction(_) | ParsedPayload::Typing(_) | ParsedPayload::Read(_) => {
+            ParsedPayload::Reaction(_)
+            | ParsedPayload::Typing(_)
+            | ParsedPayload::Read(_)
+            | ParsedPayload::Edit(_)
+            | ParsedPayload::Delete(_) => {
                 panic!("expected text")
             }
         }
@@ -582,7 +724,11 @@ mod tests {
             ParsedPayload::Text(text) => {
                 assert!(text.text.contains("broken"));
             }
-            ParsedPayload::Reaction(_) | ParsedPayload::Typing(_) | ParsedPayload::Read(_) => {
+            ParsedPayload::Reaction(_)
+            | ParsedPayload::Typing(_)
+            | ParsedPayload::Read(_)
+            | ParsedPayload::Edit(_)
+            | ParsedPayload::Delete(_) => {
                 panic!("expected text")
             }
         }
@@ -596,7 +742,11 @@ mod tests {
                 // Invalid bytes become U+FFFD replacement characters.
                 assert!(text.text.contains('\u{FFFD}'));
             }
-            ParsedPayload::Reaction(_) | ParsedPayload::Typing(_) | ParsedPayload::Read(_) => {
+            ParsedPayload::Reaction(_)
+            | ParsedPayload::Typing(_)
+            | ParsedPayload::Read(_)
+            | ParsedPayload::Edit(_)
+            | ParsedPayload::Delete(_) => {
                 panic!("expected text")
             }
         }
@@ -608,7 +758,11 @@ mod tests {
         let bytes = br#"{"hello":"world"}"#;
         match parse_plaintext(bytes) {
             ParsedPayload::Text(text) => assert_eq!(text.text, r#"{"hello":"world"}"#),
-            ParsedPayload::Reaction(_) | ParsedPayload::Typing(_) | ParsedPayload::Read(_) => {
+            ParsedPayload::Reaction(_)
+            | ParsedPayload::Typing(_)
+            | ParsedPayload::Read(_)
+            | ParsedPayload::Edit(_)
+            | ParsedPayload::Delete(_) => {
                 panic!("expected text")
             }
         }
