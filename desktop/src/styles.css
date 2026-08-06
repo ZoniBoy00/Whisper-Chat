@@ -222,9 +222,9 @@ dialog.wp-dialog::backdrop {
   height: 4px;
   border-radius: 9999px;
   background: currentColor;
-  /* Drop the dots slightly below the text baseline so they read as a
-     "…" following the word instead of sitting mid-line. */
-  margin-top: 3px;
+  /* Push the dots below the text baseline so they read as a trailing "…"
+     after the word instead of sitting mid-line. */
+  transform: translateY(4px);
   animation: typing-blink 1.2s infinite both;
 }
 .typing-dot:nth-child(2) {
