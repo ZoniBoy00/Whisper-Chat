@@ -58,10 +58,11 @@ jobs:
   audit:
     name: Audit
     runs-on: ubuntu-latest
+    # Only run when dependencies could have changed (README-recommended).
     steps:
       - uses: actions/checkout@v4
       - name: Check RustSec advisory database
-        uses: rustsec/audit-check@master
+        uses: rustsec/audit-check@v2.0.0
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
 
