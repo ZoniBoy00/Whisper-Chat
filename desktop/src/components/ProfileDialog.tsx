@@ -200,7 +200,9 @@ export function ProfileDialog({
           </div>
         </div>
 
-        <div className="space-y-4 border-t border-wp-line/10 px-5 py-5">
+        {/* Lower section scrolls so short windows never clip the action
+            buttons; the header (avatar, name, presence) stays fixed. */}
+        <div className="max-h-[60vh] space-y-4 overflow-y-auto border-t border-wp-line/10 px-5 py-5">
           {/* Whisper ID + copy */}
           <div>
             <p className="text-xs font-medium text-wp-dim">{t("common.whisper_id")}</p>
