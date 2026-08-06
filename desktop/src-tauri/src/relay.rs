@@ -2626,6 +2626,7 @@ impl RelayClient {
         };
         tracing::info!(peer = %peer_id, msg_id = %id, "recording incoming message");
         let message = UIMessage {
+            id,
             text,
             outgoing: false,
             timestamp: now_millis(),
