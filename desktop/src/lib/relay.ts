@@ -370,6 +370,20 @@ export function getGroupInvites(): Promise<GroupInviteInfo[]> {
   return invoke<GroupInviteInfo[]>("get_group_invites");
 }
 
+/** Get (or create) the group's shareable join link (`whisper://join?..`).
+ *  Any member may ask; anyone with the link can join. */
+export function getGroupJoinLink(groupId: string): Promise<string> {
+  return invoke<string>("get_group_join_link", { groupId });
+}
+
+/** Join a group via its shareable join link. */
+export function joinGroupByLink(
+  groupId: string,
+  token: string
+): Promise<void> {
+  return invoke("join_group_by_link", { groupId, token });
+}
+
 /** Subscribe to new group invites. Returns an unlisten function. */
 export function onGroupInviteReceived(
   handler: (event: GroupInviteReceivedEvent) => void

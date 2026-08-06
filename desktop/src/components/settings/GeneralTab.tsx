@@ -162,6 +162,7 @@ export function GeneralTab({
       const ok = await copyText(link);
       if (ok) {
         setInviteCopied(true);
+        toast(t("common.invite_copied"), "success");
         setTimeout(() => setInviteCopied(false), 1600);
       }
     } catch {

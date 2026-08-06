@@ -221,6 +221,17 @@ impl Store {
             )?;
         }
 
+        // Migration: `groups` gained a `join_token` column for shareable
+        // join links (whisper://join?group=..&token=..). Existing groups have
+        // none until a member asks for a link.
+        let groups_columns: Vec<String> = conn
+            .prepare("PRAGMA table_info(groups)")?
+            .query_map([], |row| row.get::<_, String>(1))?
+            .collect::<rusqlite::Result<_>>()?;
+        if !groups_columns.iter().any(|c| c.as_str() == "join_token") {
+            conn.execute("ALTER TABLE groups ADD COLUMN join_token TEXT", [])?;
+        }
+
         // Backfill: owners of groups created before the roles feature must be
         // promoted to "owner" (the ALTER defaulted them to "member").
         conn.execute(
@@ -789,13 +800,57 @@ impl Store {
         )?;
         Ok(())
     }
-
     /// Whether `peer_id` has a pending invite to `group_id`.
     pub fn is_group_invited(&self, group_id: &str, peer_id: &str) -> bool {
         let conn = self.conn.lock().unwrap();
         conn.query_row(
             "SELECT 1 FROM group_invites WHERE group_id = ?1 AND peer_id = ?2",
             params![group_id, peer_id],
+            |_| Ok(()),
+        )
+        .optional()
+        .unwrap_or(None)
+        .is_some()
+    }
+
+    /// The group's shareable join token, generating a fresh one on first
+    /// request. `None` when the group does not exist.
+    pub fn ensure_join_token(&self, group_id: &str) -> Option<String> {
+        let conn = self.conn.lock().unwrap();
+        let existing: Option<String> = conn
+            .query_row(
+                "SELECT join_token FROM groups WHERE id = ?1",
+                params![group_id],
+                |r| r.get(0),
+            )
+            .optional()
+            .unwrap_or(None)
+            .flatten();
+        match existing {
+            Some(token) if !token.is_empty() => Some(token),
+            _ => {
+                let token = uuid::Uuid::new_v4().to_string();
+                let updated = conn
+                    .execute(
+                        "UPDATE groups SET join_token = ?1 WHERE id = ?2",
+                        params![token, group_id],
+                    )
+                    .unwrap_or(0);
+                if updated == 0 {
+                    None
+                } else {
+                    Some(token)
+                }
+            }
+        }
+    }
+
+    /// Whether `token` is the current join token for `group_id`.
+    pub fn is_valid_join_token(&self, group_id: &str, token: &str) -> bool {
+        let conn = self.conn.lock().unwrap();
+        conn.query_row(
+            "SELECT 1 FROM groups WHERE id = ?1 AND join_token = ?2",
+            params![group_id, token],
             |_| Ok(()),
         )
         .optional()

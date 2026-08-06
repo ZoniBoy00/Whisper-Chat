@@ -48,6 +48,8 @@ export const translations = {
     "common.reset_identity": "Reset identity",
     "common.copy": "Copy",
     "common.copied": "Copied",
+    "common.copied_to_clipboard": "Copied to clipboard",
+    "common.invite_copied": "Invite link copied",
     "common.share_invite": "Share invite",
     "common.copy_whisper_id": "Copy Whisper ID",
     "common.online": "Online",
@@ -233,6 +235,19 @@ export const translations = {
     "groupInfo.remove_from_group": "Remove from group",
     "groupInfo.remove_from_group_aria": "Remove {peerId} from the group",
     "groupInfo.leave_group": "Leave group",
+    "groupInfo.copy_join_link": "Copy join link",
+    "groupInfo.join_link_hint":
+      "Anyone with this link can join the group. Treat it like a password.",
+
+    // ---- Join-group dialog ------------------------------------------------
+    "join.title": "Join group",
+    "join.hint":
+      "You were invited to join this group. Join to start chatting — every message is end-to-end encrypted.",
+    "join.join": "Join",
+    "join.joining": "Joining…",
+    "join.invalid_link": "This invite link is invalid or expired.",
+    "join.already_member": "You are already a member of this group.",
+    "join.group_not_found": "Group not found.",
     "groupInfo.leave_group_owner_hint":
       "You are the owner. If you leave, this group will have no owner.",
     "groupInfo.transfer_ownership": "Transfer ownership",
@@ -422,6 +437,7 @@ export const translations = {
     "toast.member_demoted": "Member demoted to regular member",
     "toast.member_removed": "Member removed from the group",
     "toast.group_transferred": "Group ownership transferred",
+    "toast.group_joined": "Joined group",
     "toast.member_added": "Member added",
     "toast.invite_sent": "Invite sent",
     "toast.group_avatar_updated": "Group photo updated",
@@ -475,6 +491,8 @@ export const translations = {
     "common.reset_identity": "Nollaa henkilöllisyys",
     "common.copy": "Kopioi",
     "common.copied": "Kopioitu",
+    "common.copied_to_clipboard": "Kopioitu leikepöydälle",
+    "common.invite_copied": "Kutsulinkki kopioitu",
     "common.share_invite": "Jaa kutsu",
     "common.copy_whisper_id": "Kopioi Whisper-ID",
     "common.online": "Paikalla",
@@ -659,6 +677,19 @@ export const translations = {
     "groupInfo.remove_from_group": "Poista ryhmästä",
     "groupInfo.remove_from_group_aria": "Poista {peerId} ryhmästä",
     "groupInfo.leave_group": "Poistu ryhmästä",
+    "groupInfo.copy_join_link": "Kopioi liittymislinkki",
+    "groupInfo.join_link_hint":
+      "Kuka tahansa tämän linkin saaneista voi liittyä ryhmään. Kohtele sitä kuin salasanaa.",
+
+    // ---- Join-group dialog ------------------------------------------------
+    "join.title": "Liity ryhmään",
+    "join.hint":
+      "Sinut on kutsuttu liittymään tähän ryhmään. Liity aloittaaksesi keskustelun — jokainen viesti on end-to-end-salattu.",
+    "join.join": "Liity",
+    "join.joining": "Liitytään…",
+    "join.invalid_link": "Tämä kutsulinkki on virheellinen tai vanhentunut.",
+    "join.already_member": "Olet jo tämän ryhmän jäsen.",
+    "join.group_not_found": "Ryhmää ei löytynyt.",
     "groupInfo.leave_group_owner_hint":
       "Olet omistaja. Jos poistut, ryhmä jää ilman omistajaa.",
     "groupInfo.transfer_ownership": "Siirrä omistajuus",
@@ -847,6 +878,7 @@ export const translations = {
     "toast.member_demoted": "Ylläpitäjyys poistettu",
     "toast.member_removed": "Jäsen poistettu ryhmästä",
     "toast.group_transferred": "Ryhmän omistajuus siirretty",
+    "toast.group_joined": "Liityit ryhmään",
     "toast.member_added": "Jäsen lisätty",
     "toast.invite_sent": "Kutsu lähetetty",
     "toast.group_avatar_updated": "Ryhmäkuva päivitetty",

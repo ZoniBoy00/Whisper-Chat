@@ -33,6 +33,7 @@ import { conversationPreview } from "../lib/chatList";
 import { relayErrorCode, searchUsers, getInviteLink } from "../lib/relay";
 import { copyText } from "../lib/clipboard";
 import { useI18n } from "../i18n/I18nContext";
+import { useToast } from "../hooks/useToast";
 import { Avatar } from "./Avatar";
 import { ContactsView } from "./ContactsView";
 import { CopyButton } from "./CopyButton";
@@ -145,6 +146,7 @@ export function Sidebar({
   unread,
 }: SidebarProps) {
   const { t } = useI18n();
+  const { toast } = useToast();
   const [menuOpen, setMenuOpen] = useState(false);
   const [confirming, setConfirming] = useState(false);
   const [inviteCopied, setInviteCopied] = useState(false);
@@ -176,6 +178,7 @@ export function Sidebar({
       if (ok) {
         setInviteCopied(true);
         setMenuOpen(false);
+        toast(t("common.invite_copied"), "success");
         setTimeout(() => setInviteCopied(false), 1600);
       }
     } catch {

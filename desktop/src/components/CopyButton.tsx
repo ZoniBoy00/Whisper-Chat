@@ -2,6 +2,7 @@ import { useState } from "react";
 import { Check, Copy } from "lucide-react";
 import { copyText } from "../lib/clipboard";
 import { useI18n } from "../i18n/I18nContext";
+import { useToast } from "../hooks/useToast";
 
 interface CopyButtonProps {
   value: string;
@@ -10,12 +11,14 @@ interface CopyButtonProps {
 
 export function CopyButton({ value, label }: CopyButtonProps) {
   const { t } = useI18n();
+  const { toast } = useToast();
   const [copied, setCopied] = useState(false);
 
   const handleCopy = async () => {
     const ok = await copyText(value);
     if (ok) {
       setCopied(true);
+      toast(t("common.copied_to_clipboard"), "success");
       setTimeout(() => setCopied(false), 1600);
     }
   };

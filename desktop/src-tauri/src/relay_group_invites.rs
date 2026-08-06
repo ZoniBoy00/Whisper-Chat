@@ -77,6 +77,44 @@ impl RelayClient {
             .map_err(|_| RelayError::GroupRequestFailed)?
     }
 
+    /// Get (or create) the group's shareable join link (`whisper://join?..`).
+    /// Any member may ask; the link lets anyone join.
+    pub async fn get_group_join_link(&self, group_id: &str) -> Result<String, RelayError> {
+        let (tx, rx) = oneshot::channel();
+        mutex_guard(&self.inner.pending_group_join_link)?.push_back(tx);
+        if let Err(err) = self.send_json(&ClientMessage::GetGroupJoinLink {
+            group_id: group_id.to_string(),
+        }) {
+            mutex_guard(&self.inner.pending_group_join_link)?.pop_back();
+            return Err(err);
+        }
+        tokio::time::timeout(PREKEY_FETCH_TIMEOUT, rx)
+            .await
+            .map_err(|_| RelayError::GroupTimeout)?
+            .map_err(|_| RelayError::GroupRequestFailed)?
+    }
+
+    /// Join a group via its shareable join link.
+    pub async fn join_group(&self, group_id: &str, token: &str) -> Result<(), RelayError> {
+        let (tx, rx) = oneshot::channel();
+        mutex_guard(&self.inner.pending_group_join_op)?.push_back(tx);
+        if let Err(err) = self.send_json(&ClientMessage::JoinGroup {
+            group_id: group_id.to_string(),
+            token: token.to_string(),
+        }) {
+            mutex_guard(&self.inner.pending_group_join_op)?.pop_back();
+            return Err(err);
+        }
+        tokio::time::timeout(PREKEY_FETCH_TIMEOUT, rx)
+            .await
+            .map_err(|_| RelayError::GroupTimeout)?
+            .map_err(|_| RelayError::GroupRequestFailed)??;
+        // We were not a member, so the group is not in the local roster yet —
+        // fetch it so the chat list shows it with the correct member count.
+        let _ = self.get_group_info(group_id).await;
+        Ok(())
+    }
+
     /// A `group_invite_received` push: remember the invite and surface it to
     /// the UI (toast + the Sidebar Invites section).
     pub(crate) fn handle_group_invite_received(
@@ -157,6 +195,29 @@ impl RelayClient {
                 accepted: false,
             },
         );
+        Ok(())
+    }
+
+    /// A `group_join_link` reply: resolve the in-flight request.
+    pub(crate) fn handle_group_join_link(&self, link: String) -> Result<(), RelayError> {
+        if let Some(tx) = mutex_guard(&self.inner.pending_group_join_link)?.pop_front() {
+            let _ = tx.send(Ok(link));
+        }
+        Ok(())
+    }
+
+    /// A `group_join_ok` reply: resolve the in-flight join and pull the group
+    /// metadata so the chat list shows it.
+    pub(crate) fn handle_group_join_ok(
+        &self,
+        group_id: &str,
+        group_name: &str,
+    ) -> Result<(), RelayError> {
+        if let Some(tx) = mutex_guard(&self.inner.pending_group_join_op)?.pop_front() {
+            let _ = tx.send(Ok(()));
+        }
+        self.spawn_group_info_refresh(group_id);
+        let _ = group_name;
         Ok(())
     }
 }

@@ -331,6 +331,31 @@ async fn get_group_invites(
     state.get_group_invites().await.map_err(|e| e.to_string())
 }
 
+/// Get (or create) the group's shareable join link. Any member may ask.
+#[tauri::command]
+async fn get_group_join_link(
+    state: State<'_, RelayClient>,
+    group_id: String,
+) -> Result<String, String> {
+    state
+        .get_group_join_link(&group_id)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// Join a group via its shareable join link (group id + secret token).
+#[tauri::command]
+async fn join_group_by_link(
+    state: State<'_, RelayClient>,
+    group_id: String,
+    token: String,
+) -> Result<(), String> {
+    state
+        .join_group(&group_id, &token)
+        .await
+        .map_err(|e| e.to_string())
+}
+
 /// Snapshot of identity, connection, contacts and messages for the UI.
 #[tauri::command]
 async fn get_chat_state(state: State<'_, RelayClient>) -> Result<ChatState, String> {
@@ -871,6 +896,8 @@ pub fn run() {
             accept_group_invite,
             decline_group_invite,
             get_group_invites,
+            get_group_join_link,
+            join_group_by_link,
             get_chat_state,
             disconnect_relay,
             reset_relay,
