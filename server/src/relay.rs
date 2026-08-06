@@ -246,6 +246,10 @@ enum ClientMessage {
     /// List the caller's pending incoming and outgoing friend requests.
     #[serde(rename = "get_friend_requests")]
     GetFriendRequests,
+    /// List the caller's accepted 1:1 contacts (peer IDs). Used to rehydrate
+    /// the local contact list after a database reset/restore.
+    #[serde(rename = "list_contacts")]
+    ListContacts,
     /// Remove `peer_id` from the caller's contacts. Both peers receive a
     /// `contact_removed` push.
     #[serde(rename = "remove_contact")]
@@ -427,6 +431,9 @@ pub(crate) enum ServerMessage {
         incoming: Vec<FriendRequestIncoming>,
         outgoing: Vec<String>,
     },
+    /// Reply to `list_contacts`: the caller's accepted 1:1 contact peer IDs.
+    #[serde(rename = "contacts")]
+    Contacts { peers: Vec<String> },
     /// Reply to `group_invite` for the inviter.
     #[serde(rename = "group_invite_sent")]
     GroupInviteSent,
@@ -846,6 +853,9 @@ impl Relay {
                         }
                         Ok(ClientMessage::GetFriendRequests) => {
                             self.get_friend_requests(&peer_id, &ip).await;
+                        }
+                        Ok(ClientMessage::ListContacts) => {
+                            self.list_contacts(&peer_id, &ip).await;
                         }
                         Ok(ClientMessage::RemoveContact { peer_id: target }) => {
                             self.remove_contact(&peer_id, &ip, &target).await;

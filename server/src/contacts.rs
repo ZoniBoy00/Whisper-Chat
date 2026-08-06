@@ -301,6 +301,17 @@ impl Relay {
             )
             .await;
     }
+
+    /// Reply with the caller's accepted 1:1 contacts (peer IDs). Clients use
+    /// this to rehydrate the local contact list after a database reset or
+    /// restore — the relay is the source of truth for friendships.
+    pub(crate) async fn list_contacts(&self, peer_id: &str, ip: &str) {
+        if !self.take_contact_slot(peer_id, ip).await {
+            return;
+        }
+        let peers = self.inner.store.list_contacts(peer_id);
+        let _ = self.send(peer_id, ServerMessage::Contacts { peers }).await;
+    }
 }
 
 #[cfg(test)]

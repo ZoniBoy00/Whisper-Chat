@@ -347,6 +347,10 @@ enum ClientMessage {
     /// replies with a `friend_requests` message.
     #[serde(rename = "get_friend_requests")]
     GetFriendRequests,
+    /// Fetch the caller's accepted 1:1 contacts (peer IDs). The relay replies
+    /// with a `contacts` message.
+    #[serde(rename = "list_contacts")]
+    ListContacts,
     /// Remove the accepted contact relationship with `peer_id` on both sides.
     /// The relay pushes `contact_removed` to both peers.
     #[serde(rename = "remove_contact")]
@@ -513,6 +517,9 @@ enum ServerMessage {
         #[serde(default)]
         outgoing: Vec<String>,
     },
+    /// The caller's accepted 1:1 contacts: reply to `list_contacts`.
+    #[serde(rename = "contacts")]
+    Contacts { peers: Vec<String> },
     #[serde(rename = "group_invite_sent")]
     GroupInviteSent,
     #[serde(rename = "group_invite_received")]
@@ -1199,6 +1206,8 @@ struct RelayInner {
     /// in FIFO order. The relay answers each one with a `friend_requests`
     /// snapshot (or an `error` code), so FIFO alignment holds.
     pending_contact_ops: Mutex<VecDeque<oneshot::Sender<ContactOpResponse>>>,
+    /// Outstanding `list_contacts` requests awaiting the `contacts` reply.
+    pending_contacts_list: Mutex<VecDeque<oneshot::Sender<ContactsListResponse>>>,
 }
 
 /// Result channel type for a pre-key fetch: the bundle plus the peer's public
@@ -1229,6 +1238,9 @@ type GroupInfoResponse = Result<GroupInfo, RelayError>;
 
 /// Result channel type for a promote/demote/remove/leave confirmation.
 type GroupOpResponse = Result<(), RelayError>;
+
+/// Result channel type for a `list_contacts` reply (the peer ID list).
+type ContactsListResponse = Result<Vec<String>, RelayError>;
 
 /// Result channel type for a `get_group_invites` snapshot.
 type GroupInvitesResponse = Result<Vec<GroupInviteInfo>, RelayError>;
@@ -1293,6 +1305,7 @@ impl RelayClient {
                 friend_requests_incoming: RwLock::new(Vec::new()),
                 friend_requests_outgoing: RwLock::new(Vec::new()),
                 pending_contact_ops: Mutex::new(VecDeque::new()),
+                pending_contacts_list: Mutex::new(VecDeque::new()),
             }),
         }
     }
@@ -1434,6 +1447,19 @@ impl RelayClient {
         // fetches so the chat list shows a real member count (not "0") shortly
         // after connecting, without the user opening the info panel.
         self.refresh_group_rosters();
+
+        // Rehydrate the contact list from the relay: it is the source of truth
+        // for friendships, so a database reset/restore (or a fresh install)
+        // recovers every accepted contact. Best-effort — a timeout or a relay
+        // without the command just leaves the local list as-is.
+        {
+            let client = self.clone();
+            tauri::async_runtime::spawn(async move {
+                if let Err(err) = client.list_contacts().await {
+                    tracing::debug!(error = %err, "contact list rehydrate failed");
+                }
+            });
+        }
 
         // Contacts learned before the avatar pipeline existed (or restored from
         // an older store) may lack an avatar_url. Kick off background
@@ -1991,6 +2017,7 @@ impl RelayClient {
             ServerMessage::FriendRequests { incoming, outgoing } => {
                 self.handle_friend_requests(incoming, outgoing)
             }
+            ServerMessage::Contacts { peers } => self.handle_contacts_list(peers),
             ServerMessage::GroupInviteSent => self.handle_group_op_ack(),
             ServerMessage::GroupInviteReceived {
                 group_id,

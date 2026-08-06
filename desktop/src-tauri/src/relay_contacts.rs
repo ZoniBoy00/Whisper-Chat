@@ -54,6 +54,56 @@ impl RelayClient {
         .map(|_| ())
     }
 
+    /// Fetch the caller's accepted 1:1 contacts (peer IDs) from the relay.
+    /// Used on connect to rehydrate the local contact list after a database
+    /// reset or restore — the relay is the source of truth for friendships.
+    pub async fn list_contacts(&self) -> Result<Vec<String>, RelayError> {
+        let (tx, rx) = oneshot::channel();
+        mutex_guard(&self.inner.pending_contacts_list)?.push_back(tx);
+        if let Err(err) = self.send_json(&ClientMessage::ListContacts) {
+            mutex_guard(&self.inner.pending_contacts_list)?.pop_back();
+            return Err(err);
+        }
+        match tokio::time::timeout(CONTACT_FETCH_TIMEOUT, rx).await {
+            Err(_) => {
+                mutex_guard(&self.inner.pending_contacts_list)?.pop_front();
+                Err(RelayError::ContactTimeout)
+            }
+            Ok(inner) => inner.map_err(|_| RelayError::ContactRequestFailed)?,
+        }
+    }
+
+    /// The `contacts` reply arrived: resolve the waiter, then merge the
+    /// server's contact list into the local one (memory + store) so a reset or
+    /// restore rehydrates the contact list from the relay.
+    pub(crate) fn handle_contacts_list(&self, peers: Vec<String>) -> Result<(), RelayError> {
+        if let Some(tx) = mutex_guard(&self.inner.pending_contacts_list)?.pop_front() {
+            let _ = tx.send(Ok(peers.clone()));
+        }
+        {
+            let mut contacts = write_guard(&self.inner.contacts)?;
+            for peer in &peers {
+                if !contacts.iter().any(|known| known == peer) {
+                    contacts.push(peer.clone());
+                }
+            }
+        }
+        let store_guard = self.store_guard()?;
+        let store = store_guard.as_ref().ok_or(RelayError::StoreNotOpen)?;
+        for peer in &peers {
+            let _ = store.upsert_contact(&ContactRow {
+                peer_id: peer.clone(),
+                display_name: None,
+                username: None,
+                avatar_url: None,
+                last_seen: None,
+                curve25519_key: None,
+                verified: false,
+            });
+        }
+        Ok(())
+    }
+
     /// Accept a pending incoming friend request from `peer_id`. Both sides
     /// become accepted contacts; the relay answers with
     /// `friend_request_accepted_ok` and then pushes `friend_request_accepted`
