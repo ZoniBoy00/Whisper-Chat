@@ -568,14 +568,27 @@ async fn import_identity(app: tauri::AppHandle) -> Result<String, String> {
         .ok_or_else(|| "identity import cancelled".to_string())?;
     let source = picked.into_path().map_err(|e| e.to_string())?;
     let json = fs::read_to_string(&source).map_err(|e| e.to_string())?;
+    // Accept either a bare identity file OR a full "whisper-backup" package
+    // (kind + identity + database_b64): pull the identity object out of the
+    // package so restoring from a "Backup everything" file works too. The
+    // database half of the package is intentionally ignored here — restoring
+    // the whole profile is what `import_everything` is for.
+    let identity_json = match serde_json::from_str::<serde_json::Value>(&json) {
+        Ok(value) if value.get("kind").and_then(|k| k.as_str()) == Some("whisper-backup") => value
+            .get("identity")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| "backup is missing the identity".to_string())?
+            .to_string(),
+        _ => json,
+    };
     // Validate the JSON parses as a real identity before touching the file on
     // disk, so a corrupt or foreign file can never brick the app.
-    e2ee_core::Identity::from_json(&json).map_err(|e| e.to_string())?;
+    e2ee_core::Identity::from_json(&identity_json).map_err(|e| e.to_string())?;
     let target = identity_path(&app)?;
     if let Some(dir) = target.parent() {
         fs::create_dir_all(dir).map_err(|e| e.to_string())?;
     }
-    fs::write(&target, json).map_err(|e| e.to_string())?;
+    fs::write(&target, identity_json).map_err(|e| e.to_string())?;
     Ok(target.display().to_string())
 }
 
