@@ -34,12 +34,12 @@ function ExpiryTimer({ expiresAt, label }: { expiresAt: number; label: string })
   if (remaining <= 0) return null;
   return (
     <span
-      className="inline-flex items-center gap-0.5 text-xs font-semibold tabular-nums text-wp-faint"
+      className="inline-flex items-center gap-0.5 text-sm font-semibold tabular-nums text-wp-faint"
       title={label}
       role="img"
       aria-label={label}
     >
-      <Timer className="h-3 w-3" strokeWidth={2.2} />
+      <Timer className="h-3.5 w-3.5" strokeWidth={2.2} />
       {formatExpiry(remaining)}
     </span>
   );
@@ -231,7 +231,7 @@ export function MessageBubble({
               label={t("bubble.disappearing")}
             />
           ) : null}
-          <span className="text-xs font-medium tabular-nums">
+          <span className="text-sm font-medium tabular-nums">
             {formatTime(message.timestamp)}
           </span>
         </div>
