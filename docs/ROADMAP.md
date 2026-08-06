@@ -176,7 +176,7 @@ talks to whom, IP) is visible just as in Signal/WhatsApp — this is an
 | **5** | **UI/UX:** Signal/Telegram-grade — read receipts (blue ticks), typing indicator, display names, Online/Last seen presence, WhatsApp-style chat list, settings | 1–2 | ✅ **done** |
 | **5.5** | **Username & Profile System:** signed username binding (Ed25519), avatars via /media, search by username/UID | 2 | ✅ **done** — spec: `docs/PROFILE-SYSTEM.md` |
 | **6** | **Groups:** Megolm E2EE groups — owner/admin roles, multi-sender (every member sends with an own Megolm session), ownership transfer, key sharing over 1:1 E2EE, WhatsApp/Signal-style group chat + info UI | 2 | ✅ **done** |
-| **6.5** | **Disappearing messages:** per-chat TTL, auto-delete both ends | 1–2 | 🔒 Next |
+| **6.5** | **Disappearing messages:** per-chat TTL (off/5s/30s/1m/1h/1d), E2EE TTL inside the encrypted payload, auto-delete both ends + live countdown | 1–2 | ✅ **done** |
 | **6.6** | **i18n + notifications:** EN/FI translations, native notifications + sounds, unread badges, pinned chats, in-chat message search, day separators, context menus, auto-reconnect | 1–2 | ✅ **done** |
 | **6.7** | **Group multi-sender:** every member sends with their own outbound Megolm session (created on first group-key receipt); connection toasts | 1 | ✅ **done** |
 | **6.8** | **Friend system (anti-spam):** signed friend requests + accept/decline/remove, server-enforced `not_contacts` gating (1:1 envelopes, pre-keys, group member adds), Contacts tab with live Online / Last seen + one-click removal | 2 | ✅ **done** |
@@ -297,6 +297,7 @@ impact and effort. Pull items into the phase table when they get scheduled.
 ## 13. Status & Next Steps (TODO)
 
 **✅ Done (2026-08-06):**
+- [x] Phase 6.5: disappearing messages — per-chat timer (Off/5s/30s/1m/1h/1d) in the chat header, `expires_in_seconds` carried inside the encrypted `TextPayload` (the relay stays zero-knowledge), `messages.expires_at` + migration, 1s background purge loop, `chat-message-deleted` event, live countdown on both the sender's and the recipient's bubbles, `chat_settings` table persisting timers
 - [x] Group read receipts: Megolm `ReadPayload` read-by sets, `mark_read` fires only when messages are actually visible on screen (never on receipt), `readByCount` in the UI
 - [x] Group rename (`rename_group` wire) + WhatsApp-style "X joined/left the group" system messages + live member counts via `group-updated`
 - [x] Daily log files: `whisper-YYYY-MM-DD.log` under `%APPDATA%/com.whisper.desktop/logs/`, local-time timestamps on client AND relay (LocalTimer), no ANSI colors in files, "Open logs folder" button in Settings
@@ -330,14 +331,13 @@ impact and effort. Pull items into the phase table when they get scheduled.
 - [x] Relay ops: structured logging (`RUST_LOG`-controllable, peer-ID level only) + graceful shutdown on Ctrl+C/SIGTERM
 - [x] Robustness fixes: FIFO→keyed request resolution (get_group_info), error-code→queue routing (stale groups evicted), legacy avatar sync, contact-only group cleanup
 
-**Test counts (2026-08-06):** 317 unit tests — e2ee-core 81, whisper-relay 140,
-whisper-desktop 96; smoke suite all green (reactions/replies/typing travel
+**Test counts (2026-08-06):** 324 unit tests — e2ee-core 84, whisper-relay 141,
+whisper-desktop 99; smoke suite all green (reactions/replies/typing travel
 inside existing encrypted envelopes; invites/join links/avatar pushes added
 relay handlers with their own tests).
 
 **⏳ Next up:**
 - [ ] Deploy the relay to Hetzner (systemd unit ready) → real two-machine E2EE test
-- [ ] Phase 6.5: disappearing messages (per-chat TTL, auto-delete both ends)
 - [ ] Phase 6.9 follow-up: message editing + delete-for-everyone (E2EE edit/delete receipts)
 - [ ] Production hardening: binary integrity check (devtools already disabled in release; no console)
 - [ ] At-rest encryption: build the Windows client with the SQLCipher codec (NASM + Perl toolchain) so the local history DB is encrypted — currently plain SQLite on stock Windows-MSVC builds (documented honestly in README)
