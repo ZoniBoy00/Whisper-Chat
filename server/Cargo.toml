@@ -13,7 +13,8 @@ futures-util = "0.3"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+time = { version = "0.3", features = ["formatting", "local-offset"] }
 uuid = { version = "1", features = ["v4"] }
 rusqlite = { version = "0.40", features = ["bundled"] }
 base64 = "0.23.1"

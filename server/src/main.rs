@@ -21,9 +21,24 @@ use axum::{
 
 use relay::Relay;
 
+/// Formats timestamps as local wall-clock RFC 3339 so relay logs match the
+/// operator's clock instead of always showing UTC.
+struct LocalTimer;
+
+impl tracing_subscriber::fmt::time::FormatTime for LocalTimer {
+    fn format_time(&self, w: &mut tracing_subscriber::fmt::format::Writer<'_>) -> std::fmt::Result {
+        use time::format_description::well_known::Rfc3339;
+        let now =
+            time::OffsetDateTime::now_local().unwrap_or_else(|_| time::OffsetDateTime::now_utc());
+        let rendered = now.format(&Rfc3339).unwrap_or_else(|_| "?".into());
+        w.write_str(&rendered)
+    }
+}
+
 #[tokio::main]
 async fn main() {
     tracing_subscriber::fmt()
+        .with_timer(LocalTimer)
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()),
         )
