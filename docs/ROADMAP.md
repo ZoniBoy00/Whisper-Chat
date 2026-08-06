@@ -208,10 +208,10 @@ exist and is not promised.
 | **Release profiles:** `opt-level=3`, `lto="fat"`, `codegen-units=1`, `panic="abort"`, `strip=true` | workspace Cargo.toml | ✅ done |
 | **No debug symbols in production** | release builds | ✅ (strip) |
 | **Crypto only in Rust** (never in the JS layer) | e2ee-core | ✅ in architecture |
-| **UI without secrets:** the React layer never handles keys — only encrypted blobs | desktop | ⏳ to be confirmed in phase 3 |
+| **UI without secrets:** the React layer never handles keys — only encrypted blobs | desktop | ✅ done (architecture: all crypto lives in e2ee-core, the UI only serializes/renders) |
 | **Mobile hardening:** Android R8/ProGuard + native strip, iOS strip + code signing | mobile | 🔒 phase 8 |
 | **Integrity/tamper-evidence** (binary integrity check, discretionary) | desktop | 🔒 phase 9 |
-| **Cargo audit + dependency discipline** (minimized dependencies = smaller attack surface) | whole project | ⏳ ongoing |
+| **Cargo audit + dependency discipline** (minimized dependencies = smaller attack surface) | whole project | ✅ done (audit job in CI — `rustsec/audit-check@v2.0.0`) |
 
 **Rule for agents:** release builds always with stripped symbols; `panic="abort"`
 must not be "unwind" in production; secrets never go into the JS/UI layer.
@@ -281,7 +281,7 @@ impact and effort. Pull items into the phase table when they get scheduled.
 | 💪 Medium | **Mute conversations** | per-chat notification mute (15m/1h/8h/forever) |
 | 💪 Medium | **Archived chats** | fold old conversations out of the list (unarchive on new message) |
 | 💪 Medium | **Chat backgrounds/themes** | per-chat wallpaper + accent (client-side only) |
-| 💪 Medium | **Message font scale** | small/normal/large (setting exists — wire into bubbles) |
+| ✅ Done | **Message font scale** | small/normal/large setting drives `data-message-scale` → `.wp-msg` bubble font (13/15/17px) |
 | 💪 Medium | **Session health report** | list of sessions/devices with "verify/revoke" actions (Signal-style) |
 | 🧠 Nice-to-have | **Status/Stories** | ephemeral 24h photo/text status (WhatsApp-style) |
 | 🧠 Nice-to-have | **Pinned messages in groups** | admin pins a message to the top |
