@@ -718,6 +718,7 @@ export function MainView({ peerId, onReset }: MainViewProps) {
       <GroupInfoDialog
         open={groupInfoGroupId !== null}
         groupId={groupInfoGroupId}
+        myPeerId={peerId}
         onOpenChange={(open) => {
           if (!open) setGroupInfoGroupId(null);
         }}

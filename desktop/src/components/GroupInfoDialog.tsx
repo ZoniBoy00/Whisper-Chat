@@ -38,6 +38,9 @@ interface GroupInfoDialogProps {
   open: boolean;
   /** The group to show; null clears the panel. */
   groupId: string | null;
+  /** Our own peer ID; used to resolve our role from `owner_peer_id` when the
+   *  server-reported `my_role` has not synced yet. */
+  myPeerId: string;
   onOpenChange: (open: boolean) => void;
   onFetchInfo: (groupId: string) => Promise<GroupInfo>;
   /** Add a member to the group's roster after creation (owner/admin). */
@@ -98,6 +101,7 @@ function RoleBadge({ role, t }: { role: GroupMember["role"]; t: TFunction }) {
 export function GroupInfoDialog({
   open,
   groupId,
+  myPeerId,
   onOpenChange,
   onFetchInfo,
   onAddMember,
@@ -395,7 +399,10 @@ export function GroupInfoDialog({
 
   if (!groupId) return null;
 
-  const myRole = info?.my_role ?? null;
+  // Our role gates the admin controls. Prefer the server-reported `my_role`;
+  // when it has not synced yet, fall back to `owner_peer_id` (we are the
+  // owner) so the owner controls are never hidden behind a stale role.
+  const myRole = info?.my_role ?? (info?.owner_peer_id === myPeerId ? "owner" : null);
   const canPromote = myRole === "owner" || myRole === "admin";
   const canManage = myRole === "owner";
 

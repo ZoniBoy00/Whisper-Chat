@@ -200,10 +200,14 @@ export function MessageBubble({
             outgoing ? "justify-end" : "justify-start"
           )}
         >
-          {pickerOpen && pickerClamped ? (
+          {pickerOpen && pickerPos ? (
             <div
               ref={pickerRef}
-              style={{ left: pickerClamped.x, top: pickerClamped.y }}
+              style={{
+                left: (pickerClamped ?? pickerPos).x,
+                top: (pickerClamped ?? pickerPos).y,
+                visibility: pickerClamped ? "visible" : "hidden",
+              }}
               className="fixed z-50 flex items-center gap-0.5 rounded-full bg-wp-panel-2 p-1.5 shadow-2xl shadow-black/50 ring-1 ring-wp-line/10"
               role="menu"
               aria-label={t("chat.react_to_message")}
