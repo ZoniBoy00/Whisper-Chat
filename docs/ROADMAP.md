@@ -5,7 +5,7 @@
 > general-purpose chat — a WhatsApp/Signal/Telegram replacement without
 > backdoors or scanning mechanisms.
 >
-> **Date:** 2026-08-06 (updated: SQLCipher at-rest, Megolm key rotation, disappearing messages + countdown, message editing, delete for everyone, group read receipts, rename, system messages, daily logs + local time, autobackup, restart-proof sessions, CSP, CI hardening)
+> **Date:** 2026-08-06 (updated: SQLCipher at-rest, Megolm key rotation, disappearing messages + countdown, message editing, delete for everyone, group read receipts, rename, system messages, daily logs + local time, autobackup, restart-proof sessions, CSP, CI hardening; backlog updated from Hermes review: media/voice/export priorities, E2EE PIN backup, device list before 6.11, WASM deferred)
 > **Status:** Phases 0–6.10 done — full local MVP; relay deployment to a real VPS is the next milestone
 > **Origin:** App specification + Gemini cross-check + Byte evaluation
 > **Working title (before branding):** Operation Ghost
@@ -277,20 +277,25 @@ impact and effort. Pull items into the phase table when they get scheduled.
 | ✅ Done | **Disappearing messages** | per-chat timer (off/5s/30s/1m/1h/1d), E2EE TTL, auto-delete both ends + live countdown |
 | ✅ Done | **Message editing** | E2EE edit envelope; composer edit bar; "(edited)" marker |
 | ✅ Done | **Delete for everyone** | E2EE delete envelope; local copy + recipients purge |
-| 💪 Medium | **Voice messages** | opus/WebM chunks over the encrypted media channel |
+| 🔥 High | **Media: images & files** | `docs/MEDIA-SYSTEM.md` is ready — AES-GCM key exchange + `/media` extension; image sharing is ~80% of what people do on a messenger, its absence makes the app feel unfinished |
+| 🔥 High | **Voice messages** | opus/WebM chunks over the encrypted media channel — top requested feature; built on the media channel above (no media server needed, just encrypted chunks) |
+| 🔥 High | **Chat export** | Signal-style plaintext/JSON export of a conversation — "your data is yours" + a GDPR answer; small effort since the backup package machinery already exists |
 | 💪 Medium | **Mute conversations** | per-chat notification mute (15m/1h/8h/forever) |
 | 💪 Medium | **Archived chats** | fold old conversations out of the list (unarchive on new message) |
 | 💪 Medium | **Chat backgrounds/themes** | per-chat wallpaper + accent (client-side only) |
 | ✅ Done | **Message font scale** | small/normal/large setting drives `data-message-scale` → `.wp-msg` bubble font (13/15/17px) |
-| 💪 Medium | **Session health report** | list of sessions/devices with "verify/revoke" actions (Signal-style) |
+| 💪 Medium | **Device list + revoke** | Signal-style session health report (verify/revoke actions) — **prerequisite for multi-device (6.11): do it before, not after** |
 | 🧠 Nice-to-have | **Status/Stories** | ephemeral 24h photo/text status (WhatsApp-style) |
 | 🧠 Nice-to-have | **Pinned messages in groups** | admin pins a message to the top |
 | 🧠 Nice-to-have | **Group admin controls** | only-admins-can-send, group name/photo lock, disband group |
 | 🧠 Nice-to-have | **Global message search** | per-chat search exists — extend across conversations |
 | 🧠 Nice-to-have | **Spell-check / autocorrect** | client-side only (never sent) |
 | 🧠 Nice-to-have | **Message padding** | random-size padding to flatten traffic patterns (metadata) |
-| 🧠 Nice-to-have | **Web client (WASM)** | e2ee-core → wasm-bindgen; read-only companion or full client |
+| 🧠 Nice-to-have | **Web client (WASM)** | e2ee-core → wasm-bindgen; read-only companion or full client — **deliberately deferred**: browser crypto = JS-held keys = larger XSS surface; the Tauri desktop is the differentiator |
 | 🧠 Nice-to-have | **Testnet mode** | a shared demo relay for trying the app without self-hosting |
+| 🔒 Security | **E2EE PIN backup** | Signal-style: backup encrypted with a PIN-derived key. Today `build_backup_package` stores the identity pickle as plaintext JSON and the DB key is derived from that same pickle — anyone holding the backup file can restore the whole profile. Fix before autobackup is advertised |
+| 🧠 Nice-to-have | **Multi-account / profile switcher** | one install, several identities (power-user feature) |
+| 🧠 Nice-to-have | **Email / recovery-key onboarding** | "save your recovery key" flow for users who find a bare key confusing — keeps the no-phone-number/no-account selling point (no email accounts, no extra metadata) |
 
 ---
 
@@ -338,7 +343,9 @@ inside existing encrypted envelopes; invites/join links/avatar pushes added
 relay handlers with their own tests).
 
 **⏳ Next up:**
-- [ ] Deploy the relay to Hetzner (systemd unit ready) → real two-machine E2EE test
+- [ ] Deploy the relay to Hetzner (systemd unit ready) → real two-machine E2EE test — the one thing between "works locally" and "works for real"; blocks public release
+- [ ] Chat export (Signal-style plaintext/JSON) — small, high-trust, GDPR-friendly
+- [ ] Media: images & files (MEDIA-SYSTEM.md ready) → voice messages on the same channel
 - [ ] Production hardening: binary integrity check (devtools already disabled in release; no console)
 - [ ] Public repo (open source) once remote testing is solid
 
