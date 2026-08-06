@@ -2617,14 +2617,15 @@ impl RelayClient {
         quote: Option<Quote>,
         message_id: Option<String>,
     ) -> Result<UIMessage, RelayError> {
+        let id = match message_id.clone() {
+            Some(id) => id,
+            None => format!(
+                "in-{}",
+                self.inner.next_msg_id.fetch_add(1, Ordering::SeqCst)
+            ),
+        };
+        tracing::info!(peer = %peer_id, msg_id = %id, "recording incoming message");
         let message = UIMessage {
-            id: match message_id {
-                Some(id) => id,
-                None => format!(
-                    "in-{}",
-                    self.inner.next_msg_id.fetch_add(1, Ordering::SeqCst)
-                ),
-            },
             text,
             outgoing: false,
             timestamp: now_millis(),

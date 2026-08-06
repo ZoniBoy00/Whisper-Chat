@@ -784,6 +784,13 @@ impl RelayClient {
                 // No read receipt here: the UI sends it (via mark_read) once
                 // the message is actually visible on screen — never merely on
                 // receipt, so "read" matches what the user has opened.
+                tracing::info!(
+                    group = %group_id,
+                    sender = %wire.sender_peer_id,
+                    msg_id = ?text.message_id,
+                    len = text.text.chars().count(),
+                    "group message decrypted, recording"
+                );
                 Ok(Some(self.record_incoming(
                     group_id,
                     text.text,
