@@ -60,8 +60,81 @@ impl Relay {
         }
     }
 
-    /// Add `target` to a group's roster. Only the owner or an existing member
-    /// may add members.
+    /// Rename a group (owner/admin only). The new name is fanned out to every
+    /// member so their chat lists and headers update immediately.
+    pub(crate) async fn rename_group(&self, peer_id: &str, ip: &str, group_id: &str, name: &str) {
+        if !self.take_group_slot(peer_id, ip).await {
+            return;
+        }
+        if !Self::is_valid_group_name(name) {
+            let _ = self
+                .send(
+                    peer_id,
+                    ServerMessage::Error {
+                        code: "invalid_group_name".into(),
+                    },
+                )
+                .await;
+            return;
+        }
+        if self.inner.store.get_group(group_id).is_none() {
+            let _ = self
+                .send(
+                    peer_id,
+                    ServerMessage::Error {
+                        code: "group_not_found".into(),
+                    },
+                )
+                .await;
+            return;
+        }
+        let role = self.inner.store.get_member_role(group_id, peer_id);
+        if !matches!(role.as_deref(), Some("owner") | Some("admin")) {
+            let _ = self
+                .send(
+                    peer_id,
+                    ServerMessage::Error {
+                        code: "not_admin".into(),
+                    },
+                )
+                .await;
+            return;
+        }
+        match self.inner.store.rename_group(group_id, name) {
+            Ok(_) => {
+                tracing::info!(peer = %peer_id, group = %group_id, name = %name, "group renamed");
+                let _ = self
+                    .send(
+                        peer_id,
+                        ServerMessage::GroupRenamed {
+                            group_id: group_id.to_string(),
+                            name: name.to_string(),
+                        },
+                    )
+                    .await;
+                let members = self.inner.store.list_group_members(group_id);
+                for member in members {
+                    if member == peer_id {
+                        continue;
+                    }
+                    let _ = self
+                        .send(
+                            &member,
+                            ServerMessage::GroupRenamed {
+                                group_id: group_id.to_string(),
+                                name: name.to_string(),
+                            },
+                        )
+                        .await;
+                }
+            }
+            Err(err) => {
+                tracing::error!(peer = %peer_id, group = %group_id, "failed to rename group: {err}");
+            }
+        }
+    }
+
+    /// Add `target` to a group's roster. Only the owner or an existing member    /// may add members.
     ///
     /// Contact gate: the added peer must be the adder's ACCEPTED friend. A
     /// stranger cannot be pulled into a group by anyone — this closes the

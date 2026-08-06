@@ -38,7 +38,7 @@ import {
   onGroupInviteReceived,
   onGroupRemoved,
   onGroupUpdated,
-  onMessageReaction,
+  onMessageReadBy,  onMessageReaction,
   onMessageStatus,
   onPresence,
   onReconnecting,
@@ -506,6 +506,26 @@ export function useChatState({
           void refresh();
         })
       );
+      // A member read one of our group messages: bump the read count so the
+      // tick can turn blue once everyone has read it.
+      const messageReadByUnlisten = await register(() =>
+        onMessageReadBy(({ group_id, message_id, read_by_count }) => {
+          if (disposed) return;
+          setMessages((prev) => {
+            const list = prev[group_id];
+            if (!list) return prev;
+            const target = list.find((m) => m.id === message_id);
+            if (!target || !target.outgoing) return prev;
+            if ((target.readByCount ?? 0) >= read_by_count) return prev;
+            return {
+              ...prev,
+              [group_id]: list.map((m) =>
+                m.id === message_id ? { ...m, readByCount: read_by_count } : m
+              ),
+            };
+          });
+        })
+      );
       const contactUpdatedUnlisten = await register(() =>
         onContactUpdated(({ peer_id, display_name, avatar_url }) => {
           if (disposed) return;
@@ -654,6 +674,7 @@ export function useChatState({
         !groupInviteUnlisten ||
         !groupInviteOutcomeUnlisten ||
         !groupUpdatedUnlisten ||
+        !messageReadByUnlisten ||
         !contactUpdatedUnlisten ||
         !presenceUnlisten ||
         !groupRemovedUnlisten ||

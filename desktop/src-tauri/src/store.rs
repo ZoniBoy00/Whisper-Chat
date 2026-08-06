@@ -167,7 +167,8 @@ impl ChatStore {
                 timestamp INTEGER NOT NULL,
                 status    TEXT NOT NULL,
                 client_id TEXT,
-                quote_json TEXT
+                quote_json TEXT,
+                system_json TEXT
             );
             CREATE INDEX IF NOT EXISTS idx_messages_peer_timestamp
                 ON messages (peer_id, timestamp);
@@ -248,6 +249,9 @@ impl ChatStore {
             .collect::<rusqlite::Result<_>>()?;
         if !message_columns.iter().any(|c| c.as_str() == "quote_json") {
             conn.execute_batch("ALTER TABLE messages ADD COLUMN quote_json TEXT;")?;
+        }
+        if !message_columns.iter().any(|c| c.as_str() == "system_json") {
+            conn.execute_batch("ALTER TABLE messages ADD COLUMN system_json TEXT;")?;
         }
 
         // Migration: `contacts` gained `curve25519_key` (for safety numbers)
@@ -400,10 +404,15 @@ impl ChatStore {
             Some(quote) => Some(serde_json::to_string(quote)?),
             None => None,
         };
+        let system_json = match &message.system {
+            Some(system) => Some(serde_json::to_string(system)?),
+            None => None,
+        };
         let conn = self.conn()?;
         conn.execute(
-            "INSERT INTO messages (id, peer_id, text, outgoing, timestamp, status, client_id, quote_json)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+            "INSERT INTO messages
+                 (id, peer_id, text, outgoing, timestamp, status, client_id, quote_json, system_json)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
              ON CONFLICT(id) DO UPDATE SET
                  peer_id   = excluded.peer_id,
                  text      = excluded.text,
@@ -411,7 +420,8 @@ impl ChatStore {
                  timestamp = excluded.timestamp,
                  status    = excluded.status,
                  client_id = excluded.client_id,
-                 quote_json = excluded.quote_json",
+                 quote_json = excluded.quote_json,
+                 system_json = excluded.system_json",
             params![
                 message.id,
                 peer_id,
@@ -420,7 +430,8 @@ impl ChatStore {
                 message.timestamp as i64,
                 message.status,
                 client_id,
-                quote_json
+                quote_json,
+                system_json
             ],
         )?;
         Ok(())
@@ -508,13 +519,18 @@ impl ChatStore {
         let reactions = self.reactions_for(peer_id)?;
         let conn = self.conn()?;
         let mut stmt = conn.prepare(
-            "SELECT id, text, outgoing, timestamp, status, quote_json
+            "SELECT id, text, outgoing, timestamp, status, quote_json, system_json
              FROM messages WHERE peer_id = ?1
              ORDER BY timestamp, id",
         )?;
         let rows = stmt.query_map(params![peer_id], |row| {
             let quote_json: Option<String> = row.get(5)?;
             let quote = match quote_json {
+                Some(json) => serde_json::from_str(&json).unwrap_or(None),
+                None => None,
+            };
+            let system_json: Option<String> = row.get(6)?;
+            let system = match system_json {
                 Some(json) => serde_json::from_str(&json).unwrap_or(None),
                 None => None,
             };
@@ -526,6 +542,8 @@ impl ChatStore {
                 status: row.get(4)?,
                 quote,
                 reactions: Vec::new(), // hydrated below
+                system,
+                read_by: Vec::new(), // not persisted; re-derived from receipts
             })
         })?;
         let mut messages = Vec::new();
@@ -741,6 +759,8 @@ mod tests {
             status: status.to_string(),
             quote: None,
             reactions: Vec::new(),
+            system: None,
+            read_by: Vec::new(),
         }
     }
 

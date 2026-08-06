@@ -16,6 +16,11 @@ export interface Message {
   quote?: QuoteInfo;
   /** Emoji reactions attached to this message, in arrival order. */
   reactions?: ReactionInfo[];
+  /** System event (member joined/left), rendered as a centered pill. */
+  system?: { kind: "joined" | "left"; peer_id: string };
+  /** How many members have read this outgoing group message; the UI renders
+   *  a blue tick once every other member has read it. */
+  readByCount?: number;
 }
 
 /** The quoted message a reply refers to (snapshot sent inside the encrypted

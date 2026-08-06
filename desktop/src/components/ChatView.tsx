@@ -523,6 +523,11 @@ export function ChatView({
                       message={message}
                       myPeerId={myPeerId}
                       animate={newMessageIds.has(message.id)}
+                      readAll={
+                        isGroup &&
+                        (message.readByCount ?? 0) >=
+                          (conversation.memberCount ?? 0) - 1
+                      }
                       searchQuery={searchQuery.trim()}
                       searchActiveRange={activeRange}
                       onReact={(target, emoji) => {

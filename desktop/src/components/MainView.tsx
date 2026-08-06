@@ -17,6 +17,7 @@ import {
   registerProfile,
   reloadIdentity,
   removeMember,
+  renameGroup,
   resetRelay,
   setAutostart,
   setAvatar,
@@ -553,6 +554,16 @@ export function MainView({ peerId, onReset }: MainViewProps) {
     [toast, t]
   );
 
+  /** Rename a group (owner/admin). */
+  const handleRenameGroup = useCallback(
+    async (groupId: string, name: string) => {
+      await renameGroup(groupId, name);
+      await chat.refresh();
+      toast(t("toast.group_renamed"), "success");
+    },
+    [chat.refresh, toast, t]
+  );
+
   /** Add a member to a group after creation (owner/admin). Sends an INVITE:
    *  the peer is not added until they accept. A refresh resyncs the roster so
    *  the member count and the info panel update right away. */
@@ -793,6 +804,7 @@ export function MainView({ peerId, onReset }: MainViewProps) {
         groupId={groupInfoGroupId}
         myPeerId={peerId}
         onCopyJoinLink={handleCopyJoinLink}
+        onRenameGroup={handleRenameGroup}
         onOpenChange={(open) => {
           if (!open) setGroupInfoGroupId(null);
         }}

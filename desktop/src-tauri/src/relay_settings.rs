@@ -460,6 +460,8 @@ mod tests {
                     status: "sent".into(),
                     quote: None,
                     reactions: Vec::new(),
+                    system: None,
+                    read_by: Vec::new(),
                 },
                 UIMessage {
                     id: "delivered-1".into(),
@@ -469,6 +471,8 @@ mod tests {
                     status: "delivered".into(),
                     quote: None,
                     reactions: Vec::new(),
+                    system: None,
+                    read_by: Vec::new(),
                 },
             ],
         );
@@ -483,6 +487,8 @@ mod tests {
                 status: "delivered".into(),
                 quote: None,
                 reactions: Vec::new(),
+                system: None,
+                read_by: Vec::new(),
             }],
         );
 
@@ -507,6 +513,8 @@ mod tests {
                     status: "delivered".into(),
                     quote: None,
                     reactions: Vec::new(),
+                    system: None,
+                    read_by: Vec::new(),
                 },
                 UIMessage {
                     id: "read-1".into(),
@@ -516,6 +524,8 @@ mod tests {
                     status: "read".into(),
                     quote: None,
                     reactions: Vec::new(),
+                    system: None,
+                    read_by: Vec::new(),
                 },
             ],
         );
@@ -539,6 +549,8 @@ mod tests {
                 status: "delivered".into(),
                 quote: None,
                 reactions: Vec::new(),
+                system: None,
+                read_by: Vec::new(),
             }],
         );
 

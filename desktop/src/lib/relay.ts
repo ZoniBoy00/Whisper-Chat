@@ -370,6 +370,11 @@ export function transferOwnership(groupId: string, peerId: string): Promise<void
   return invoke("transfer_ownership", { groupId, peerId });
 }
 
+/** Rename a group (owner/admin only). */
+export function renameGroup(groupId: string, name: string): Promise<void> {
+  return invoke("rename_group", { groupId, name });
+}
+
 /** Remove the caller from a group's roster. */
 export function leaveGroup(groupId: string): Promise<void> {
   return invoke("leave_group", { groupId });
@@ -482,6 +487,22 @@ export function onTyping(
   handler: (event: TypingEvent) => void
 ): Promise<UnlistenFn> {
   return listen<TypingEvent>("typing", (event) => handler(event.payload));
+}
+
+/** Payload of the `message-read-by` event (a member read our group message). */
+export interface MessageReadByEvent {
+  group_id: string;
+  message_id: string;
+  read_by_count: number;
+}
+
+/** Subscribe to group read receipts. Returns an unlisten function. */
+export function onMessageReadBy(
+  handler: (event: MessageReadByEvent) => void
+): Promise<UnlistenFn> {
+  return listen<MessageReadByEvent>("message-read-by", (event) =>
+    handler(event.payload)
+  );
 }
 
 /** Subscribe to emoji reaction updates. Returns an unlisten function. */

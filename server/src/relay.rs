@@ -270,6 +270,9 @@ enum ClientMessage {
     /// Join a group via a shareable join link (group_id + secret token).
     #[serde(rename = "join_group")]
     JoinGroup { group_id: String, token: String },
+    /// Rename a group (owner/admin).
+    #[serde(rename = "rename_group")]
+    RenameGroup { group_id: String, name: String },
 }
 
 /// Messages the SERVER sends to the client.
@@ -452,6 +455,10 @@ pub(crate) enum ServerMessage {
         group_id: String,
         group_name: String,
     },
+    /// Push when a group is renamed (to the renaming member and every other
+    /// member).
+    #[serde(rename = "group_renamed")]
+    GroupRenamed { group_id: String, name: String },
     /// Protocol error.
     Error { code: String },
 }
@@ -811,6 +818,9 @@ impl Relay {
                         }
                         Ok(ClientMessage::JoinGroup { group_id, token }) => {
                             self.join_group(&peer_id, &ip, &group_id, &token).await;
+                        }
+                        Ok(ClientMessage::RenameGroup { group_id, name }) => {
+                            self.rename_group(&peer_id, &ip, &group_id, &name).await;
                         }
                         Ok(ClientMessage::SendFriendRequest { peer_id: target }) => {
                             self.send_friend_request(&peer_id, &ip, &target).await;
