@@ -777,14 +777,13 @@ pub fn run() {
 
             // Register the whisper:// scheme (best-effort: in installed
             // bundles the installer does it; this covers dev/portable runs).
-            // The second dev instance (`WHISPER_IDENTITY_FILE` set) must NOT
-            // register — otherwise the registry ends up pointing at the second
-            // dev exe and clicking a link while the app runs would launch the
-            // wrong binary. Both `register` and the CLI-argument pickup are
-            // best-effort so a missing registration never blocks startup.
-            if std::env::var("WHISPER_IDENTITY_FILE").is_err() {
-                let _ = app.deep_link().register("whisper");
-            }
+            // EVERY instance registers its own exe: in dev, the primary
+            // instance (tauri:dev, vite on :1420) and the second instance
+            // (tauri:dev:second, vite on :1421) each point the registry at
+            // their own binary, so a clicked link always launches the exe
+            // whose dev server is actually running. The most recently started
+            // instance wins the registry entry.
+            let _ = app.deep_link().register("whisper");
             // The app was launched by clicking a whisper:// link: the plugin
             // parsed the CLI argument into `get_current()`.
             if let Ok(Some(urls)) = app.deep_link().get_current() {
