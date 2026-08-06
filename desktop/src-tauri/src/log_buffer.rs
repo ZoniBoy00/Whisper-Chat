@@ -11,6 +11,7 @@
 //! peer-ID and target level only — so capturing every line is safe.
 
 use std::collections::VecDeque;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -174,19 +175,65 @@ fn level_name(level: &tracing::Level) -> &'static str {
 }
 
 /// Initialize `tracing` for the app: every event is written to stderr (dev
-/// console) and mirrored into the shared ring buffer that backs the Logs
-/// settings tab. Call once from the Tauri setup hook; a second call is a
-/// no-op (`try_init` returns the existing default subscriber unchanged).
-pub fn init_tracing(buffer: &LogBuffer) {
+/// console), mirrored into the shared ring buffer that backs the Logs settings
+/// tab, and — when `log_dir` is provided — appended to a daily file
+/// (`whisper-YYYY-MM-DD.log`) so users can share complete error logs in bug
+/// reports. Call once from the Tauri setup hook; a second call is a no-op
+/// (`try_init` returns the existing default subscriber unchanged).
+pub fn init_tracing(buffer: &LogBuffer, log_dir: Option<PathBuf>) {
     let stderr_layer = tracing_subscriber::fmt::layer()
         .with_writer(std::io::stderr)
         .with_target(true)
         .with_filter(LevelFilter::INFO);
     let capture_layer = CaptureLayer::new(buffer.clone()).with_filter(LevelFilter::INFO);
-    let _ = tracing_subscriber::registry()
+    let registry = tracing_subscriber::registry()
         .with(stderr_layer)
-        .with(capture_layer)
-        .try_init();
+        .with(capture_layer);
+    if let Some(dir) = log_dir {
+        if let Ok(file) = open_daily_log(&dir) {
+            // Same format as stderr so a pasted file matches the Logs tab.
+            let file_layer = tracing_subscriber::fmt::layer()
+                .with_writer(file)
+                .with_target(true)
+                .with_filter(LevelFilter::INFO);
+            let _ = registry.with(file_layer).try_init();
+            return;
+        }
+    }
+    let _ = registry.try_init();
+}
+
+/// Open (appending) the daily log file `logs/whisper-YYYY-MM-DD.log`,
+/// creating the directory first. One file per day per process start; a long
+/// running app keeps appending to the day it started.
+fn open_daily_log(dir: &Path) -> std::io::Result<std::fs::File> {
+    std::fs::create_dir_all(dir)?;
+    let path = dir.join(format!("whisper-{}.log", date_stamp()));
+    std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+}
+
+/// The current UTC date as `YYYY-MM-DD` (no external chrono dependency).
+fn date_stamp() -> String {
+    let secs = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let days = secs / 86_400;
+    // Days since 1970-01-01 → civil date (Howard Hinnant's algorithm).
+    let z = days as i64 + 719_468;
+    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146_096) / 365;
+    let y = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = if m <= 2 { y + 1 } else { y };
+    format!("{y:04}-{m:02}-{d:02}")
 }
 
 /// Current time as epoch milliseconds.

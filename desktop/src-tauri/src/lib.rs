@@ -1078,7 +1078,10 @@ pub fn run() {
             // every tracing event the app emits plus webview errors forwarded
             // through `append_client_log`.
             let log_buffer = LogBuffer::new();
-            init_tracing(&log_buffer);
+            // Daily log files in the app-data `logs/` folder so users can
+            // share complete error logs in bug reports.
+            let log_dir = app.path().app_data_dir().ok().map(|dir| dir.join("logs"));
+            init_tracing(&log_buffer, log_dir);
             app.manage(log_buffer);
 
             app.manage(PendingDeepLink(Mutex::new(Vec::new())));

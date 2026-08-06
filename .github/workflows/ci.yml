@@ -58,7 +58,11 @@ jobs:
   audit:
     name: Audit
     runs-on: ubuntu-latest
-    # Only run when dependencies could have changed (README-recommended).
+    # rustsec/audit-check creates a check-run; grant it write access so the
+    # status check is actually created (otherwise it falls back to stdout).
+    permissions:
+      checks: write
+      issues: write
     steps:
       - uses: actions/checkout@v4
       - name: Check RustSec advisory database
