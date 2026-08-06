@@ -250,6 +250,20 @@ enum ClientMessage {
     /// `contact_removed` push.
     #[serde(rename = "remove_contact")]
     RemoveContact { peer_id: String },
+    /// Invite `peer_id` to join `group_id`. The invitee accepts or declines;
+    /// they are NOT added to the roster until they accept.
+    #[serde(rename = "group_invite")]
+    GroupInvite { group_id: String, peer_id: String },
+    /// Accept a pending invite to `group_id`: the caller joins the roster and
+    /// every member is pushed a `group_member_added`.
+    #[serde(rename = "group_invite_accept")]
+    GroupInviteAccept { group_id: String },
+    /// Decline a pending invite to `group_id`.
+    #[serde(rename = "group_invite_decline")]
+    GroupInviteDecline { group_id: String },
+    /// List the caller's pending group invites as (group_id, group_name, inviter).
+    #[serde(rename = "get_group_invites")]
+    GetGroupInvites,
 }
 
 /// Messages the SERVER sends to the client.
@@ -398,8 +412,41 @@ pub(crate) enum ServerMessage {
         incoming: Vec<FriendRequestIncoming>,
         outgoing: Vec<String>,
     },
+    /// Reply to `group_invite` for the inviter.
+    #[serde(rename = "group_invite_sent")]
+    GroupInviteSent,
+    /// Push to the invitee: `inviter_peer_id` invites them to `group_name`.
+    #[serde(rename = "group_invite_received")]
+    GroupInviteReceived {
+        group_id: String,
+        group_name: String,
+        inviter_peer_id: String,
+    },
+    /// Reply to `group_invite_accept` for the accepter.
+    #[serde(rename = "group_invite_accepted_ok")]
+    GroupInviteAcceptedOk,
+    /// Push to the inviter when the invitee accepted the invite.
+    #[serde(rename = "group_invite_accepted")]
+    GroupInviteAccepted { group_id: String, peer_id: String },
+    /// Reply to `group_invite_decline` for the decliner.
+    #[serde(rename = "group_invite_declined_ok")]
+    GroupInviteDeclinedOk,
+    /// Push to the inviter when the invitee declined the invite.
+    #[serde(rename = "group_invite_declined")]
+    GroupInviteDeclined { group_id: String, peer_id: String },
+    /// Reply to `get_group_invites`: the caller's pending group invites.
+    #[serde(rename = "group_invites")]
+    GroupInvites { invites: Vec<GroupInviteInfo> },
     /// Protocol error.
     Error { code: String },
+}
+
+/// One pending group invite as reported to the invitee.
+#[derive(Debug, Clone, Serialize)]
+pub struct GroupInviteInfo {
+    pub group_id: String,
+    pub group_name: String,
+    pub inviter_peer_id: String,
 }
 
 /// One member of a group's roster, with its current role.
@@ -728,6 +775,21 @@ impl Relay {
                         Ok(ClientMessage::SetGroupAvatar { group_id, avatar }) => {
                             self.set_group_avatar(&peer_id, &ip, &group_id, &avatar)
                                 .await;
+                        }
+                        Ok(ClientMessage::GroupInvite {
+                            group_id,
+                            peer_id: target,
+                        }) => {
+                            self.group_invite(&peer_id, &ip, &group_id, &target).await;
+                        }
+                        Ok(ClientMessage::GroupInviteAccept { group_id }) => {
+                            self.group_invite_accept(&peer_id, &ip, &group_id).await;
+                        }
+                        Ok(ClientMessage::GroupInviteDecline { group_id }) => {
+                            self.group_invite_decline(&peer_id, &ip, &group_id).await;
+                        }
+                        Ok(ClientMessage::GetGroupInvites) => {
+                            self.get_group_invites(&peer_id, &ip).await;
                         }
                         Ok(ClientMessage::SendFriendRequest { peer_id: target }) => {
                             self.send_friend_request(&peer_id, &ip, &target).await;

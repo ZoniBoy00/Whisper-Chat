@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { QuoteInfo, Theme } from "../types";
 import {
-  addGroupMember,
   clearChatHistory,
   createGroup,
   demoteMember,
@@ -502,16 +501,16 @@ export function MainView({ peerId, onReset }: MainViewProps) {
     [chat.refresh, toast, t]
   );
 
-  /** Add a member to a group after creation (owner/admin). The backend shares
-   *  every existing member's Megolm key to the newcomer; a refresh resyncs the
-   *  roster so the member count and the info panel update right away. */
+  /** Add a member to a group after creation (owner/admin). Sends an INVITE:
+   *  the peer is not added until they accept. A refresh resyncs the roster so
+   *  the member count and the info panel update right away. */
   const handleAddMember = useCallback(
     async (groupId: string, peerId: string) => {
-      await addGroupMember(groupId, peerId);
+      await chat.sendGroupInvite(groupId, peerId);
       await chat.refresh();
-      toast(t("toast.member_added"), "success");
+      toast(t("toast.invite_sent"), "success");
     },
-    [chat.refresh, toast, t]
+    [chat.sendGroupInvite, chat.refresh, toast, t]
   );
 
   /** Set a group's avatar (owner/admin). The backend stores the blob
@@ -610,6 +609,15 @@ export function MainView({ peerId, onReset }: MainViewProps) {
     [chat.contacts, chat.groups, chat.messages, pinnedIds]
   );
 
+  // Display names for the group typing header ("ZoniBoy typing…").
+  const typingNames = useMemo(() => {
+    const map: Record<string, string> = {};
+    for (const contact of chat.contacts) {
+      map[contact.peer_id] = contact.display_name ?? shortPeerId(contact.peer_id);
+    }
+    return map;
+  }, [chat.contacts]);
+
   /** Pin/unpin a chat; the choice is persisted per identity. */
   const handleTogglePin = useCallback(
     (targetPeerId: string) => {
@@ -650,6 +658,9 @@ export function MainView({ peerId, onReset }: MainViewProps) {
         relayUrl={relayUrl}
         friendRequestsIncoming={chat.friendRequestsIncoming}
         friendRequestsOutgoing={chat.friendRequestsOutgoing}
+        groupInvites={chat.groupInvites}
+        onAcceptGroupInvite={chat.acceptGroupInvite}
+        onDeclineGroupInvite={chat.declineGroupInvite}
         onSelect={chat.setActivePeerId}
         onAddContact={() => setAddDialogOpen(true)}
         onNewGroup={() => setNewGroupOpen(true)}
@@ -669,7 +680,8 @@ export function MainView({ peerId, onReset }: MainViewProps) {
       />
       <ChatView
         conversation={active}
-        isTyping={active ? chat.typing[active.peerId] ?? false : false}
+        typingWriters={active ? chat.typing[active.peerId] ?? [] : []}
+        typingNames={typingNames}
         presence={active ? chat.presence[active.peerId] ?? null : null}
         relayUrl={relayUrl}
         myPeerId={peerId}

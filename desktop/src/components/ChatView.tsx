@@ -51,7 +51,9 @@ const REACTION_EMOJIS = ["👍", "❤️", "😂", "😮", "😢", "🙏", "🔥
 interface ChatViewProps {
   conversation: Conversation | null;
   /** Whether the active peer is currently typing (from the `typing` event). */
-  isTyping: boolean;
+  typingWriters: string[];
+  /** Display names for typing writers (peer id -> name), for group headers. */
+  typingNames: Record<string, string>;
   /** Presence of the active peer; null when not yet known. */
   presence: PresenceInfo | null;
   /** Relay endpoint; used to resolve `/media/{hash}` avatar paths. */
@@ -175,7 +177,8 @@ interface SearchMatch {
 
 export function ChatView({
   conversation,
-  isTyping,
+  typingWriters,
+  typingNames,
   presence,
   relayUrl,
   myPeerId,
@@ -420,7 +423,7 @@ export function ChatView({
                   : ""}
                 {t("common.end_to_end_encrypted")}
               </p>
-            ) : isTyping ? (
+            ) : typingWriters.length > 0 ? (
               <p
                 aria-live="polite"
                 className="mt-0.5 inline-flex items-center gap-1.5 text-sm font-semibold text-wp-read"
@@ -433,7 +436,15 @@ export function ChatView({
                   <span className="typing-dot" />
                   <span className="typing-dot" />
                 </span>
-                {t("chat.typing")}
+                {isGroup && typingWriters.length > 1
+                  ? t("chat.typing_many", { n: typingWriters.length })
+                  : isGroup
+                    ? t("chat.typing_name", {
+                        name:
+                          typingNames[typingWriters[0]] ??
+                          shortPeerId(typingWriters[0]),
+                      })
+                    : t("chat.typing")}
               </p>
             ) : presence ? (
               presence.online ? (

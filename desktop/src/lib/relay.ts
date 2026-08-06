@@ -11,6 +11,9 @@ import type {
   FriendRequestEvent,
   FriendRequests,
   GroupInfo,
+  GroupInviteInfo,
+  GroupInviteOutcomeEvent,
+  GroupInviteReceivedEvent,
   GroupRemovedEvent,
   LogEntry,
   MessageStatusEvent,
@@ -341,6 +344,48 @@ export function transferOwnership(groupId: string, peerId: string): Promise<void
 /** Remove the caller from a group's roster. */
 export function leaveGroup(groupId: string): Promise<void> {
   return invoke("leave_group", { groupId });
+}
+
+/** Invite `peerId` to `groupId` (owner/admin only). The invitee accepts or
+ *  declines; they join the roster only on accept. */
+export function sendGroupInvite(
+  groupId: string,
+  peerId: string
+): Promise<void> {
+  return invoke("send_group_invite", { groupId, peerId });
+}
+
+/** Accept a pending invite to `groupId`. */
+export function acceptGroupInvite(groupId: string): Promise<void> {
+  return invoke("accept_group_invite", { groupId });
+}
+
+/** Decline a pending invite to `groupId`. */
+export function declineGroupInvite(groupId: string): Promise<void> {
+  return invoke("decline_group_invite", { groupId });
+}
+
+/** Fetch the pending group invites for this identity. */
+export function getGroupInvites(): Promise<GroupInviteInfo[]> {
+  return invoke<GroupInviteInfo[]>("get_group_invites");
+}
+
+/** Subscribe to new group invites. Returns an unlisten function. */
+export function onGroupInviteReceived(
+  handler: (event: GroupInviteReceivedEvent) => void
+): Promise<UnlistenFn> {
+  return listen<GroupInviteReceivedEvent>("group-invite-received", (event) =>
+    handler(event.payload)
+  );
+}
+
+/** Subscribe to invite outcomes (the inviter learns accept/decline). */
+export function onGroupInviteOutcome(
+  handler: (event: GroupInviteOutcomeEvent) => void
+): Promise<UnlistenFn> {
+  return listen<GroupInviteOutcomeEvent>("group-invite-outcome", (event) =>
+    handler(event.payload)
+  );
 }
 
 /** Close the relay connection (used when resetting the identity). */

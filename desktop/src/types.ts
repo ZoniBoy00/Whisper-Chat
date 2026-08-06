@@ -193,10 +193,14 @@ export interface MessageStatusEvent {
   status: MessageStatus;
 }
 
-/** Payload of the `typing` event emitted when a peer starts/stops typing. */
+/** Payload of the `typing` event emitted when a peer starts/stops typing.
+ *  `sender` is the composing member for GROUP chats (the `peer_id` is then
+ *  the group id); it is `null` for 1:1 chats where the peer id identifies
+ *  the writer. */
 export interface TypingEvent {
   peer_id: string;
   is_typing: boolean;
+  sender?: string | null;
 }
 
 /** Payload of the `contact-updated` event emitted when a contact's display
@@ -247,6 +251,27 @@ export interface FriendRequestDeclinedEvent {
  *  ends (either side removed it). */
 export interface ContactRemovedEvent {
   peer_id: string;
+}
+
+/** One pending group invite as reported to the invitee. */
+export interface GroupInviteInfo {
+  group_id: string;
+  group_name: string;
+  inviter_peer_id: string;
+}
+
+/** Payload of the `group-invite-received` event (UI toast + Invites section). */
+export interface GroupInviteReceivedEvent {
+  group_id: string;
+  group_name: string;
+  inviter_peer_id: string;
+}
+
+/** Payload of the `group-invite-outcome` event (the inviter learns the result). */
+export interface GroupInviteOutcomeEvent {
+  group_id: string;
+  peer_id: string;
+  accepted: boolean;
 }
 
 /** Settings snapshot returned by the `get_settings` command. */

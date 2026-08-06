@@ -24,6 +24,7 @@ import {
 import type {
   Conversation,
   FriendRequestIncoming,
+  GroupInviteInfo,
   PresenceInfo,
   ProfileInfo,
 } from "../types";
@@ -49,6 +50,12 @@ interface SidebarProps {
   friendRequestsIncoming: FriendRequestIncoming[];
   /** Outgoing pending friend requests: peer IDs we asked, unanswered. */
   friendRequestsOutgoing: string[];
+  /** Pending group invites (accept/decline in the UI). */
+  groupInvites: GroupInviteInfo[];
+  /** Accept a pending group invite. */
+  onAcceptGroupInvite: (groupId: string) => Promise<void>;
+  /** Decline a pending group invite. */
+  onDeclineGroupInvite: (groupId: string) => Promise<void>;
   /** Latest known presence per peer, fed by pushes and the 30s poll. */
   presence: Record<string, PresenceInfo>;
   activeId: string | null;
@@ -109,6 +116,9 @@ export function Sidebar({
   conversations,
   friendRequestsIncoming,
   friendRequestsOutgoing,
+  groupInvites,
+  onAcceptGroupInvite,
+  onDeclineGroupInvite,
   presence,
   activeId,
   connected,
@@ -534,6 +544,53 @@ export function Sidebar({
                 </div>
               );
             })}
+          </div>
+        </div>
+      ) : null}
+
+      {/* Pending group invites: accept/decline right here. */}
+      {groupInvites.length > 0 ? (
+        <div className="border-b border-wp-line/10 px-2 pb-2">
+          <p className="px-3 pb-1.5 text-xs font-semibold uppercase tracking-widest text-wp-accent">
+            {t("invites.title")}
+          </p>
+          <div className="flex flex-col gap-0.5" aria-label={t("invites.title")}>
+            {groupInvites.map((invite) => (
+              <div
+                key={invite.group_id}
+                className="flex items-center gap-2.5 rounded-xl px-3 py-2 transition hover:bg-wp-panel-2"
+              >
+                <Avatar name={invite.group_name} size={36} variant="group" />
+                <div className="min-w-0 flex-1">
+                  <p className="truncate text-sm font-medium text-wp-text">
+                    {invite.group_name}
+                  </p>
+                  <p className="truncate text-xs text-wp-faint">
+                    {t("invites.from", { peer: shortPeerId(invite.inviter_peer_id, 16) })}
+                  </p>
+                </div>
+                <div className="flex shrink-0 items-center gap-0.5">
+                  <button
+                    type="button"
+                    onClick={() => void onAcceptGroupInvite(invite.group_id)}
+                    title={t("invites.accept")}
+                    aria-label={t("invites.accept_aria", { group: invite.group_name })}
+                    className="rounded-lg p-1.5 text-wp-dim transition hover:bg-wp-panel-3 hover:text-wp-online"
+                  >
+                    <Check className="h-4 w-4" />
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => void onDeclineGroupInvite(invite.group_id)}
+                    title={t("invites.decline")}
+                    aria-label={t("invites.decline_aria", { group: invite.group_name })}
+                    className="rounded-lg p-1.5 text-wp-dim transition hover:bg-wp-panel-3 hover:text-wp-danger"
+                  >
+                    <X className="h-4 w-4" />
+                  </button>
+                </div>
+              </div>
+            ))}
           </div>
         </div>
       ) : null}

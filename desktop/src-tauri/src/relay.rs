@@ -26,6 +26,8 @@
 
 #[path = "relay_contacts.rs"]
 mod relay_contacts;
+#[path = "relay_group_invites.rs"]
+mod relay_group_invites;
 #[path = "relay_groups.rs"]
 mod relay_groups;
 #[path = "relay_presence.rs"]
@@ -343,6 +345,14 @@ enum ClientMessage {
     /// The relay pushes `contact_removed` to both peers.
     #[serde(rename = "remove_contact")]
     RemoveContact { peer_id: String },
+    #[serde(rename = "group_invite")]
+    GroupInvite { group_id: String, peer_id: String },
+    #[serde(rename = "group_invite_accept")]
+    GroupInviteAccept { group_id: String },
+    #[serde(rename = "group_invite_decline")]
+    GroupInviteDecline { group_id: String },
+    #[serde(rename = "get_group_invites")]
+    GetGroupInvites,
 }
 
 /// Messages the SERVER sends to the client (matches `server/src/relay.rs`).
@@ -487,8 +497,34 @@ enum ServerMessage {
         #[serde(default)]
         outgoing: Vec<String>,
     },
+    #[serde(rename = "group_invite_sent")]
+    GroupInviteSent,
+    #[serde(rename = "group_invite_received")]
+    GroupInviteReceived {
+        group_id: String,
+        group_name: String,
+        inviter_peer_id: String,
+    },
+    #[serde(rename = "group_invite_accepted_ok")]
+    GroupInviteAcceptedOk,
+    #[serde(rename = "group_invite_accepted")]
+    GroupInviteAccepted { group_id: String, peer_id: String },
+    #[serde(rename = "group_invite_declined_ok")]
+    GroupInviteDeclinedOk,
+    #[serde(rename = "group_invite_declined")]
+    GroupInviteDeclined { group_id: String, peer_id: String },
+    #[serde(rename = "group_invites")]
+    GroupInvites { invites: Vec<GroupInviteInfo> },
     /// A protocol error code.
     Error { code: String },
+}
+
+/// One pending group invite as reported to the invitee.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GroupInviteInfo {
+    pub group_id: String,
+    pub group_name: String,
+    pub inviter_peer_id: String,
 }
 
 /// The opaque envelope shape the relay routes between peers.
@@ -647,11 +683,15 @@ pub struct MessageStatusEvent {
 
 /// Payload of the `typing` event emitted when a peer starts or stops typing.
 /// `TypingStopped` receipts and the 5-second auto-timeout both emit
-/// `is_typing: false`.
+/// `is_typing: false`. `sender` is the composing member for GROUP chats (the
+/// `peer_id` is then the group id); it is `None` for 1:1 chats where the peer
+/// id already identifies the writer.
 #[derive(Debug, Clone, Serialize)]
 pub struct TypingEvent {
     pub peer_id: String,
     pub is_typing: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sender: Option<String>,
 }
 
 /// Payload of the `contact-updated` event emitted when a contact's display
@@ -1018,6 +1058,13 @@ struct RelayInner {
     /// In-flight promote/demote/remove/leave confirmations, resolved in FIFO
     /// order (the relay answers each request in turn).
     pending_group_op: Mutex<VecDeque<oneshot::Sender<GroupOpResponse>>>,
+    /// In-flight group invite commands (invite/accept/decline), FIFO order.
+    pending_group_invite_op: Mutex<VecDeque<oneshot::Sender<GroupOpResponse>>>,
+    /// In-flight `get_group_invites` snapshots, FIFO order.
+    pending_group_invites_list: Mutex<VecDeque<oneshot::Sender<GroupInvitesResponse>>>,
+    /// Pending group invites for this identity, in arrival order. Fed by
+    /// `group_invite_received` pushes and `group_invites` snapshots.
+    group_invites_incoming: RwLock<Vec<GroupInviteInfo>>,
     /// Incoming friend requests, in arrival order, with the requester's public
     /// display name when known. Fed by `friend_request_received` pushes and
     /// `friend_requests` snapshots.
@@ -1059,6 +1106,9 @@ type GroupInfoResponse = Result<GroupInfo, RelayError>;
 
 /// Result channel type for a promote/demote/remove/leave confirmation.
 type GroupOpResponse = Result<(), RelayError>;
+
+/// Result channel type for a `get_group_invites` snapshot.
+type GroupInvitesResponse = Result<Vec<GroupInviteInfo>, RelayError>;
 
 /// Result channel type for a friend-request command: the `friend_requests`
 /// snapshot the relay answers with.
@@ -1102,6 +1152,9 @@ impl RelayClient {
                 pending_group_member_added: Mutex::new(VecDeque::new()),
                 pending_group_info: Mutex::new(VecDeque::new()),
                 pending_group_op: Mutex::new(VecDeque::new()),
+                pending_group_invite_op: Mutex::new(VecDeque::new()),
+                pending_group_invites_list: Mutex::new(VecDeque::new()),
+                group_invites_incoming: RwLock::new(Vec::new()),
                 friend_requests_incoming: RwLock::new(Vec::new()),
                 friend_requests_outgoing: RwLock::new(Vec::new()),
                 pending_contact_ops: Mutex::new(VecDeque::new()),
@@ -1724,7 +1777,9 @@ impl RelayClient {
             ServerMessage::GroupMemberAdded { group_id, peer_id } => {
                 self.handle_group_member_added(&group_id, &peer_id)
             }
-            ServerMessage::GroupMemberLeft { .. } => self.handle_group_member_left(),
+            ServerMessage::GroupMemberLeft { group_id, peer_id } => {
+                self.handle_group_member_left(&group_id, &peer_id)
+            }
             ServerMessage::GroupInfo {
                 group_id,
                 name,
@@ -1764,6 +1819,21 @@ impl RelayClient {
             ServerMessage::FriendRequests { incoming, outgoing } => {
                 self.handle_friend_requests(incoming, outgoing)
             }
+            ServerMessage::GroupInviteSent => self.handle_group_op_ack(),
+            ServerMessage::GroupInviteReceived {
+                group_id,
+                group_name,
+                inviter_peer_id,
+            } => self.handle_group_invite_received(&group_id, &group_name, &inviter_peer_id),
+            ServerMessage::GroupInviteAcceptedOk => self.handle_group_op_ack(),
+            ServerMessage::GroupInviteAccepted { group_id, peer_id } => {
+                self.handle_group_invite_accepted(&group_id, &peer_id)
+            }
+            ServerMessage::GroupInviteDeclinedOk => self.handle_group_op_ack(),
+            ServerMessage::GroupInviteDeclined { group_id, peer_id } => {
+                self.handle_group_invite_declined(&group_id, &peer_id)
+            }
+            ServerMessage::GroupInvites { invites } => self.handle_group_invites(invites),
             ServerMessage::Error { code } => {
                 // Route the error to the queue that actually owns the failed
                 // request. A blind "oldest waiter across every queue" fallback
@@ -1807,6 +1877,18 @@ impl RelayClient {
                             send_error(tx, &code);
                         } else if let Some(tx) =
                             mutex_guard(&self.inner.pending_contact_ops)?.pop_front()
+                        {
+                            send_error(tx, &code);
+                        } else if let Some(tx) =
+                            mutex_guard(&self.inner.pending_group_invite_op)?.pop_front()
+                        {
+                            send_error(tx, &code);
+                        }
+                    }
+                    // Group invite errors.
+                    "not_invited" | "already_invited" | "already_member" => {
+                        if let Some(tx) =
+                            mutex_guard(&self.inner.pending_group_invite_op)?.pop_front()
                         {
                             send_error(tx, &code);
                         }
@@ -1970,6 +2052,7 @@ impl RelayClient {
                         )?;
                         Ok(None)
                     }
+                    ParsedPayload::Typing(_) => Ok(None),
                 }
             }
             EnvelopeContent::Message(message) => {
@@ -2040,6 +2123,10 @@ impl RelayClient {
                         )?;
                         Ok(None)
                     }
+                    // A group-style typing payload in a 1:1 session is
+                    // unexpected (1:1 typing uses the receipt channel); ignore
+                    // it defensively.
+                    ParsedPayload::Typing(_) => Ok(None),
                 }
             }
             // A bundle is published, never delivered as a chat envelope.

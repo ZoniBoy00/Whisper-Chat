@@ -11,6 +11,7 @@ import type {
   ContactInfo,
   FriendRequestIncoming,
   GroupInfo,
+  GroupInviteInfo,
   Message,
   MessageStatus,
   PresenceInfo,
@@ -18,17 +19,22 @@ import type {
 } from "../types";
 import {
   acceptFriendRequest as relayAcceptFriendRequest,
+  acceptGroupInvite as relayAcceptGroupInvite,
   connectRelay,
   declineFriendRequest as relayDeclineFriendRequest,
+  declineGroupInvite as relayDeclineGroupInvite,
   deleteMessage as relayDeleteMessage,
   getChatState,
   getFriendRequests,
+  getGroupInvites,
   onChatMessage,
   onContactAdded,
   onContactRemoved,
   onContactUpdated,
   onFriendRequest,
   onFriendRequestDeclined,
+  onGroupInviteOutcome,
+  onGroupInviteReceived,
   onGroupRemoved,
   onMessageReaction,
   onMessageStatus,
@@ -42,6 +48,7 @@ import {
   relayErrorCode,
   removeContact as relayRemoveContact,
   sendFriendRequest as relaySendFriendRequest,
+  sendGroupInvite as relaySendGroupInvite,
   sendMessage as relaySendMessage,
   sendReaction as relaySendReaction,
   sendTyping as relaySendTyping,
@@ -127,6 +134,8 @@ export interface ChatStateApi {
   friendRequestsIncoming: FriendRequestIncoming[];
   /** Outgoing pending friend requests: peer IDs we asked, unanswered. */
   friendRequestsOutgoing: string[];
+  /** Pending group invites for this identity (accept/decline in the UI). */
+  groupInvites: GroupInviteInfo[];
   myDisplayName: string | null;
   /** Our own peer ID (fingerprint), seeded from the chat-state snapshot. */
   myPeerId: string | null;
@@ -142,7 +151,7 @@ export interface ChatStateApi {
   /** Current auto-reconnect progress; null while not reconnecting. */
   reconnectInfo: { attempt: number; nextInMs: number } | null;
   connectionError: string | null;
-  typing: Record<string, boolean>;
+  typing: Record<string, string[]>;
   presence: Record<string, PresenceInfo>;
   activePeerId: string | null;
   setActivePeerId: Dispatch<SetStateAction<string | null>>;
@@ -181,6 +190,12 @@ export interface ChatStateApi {
   /** Wipe every message and unread badge from the React state after a
    *  `clear_chat_history` backend call. */
   clearHistory: () => void;
+  /** Invite a contact to a group (owner/admin). */
+  sendGroupInvite: (groupId: string, peerId: string) => Promise<void>;
+  /** Accept a pending group invite. */
+  acceptGroupInvite: (groupId: string) => Promise<void>;
+  /** Decline a pending group invite. */
+  declineGroupInvite: (groupId: string) => Promise<void>;
 }
 
 /** Owns the chat state (contacts, messages, groups, connection, presence,
@@ -213,7 +228,8 @@ export function useChatState({
     nextInMs: number;
   } | null>(null);
   const [connectionError, setConnectionError] = useState<string | null>(null);
-  const [typing, setTyping] = useState<Record<string, boolean>>({});
+  const [typing, setTyping] = useState<Record<string, string[]>>({});
+  const [groupInvites, setGroupInvites] = useState<GroupInviteInfo[]>([]);
   const [presence, setPresence] = useState<Record<string, PresenceInfo>>({});
   const [activePeerId, setActivePeerIdState] = useState<string | null>(null);
   const [unread, setUnread] = useState<Record<string, number>>({});
@@ -269,6 +285,9 @@ export function useChatState({
       setPresence(state.presence);
       setFriendRequestsIncoming(state.friend_requests_incoming);
       setFriendRequestsOutgoing(state.friend_requests_outgoing);
+      // Best-effort: pending group invites live server-side; a failed fetch
+      // just leaves the current list as-is.
+      getGroupInvites().then(setGroupInvites).catch(() => {});
     } catch {
       // Transient failure; event listeners resync the next state change.
     }
@@ -402,13 +421,25 @@ export function useChatState({
         })
       );
       const typingUnlisten = await register(() =>
-        onTyping(({ peer_id, is_typing }) => {
+        onTyping(({ peer_id, is_typing, sender }) => {
           if (disposed) return;
-          setTyping((prev) =>
-            prev[peer_id] === is_typing
-              ? prev
-              : { ...prev, [peer_id]: is_typing }
-          );
+          // The typing state is a set of active writers per conversation:
+          // 1:1 chats key it by the peer id itself, groups by the writer's
+          // member id (so the header can render "ZoniBoy typing…" or
+          // "3 members typing…").
+          const writer = sender ?? peer_id;
+          setTyping((prev) => {
+            const writers = new Set(prev[peer_id] ?? []);
+            if (is_typing) writers.add(writer);
+            else writers.delete(writer);
+            const nextList = [...writers];
+            const current = prev[peer_id] ?? [];
+            const same =
+              current.length === nextList.length &&
+              current.every((id) => nextList.includes(id));
+            if (same) return prev;
+            return { ...prev, [peer_id]: nextList };
+          });
         })
       );
       // Reactions arrive as absolute state signals (active true/false), so
@@ -435,6 +466,31 @@ export function useChatState({
               ),
             };
           });
+        })
+      );
+      const groupInviteUnlisten = await register(() =>
+        onGroupInviteReceived((invite) => {
+          if (disposed) return;
+          setGroupInvites((prev) =>
+            prev.some((i) => i.group_id === invite.group_id)
+              ? prev
+              : [...prev, invite]
+          );
+          toast(
+            t("invites.received", { group: invite.group_name }),
+            "info"
+          );
+        })
+      );
+      const groupInviteOutcomeUnlisten = await register(() =>
+        onGroupInviteOutcome(({ group_id: _group_id, peer_id, accepted }) => {
+          if (disposed) return;
+          toast(
+            accepted
+              ? t("invites.outcome_accepted", { peer: shortPeerId(peer_id) })
+              : t("invites.outcome_declined", { peer: shortPeerId(peer_id) }),
+            accepted ? "success" : "info"
+          );
         })
       );
       const contactUpdatedUnlisten = await register(() =>
@@ -582,6 +638,8 @@ export function useChatState({
         !messageStatusUnlisten ||
         !typingUnlisten ||
         !reactionUnlisten ||
+        !groupInviteUnlisten ||
+        !groupInviteOutcomeUnlisten ||
         !contactUpdatedUnlisten ||
         !presenceUnlisten ||
         !groupRemovedUnlisten ||
@@ -878,10 +936,40 @@ export function useChatState({
     setUnread({});
   }, []);
 
+  /** Invite a contact to a group (owner/admin); the invitee accepts or
+   *  declines. On accept, refresh the roster so the new member appears. */
+  const sendGroupInvite = useCallback(
+    async (groupId: string, peerId: string) => {
+      await relaySendGroupInvite(groupId, peerId);
+      await refresh();
+    },
+    [refresh]
+  );
+
+  /** Accept a pending group invite: the relay adds us to the roster. */
+  const acceptGroupInvite = useCallback(
+    async (groupId: string) => {
+      await relayAcceptGroupInvite(groupId);
+      setGroupInvites((prev) => prev.filter((i) => i.group_id !== groupId));
+      await refresh();
+    },
+    [refresh]
+  );
+
+  /** Decline a pending group invite. */
+  const declineGroupInvite = useCallback(
+    async (groupId: string) => {
+      await relayDeclineGroupInvite(groupId);
+      setGroupInvites((prev) => prev.filter((i) => i.group_id !== groupId));
+    },
+    []
+  );
+
   return {
     contacts,
     friendRequestsIncoming,
     friendRequestsOutgoing,
+    groupInvites,
     myDisplayName,
     myPeerId,
     myAvatarUrl,
@@ -910,8 +998,11 @@ export function useChatState({
     updatePresence,
     deleteMessage,
     leaveGroup,
-  verifyGroupAccess,
+    verifyGroupAccess,
     transferOwnership,
     clearHistory,
+    sendGroupInvite,
+    acceptGroupInvite,
+    declineGroupInvite,
   };
 }

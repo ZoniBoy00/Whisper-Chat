@@ -149,10 +149,14 @@ impl RelayClient {
     /// Send an end-to-end typing indicator (or the "stopped" signal) to a
     /// peer, encrypted inside the established session. When the typing
     /// indicator is disabled in settings this is a no-op — the peer never
-    /// learns that we are typing.
+    /// learns that we are typing. In a group the indicator travels as a
+    /// Megolm-encrypted payload so the recipients know WHICH member types.
     pub fn send_typing(&self, peer_id: &str, is_typing: bool) -> Result<(), RelayError> {
         if !read_guard(&self.inner.settings)?.typing_indicator {
             return Ok(());
+        }
+        if read_guard(&self.inner.groups)?.contains_key(peer_id) {
+            return self.send_group_typing(peer_id, is_typing);
         }
         let kind = if is_typing {
             ReceiptKind::Typing
@@ -228,6 +232,7 @@ impl RelayClient {
                     TypingEvent {
                         peer_id: sender.to_string(),
                         is_typing,
+                        sender: None,
                     },
                 );
                 // A "stopped" receipt cancels any pending auto-timeout by
@@ -249,6 +254,7 @@ impl RelayClient {
                                 TypingEvent {
                                     peer_id: peer.clone(),
                                     is_typing: false,
+                                    sender: None,
                                 },
                             );
                         }
