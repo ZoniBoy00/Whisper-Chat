@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Loader2, Users, X } from "lucide-react";
-import { cx, shortPeerId } from "../lib/format";
+import { cx, mediaUrl, shortPeerId } from "../lib/format";
 import { relayErrorCode } from "../lib/relay";
 import { useI18n } from "../i18n/I18nContext";
 import { useToast } from "../hooks/useToast";
@@ -12,16 +12,19 @@ interface JoinGroupDialogProps {
   onOpenChange: (open: boolean) => void;
   /** The raw whisper://join link that opened the dialog. */
   link: string;
+  /** Relay endpoint; used to resolve `/media/{hash}` group avatar paths. */
+  relayUrl: string;
   /** Join the group (relay call). */
   onJoin: (groupId: string, token: string) => Promise<void>;
 }
 
-/** Extract the group id + token (+ optional display name) from a
- *  `whisper://join?group=..&token=..&name=..` link. */
+/** Extract the group id + token (+ optional display name/avatar hash) from a
+ *  `whisper://join?group=..&token=..&name=..&avatar=..` link. */
 function parseJoinLink(url: string): {
   groupId: string;
   token: string;
   groupName: string | null;
+  avatarHash: string | null;
 } | null {
   const match = url.match(
     /^whisper:\/\/join\/?\?[^]*\bgroup=([0-9a-f-]+)\b[^]*\btoken=([0-9a-f-]+)\b/i
@@ -31,7 +34,13 @@ function parseJoinLink(url: string): {
   const groupName = nameMatch
     ? decodeURIComponent(nameMatch[1].replace(/\+/g, " "))
     : null;
-  return { groupId: match[1], token: match[2], groupName };
+  const avatarMatch = url.match(/[?&]avatar=([0-9a-f]+)/i);
+  return {
+    groupId: match[1],
+    token: match[2],
+    groupName,
+    avatarHash: avatarMatch ? avatarMatch[1] : null,
+  };
 }
 
 /** Popup shown when a `whisper://join` link is opened: confirm joining the
@@ -40,6 +49,7 @@ export function JoinGroupDialog({
   open,
   onOpenChange,
   link,
+  relayUrl,
   onJoin,
 }: JoinGroupDialogProps) {
   const { t } = useI18n();
@@ -115,7 +125,16 @@ export function JoinGroupDialog({
             <X className="h-4 w-4" aria-hidden="true" />
           </button>
 
-          <Avatar name={name} size={84} variant="group" />
+          <Avatar
+            name={name}
+            size={84}
+            variant="group"
+            src={
+              parsed?.avatarHash
+                ? mediaUrl(relayUrl, `/media/${parsed.avatarHash}`)
+                : null
+            }
+          />
           <h2
             id="join-group-title"
             className="mt-3 max-w-full truncate font-display text-lg font-semibold tracking-tight text-wp-text"

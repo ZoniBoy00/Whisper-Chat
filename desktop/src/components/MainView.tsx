@@ -750,6 +750,7 @@ export function MainView({ peerId, onReset }: MainViewProps) {
           if (!open) setJoinLink(null);
         }}
         link={joinLink ?? ""}
+        relayUrl={relayUrl}
         onJoin={(groupId, token) => chat.joinGroupByLink(groupId, token)}
       />
       <NewGroupDialog

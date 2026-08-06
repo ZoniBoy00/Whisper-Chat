@@ -1,4 +1,5 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { useI18n } from "../i18n/I18nContext";
 
 /** The emoji palette offered by the reaction picker (Signal-style presets). */
@@ -61,7 +62,7 @@ export function ReactionPicker({ x, y, onPick, onClose }: ReactionPickerProps) {
     };
   }, [onClose]);
 
-  return (
+  return createPortal(
     <div
       ref={ref}
       role="menu"
@@ -80,6 +81,7 @@ export function ReactionPicker({ x, y, onPick, onClose }: ReactionPickerProps) {
           {emoji}
         </button>
       ))}
-    </div>
+    </div>,
+    document.body
   );
 }
