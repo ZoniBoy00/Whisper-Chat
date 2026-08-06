@@ -53,6 +53,7 @@ import {
   sendGroupInvite as relaySendGroupInvite,
   sendMessage as relaySendMessage,
   sendReaction as relaySendReaction,
+  sendReadReceipt as relaySendReadReceipt,
   sendTyping as relaySendTyping,
   setDisplayName as persistDisplayName,
   transferOwnership as relayTransferOwnership,
@@ -170,6 +171,10 @@ export interface ChatStateApi {
     emoji: string,
     active: boolean
   ) => void;
+  /** Mark a conversation as read end-to-end once its messages are visible on
+   *  screen. `messageId` is required for groups (the newest visible incoming
+   *  message). */
+  markConversationRead: (peerId: string, messageId?: string | null) => void;
   sendTyping: (peerId: string, isTyping: boolean) => void;
   saveDisplayName: (name: string) => Promise<void>;
   removeContact: (peerId: string) => Promise<void>;
@@ -786,6 +791,15 @@ export function useChatState({
     void relaySendTyping(peerId, isTyping).catch(() => {});
   }, []);
 
+  /** Mark a conversation read end-to-end (UI calls this when the messages are
+   *  actually visible). Best-effort. */
+  const markConversationRead = useCallback(
+    (peerId: string, messageId?: string | null) => {
+      void relaySendReadReceipt(peerId, messageId ?? null).catch(() => {});
+    },
+    []
+  );
+
   const saveDisplayName = useCallback(async (name: string) => {
     const trimmed = name.trim();
     await persistDisplayName(trimmed);
@@ -1034,6 +1048,7 @@ export function useChatState({
     refresh,
     sendMessage,
     reactToMessage,
+    markConversationRead,
     sendTyping,
     saveDisplayName,
     removeContact,

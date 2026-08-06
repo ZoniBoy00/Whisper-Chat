@@ -80,6 +80,8 @@ interface ChatViewProps {
   onDeleteMessage: (messageId: string) => void;
   /** React or un-react to a message. `active` is the caller-computed state. */
   onReact: (messageId: string, emoji: string, active: boolean) => void;
+  /** Mark the conversation as read end-to-end when its messages are visible. */
+  onMarkRead: (peerId: string, messageId?: string | null) => void;
 }
 
 /** The right-click state of a message: where to open the menu + the target. */
@@ -112,6 +114,7 @@ export function ChatView({
   onOpenGroupInfo,
   onDeleteMessage,
   onReact,
+  onMarkRead,
 }: ChatViewProps) {
   const { t, language } = useI18n();
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -300,6 +303,24 @@ export function ChatView({
     ? mediaUrl(relayUrl, conversation.avatarUrl)
     : null;
   const headerClick = isGroup ? onOpenGroupInfo : onOpenProfile;
+
+  // Mark the conversation read end-to-end once its incoming messages are
+  // actually visible on screen (not merely received). Fires once per newest
+  // incoming message / per conversation open.
+  const lastMarkedReadRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!conversation) return;
+    const latestIncoming = [...conversation.messages]
+      .reverse()
+      .find((m) => !m.outgoing);
+    if (!latestIncoming) return;
+    const key = isGroup
+      ? `g:${latestIncoming.id}`
+      : `1:${conversation.peerId}`;
+    if (lastMarkedReadRef.current === key) return;
+    lastMarkedReadRef.current = key;
+    onMarkRead(conversation.peerId, isGroup ? latestIncoming.id : null);
+  }, [conversation, isGroup, onMarkRead]);
 
   return (
     <main className="flex min-w-0 flex-1 flex-col bg-wp-bg">
@@ -527,6 +548,12 @@ export function ChatView({
                         isGroup &&
                         (message.readByCount ?? 0) >=
                           (conversation.memberCount ?? 0) - 1
+                      }
+                      systemName={
+                        message.system
+                          ? (typingNames[message.system.peer_id] ??
+                            shortPeerId(message.system.peer_id, 16))
+                          : undefined
                       }
                       searchQuery={searchQuery.trim()}
                       searchActiveRange={activeRange}

@@ -764,6 +764,7 @@ export function MainView({ peerId, onReset }: MainViewProps) {
             activeState
           )
         }
+        onMarkRead={chat.markConversationRead}
         draft={chat.activePeerId ? drafts[chat.activePeerId] ?? "" : ""}
         onDraftChange={handleDraftChange}
       />

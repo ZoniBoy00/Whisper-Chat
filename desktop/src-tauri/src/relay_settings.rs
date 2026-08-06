@@ -193,6 +193,27 @@ impl RelayClient {
         self.send_receipt(peer_id, kind)
     }
 
+    /// Send an end-to-end read receipt for a conversation the user has
+    /// actually opened: a 1:1 Double Ratchet receipt, or a Megolm group read
+    /// receipt for the newest visible message. Called by the UI when incoming
+    /// messages become visible on screen — never automatically on receipt.
+    pub fn mark_read(
+        &self,
+        peer_id: &str,
+        message_id: Option<String>,
+    ) -> Result<(), RelayError> {
+        if !read_guard(&self.inner.settings)?.read_receipts {
+            return Ok(());
+        }
+        if read_guard(&self.inner.groups)?.contains_key(peer_id) {
+            if let Some(message_id) = message_id {
+                return self.send_group_read_receipt(peer_id, &message_id);
+            }
+            return Ok(());
+        }
+        self.send_receipt(peer_id, ReceiptKind::Read)
+    }
+
     /// Encrypt and send an end-to-end receipt inside the session with
     /// `peer_id`. The receipt is serialized as [`e2ee_core::EnvelopeContent`]
     /// and encrypted like an ordinary message, so the relay only ever sees the

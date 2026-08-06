@@ -18,6 +18,8 @@ interface MessageBubbleProps {
   /** Group chats: every other member has read this outgoing message (blue
    *  tick even though there is no 1:1 read receipt for groups). */
   readAll?: boolean;
+  /** Display name for system events (member joined/left), when known. */
+  systemName?: string;
   /** Active in-chat search query; empty disables highlighting. */
   searchQuery?: string;
   /** The exact match range (inside this message's text) that is the active
@@ -85,6 +87,7 @@ export function MessageBubble({
   onContextMenu,
   onReact,
   readAll = false,
+  systemName,
   searchQuery = "",
   searchActiveRange = null,
 }: MessageBubbleProps) {
@@ -123,10 +126,10 @@ export function MessageBubble({
         <span className="max-w-full rounded-full bg-wp-panel-2/80 px-3 py-1 text-center text-[11px] font-medium text-wp-faint shadow-sm ring-1 ring-wp-line/10">
           {message.system.kind === "joined"
             ? t("chat.member_joined", {
-                name: shortPeerId(message.system.peer_id, 16),
+                name: systemName ?? shortPeerId(message.system.peer_id, 16),
               })
             : t("chat.member_left", {
-                name: shortPeerId(message.system.peer_id, 16),
+                name: systemName ?? shortPeerId(message.system.peer_id, 16),
               })}
         </span>
       </div>

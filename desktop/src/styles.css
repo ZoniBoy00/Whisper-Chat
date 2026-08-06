@@ -3,6 +3,10 @@
 @tailwind utilities;
 
 :root {
+  /* Base UI scale: 17px makes every rem-sized element (text, spacing, bubbles)
+     ~6% larger than the browser default, so boxes, labels and messages read
+     comfortably on desktop displays. */
+  font-size: 17px;
   color-scheme: dark;
 
   /* Whisper dark theme — Signal-inspired palette. Colors are stored as RGB
