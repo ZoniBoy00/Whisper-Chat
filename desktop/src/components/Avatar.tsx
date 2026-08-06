@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { User, Users } from "lucide-react";
+import { listen } from "@tauri-apps/api/event";
 import { cx } from "../lib/format";
 
 interface AvatarProps {
@@ -18,6 +19,24 @@ export function Avatar({ name, size = 40, src, variant = "peer" }: AvatarProps) 
   // blob not yet replicated) is retried a few times before the letter fallback
   // takes over, so an avatar self-heals instead of staying blank.
   const [attempt, setAttempt] = useState(0);
+
+  // When the relay (re)connects, every avatar re-arms and retries: a client
+  // started before the server came up would otherwise pin the letter fallback
+  // forever, because the image element never re-attempts a failed load.
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    listen<{ connected: boolean }>("relay-status", (event) => {
+      if (event.payload.connected) {
+        setImageFailed(false);
+        setAttempt(0);
+      }
+    }).then((fn) => {
+      unlisten = fn;
+    });
+    return () => {
+      unlisten?.();
+    };
+  }, []);
 
   // A new src (a freshly uploaded avatar, or a relay URL that only resolved
   // after connect) must re-arm the image path — otherwise one transient load
