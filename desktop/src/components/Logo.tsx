@@ -1,12 +1,15 @@
-import { MessageCircle } from "lucide-react";
+import whisperLogo from "../assets/whisper-logo.png";
 
 export function Logo({ size = 36 }: { size?: number }) {
   return (
-    <div
-      className="flex items-center justify-center rounded-2xl bg-gradient-to-br from-[#2dd4bf] via-wp-accent to-wp-accent-strong text-white shadow-lg shadow-wp-accent/25"
-      style={{ width: size, height: size }}
-    >
-      <MessageCircle className="h-[55%] w-[55%]" strokeWidth={2.2} />
-    </div>
+    <img
+      src={whisperLogo}
+      alt="Whisper"
+      width={size}
+      height={size}
+      className="select-none"
+      draggable={false}
+      style={{ width: size, height: size, objectFit: "contain" }}
+    />
   );
 }
