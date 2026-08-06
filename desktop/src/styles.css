@@ -127,6 +127,11 @@ dialog.wp-dialog {
   color: rgb(var(--wp-text));
   border-radius: 1rem;
   box-shadow: 0 24px 64px -16px rgb(0 0 0 / 0.6);
+  /* Cap the dialog and hide its own scrollbar: panels with long content
+     scroll INSIDE the dialog, so the window never shows a second scrollbar
+     (the native dialog would otherwise scroll itself on top of the panel). */
+  max-height: min(92vh, 52rem);
+  overflow: hidden;
   animation: dialog-in 0.2s cubic-bezier(0.22, 1, 0.36, 1) both;
 }
 dialog.wp-dialog-closing {
