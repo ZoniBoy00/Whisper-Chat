@@ -173,8 +173,6 @@ impl ChatStore {
             );
             CREATE INDEX IF NOT EXISTS idx_messages_peer_timestamp
                 ON messages (peer_id, timestamp);
-            CREATE INDEX IF NOT EXISTS idx_messages_expires_at
-                ON messages (expires_at);
             CREATE TABLE IF NOT EXISTS reactions (
                 peer_id    TEXT NOT NULL,
                 message_id TEXT NOT NULL,
@@ -261,10 +259,17 @@ impl ChatStore {
             conn.execute_batch("ALTER TABLE messages ADD COLUMN system_json TEXT;")?;
         }
         // Migration: `messages` gained a nullable `expires_at` column for
-        // disappearing messages. Older rows simply never expire (NULL).
+        // disappearing messages. Older rows simply never expire (NULL). The
+        // index is created here — after the column is guaranteed to exist —
+        // because an existing database from before this feature lacks the
+        // column, and CREATE INDEX would fail against it.
         if !message_columns.iter().any(|c| c.as_str() == "expires_at") {
             conn.execute_batch("ALTER TABLE messages ADD COLUMN expires_at INTEGER;")?;
         }
+        conn.execute_batch(
+            "CREATE INDEX IF NOT EXISTS idx_messages_expires_at
+             ON messages (expires_at);",
+        )?;
 
         // Migration: `contacts` gained `curve25519_key` (for safety numbers)
         // and `verified` (contact verification state).
@@ -1428,6 +1433,53 @@ mod tests {
             .expect("write multi-sender inbound");
         let loaded = store.load_group_inbound().expect("reload inbound");
         assert!(loaded.contains_key(&("g1".to_string(), "alice".to_string())));
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn legacy_messages_table_gains_the_expires_at_column() {
+        let path = temp_db_path("expires-migration");
+        let _ = std::fs::remove_file(&path);
+        // Simulate a database created before disappearing messages: a
+        // `messages` table WITHOUT the expires_at column (which the initial
+        // CREATE INDEX used to reference, breaking the open).
+        {
+            let conn = Connection::open(&path).expect("open legacy db");
+            conn.execute_batch(
+                "CREATE TABLE messages (
+                     id        TEXT PRIMARY KEY,
+                     peer_id   TEXT NOT NULL,
+                     text      TEXT NOT NULL,
+                     outgoing  INTEGER NOT NULL,
+                     timestamp INTEGER NOT NULL,
+                     status    TEXT NOT NULL,
+                     client_id TEXT,
+                     quote_json TEXT,
+                     system_json TEXT
+                 );
+                 INSERT INTO messages (id, peer_id, text, outgoing, timestamp, status)
+                     VALUES ('m-1', 'peer-1', 'old', 0, 1, 'delivered');",
+            )
+            .expect("create legacy schema");
+        }
+        let store = ChatStore::open(&path, TEST_KEY).expect("migrated db must open");
+        // The legacy row loads, and a disappearing message persists fine now.
+        let loaded = store.messages_for("peer-1").expect("load legacy row");
+        assert_eq!(loaded.len(), 1);
+        assert_eq!(loaded[0].text, "old");
+        assert_eq!(loaded[0].expires_at, None);
+
+        let mut disappearing = sample_message("m-2", "secret", true, "sent");
+        disappearing.expires_at = Some(9_999_999);
+        store
+            .upsert_message("peer-1", &disappearing, None)
+            .expect("persist with expires_at");
+        let loaded = store.messages_for("peer-1").expect("reload");
+        let expired = loaded
+            .iter()
+            .find(|m| m.id == "m-2")
+            .expect("m-2 must exist");
+        assert_eq!(expired.expires_at, Some(9_999_999));
         std::fs::remove_file(&path).ok();
     }
 
