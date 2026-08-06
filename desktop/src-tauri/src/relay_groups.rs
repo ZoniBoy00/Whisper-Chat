@@ -1200,6 +1200,66 @@ impl RelayClient {
         Ok(())
     }
 
+    /// A `group_member_online` push: `peer_id` (a fellow member) just came
+    /// online. Re-share this identity's Megolm session key to them — healing
+    /// the case where the member was added while offline (no published
+    /// pre-keys) and the original add-time share could not complete. The share
+    /// runs in the background and is retried once, because a brand-new peer
+    /// publishes its pre-keys a moment AFTER its hello, so the first attempt
+    /// can race that publication.
+    pub(crate) fn handle_group_member_online(
+        &self,
+        group_id: &str,
+        peer_id: &str,
+    ) -> Result<(), RelayError> {
+        if peer_id == self.my_peer_id()? {
+            return Ok(());
+        }
+        // Only re-share if we actually hold the group (have a roster entry).
+        let known = read_guard(&self.inner.groups)?
+            .get(group_id)
+            .map(|group| group.my_role.is_some())
+            .unwrap_or(false);
+        if !known {
+            return Ok(());
+        }
+        let client = self.clone();
+        let group = group_id.to_string();
+        let member = peer_id.to_string();
+        tauri::async_runtime::spawn(async move {
+            for attempt in 1..=2 {
+                match client.share_group_key_to_member(&group, &member).await {
+                    Ok(()) => {
+                        tracing::info!(
+                            group = %group,
+                            member = %member,
+                            "group key re-shared after member came online"
+                        );
+                        return;
+                    }
+                    Err(err) if attempt == 1 => {
+                        tracing::warn!(
+                            group = %group,
+                            member = %member,
+                            error = %err,
+                            "re-share failed, retrying once"
+                        );
+                        tokio::time::sleep(std::time::Duration::from_millis(2000)).await;
+                    }
+                    Err(err) => {
+                        tracing::warn!(
+                            group = %group,
+                            member = %member,
+                            error = %err,
+                            "failed to re-share group key after member came online"
+                        );
+                    }
+                }
+            }
+        });
+        Ok(())
+    }
+
     /// Record a WhatsApp-style system event (member joined/left) into the
     /// group's thread and surface it to the UI.
     fn add_system_message(

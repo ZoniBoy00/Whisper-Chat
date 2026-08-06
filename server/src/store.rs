@@ -792,6 +792,23 @@ impl Store {
             .collect()
     }
 
+    /// Every group ID a peer is a member of, in join order. Used to notify
+    /// the other members when the peer comes online, so they can (re-)share
+    /// their Megolm session keys to a member that was added while offline.
+    pub fn list_groups_for_member(&self, peer_id: &str) -> Vec<String> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn
+            .prepare(
+                "SELECT group_id FROM group_members WHERE peer_id = ?1
+                 ORDER BY joined_at",
+            )
+            .expect("valid statement");
+        stmt.query_map(params![peer_id], |r| r.get(0))
+            .expect("query ok")
+            .filter_map(|r| r.ok())
+            .collect()
+    }
+
     // -- Group invites ----------------------------------------------------------
 
     /// Record a pending group invite from `inviter` to `peer_id`.
