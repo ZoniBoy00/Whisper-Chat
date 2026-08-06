@@ -5,6 +5,7 @@ import {
   Download,
   KeyRound,
   Languages,
+  Link2,
   Loader2,
   Minimize2,
   Moon,
@@ -20,6 +21,8 @@ import {
 } from "lucide-react";
 import type { Theme } from "../../types";
 import { cx, mediaUrl } from "../../lib/format";
+import { copyText } from "../../lib/clipboard";
+import { getInviteLink } from "../../lib/relay";
 import { useI18n } from "../../i18n/I18nContext";
 import { useToast } from "../../hooks/useToast";
 import type { TFunction } from "../../i18n/types";
@@ -150,6 +153,21 @@ export function GeneralTab({
   const [usernameErrorText, setUsernameErrorText] = useState<string | null>(null);
   const [avatarError, setAvatarError] = useState<string | null>(null);
   const [confirmingReset, setConfirmingReset] = useState(false);
+  const [inviteCopied, setInviteCopied] = useState(false);
+
+  /** Copy our whisper:// invite link to the clipboard (best-effort). */
+  const handleShareInvite = async () => {
+    try {
+      const link = await getInviteLink();
+      const ok = await copyText(link);
+      if (ok) {
+        setInviteCopied(true);
+        setTimeout(() => setInviteCopied(false), 1600);
+      }
+    } catch {
+      // Best-effort: the peer ID copy button next to it always works.
+    }
+  };
 
   // Keep the dialog's close-guard informed of any in-flight operation. The
   // dialog remounts this tab on every open, so the form is always seeded
@@ -314,6 +332,23 @@ export function GeneralTab({
               </p>
             </div>
             <CopyButton value={peerId} label={t("common.copy")} />
+            <button
+              type="button"
+              onClick={() => void handleShareInvite()}
+              className={cx(
+                "inline-flex items-center gap-1.5 rounded-lg border px-3 py-1.5 text-xs font-medium transition active:scale-95",
+                inviteCopied
+                  ? "border-wp-online/30 bg-wp-online/10 text-wp-online"
+                  : "border-wp-line/10 bg-wp-panel-2 text-wp-dim hover:bg-wp-panel-3 hover:text-wp-text"
+              )}
+            >
+              {inviteCopied ? (
+                <CheckCircle2 className="h-3.5 w-3.5" aria-hidden="true" />
+              ) : (
+                <Link2 className="h-3.5 w-3.5" aria-hidden="true" />
+              )}
+              {inviteCopied ? t("common.copied") : t("common.share_invite")}
+            </button>
           </div>
 
           {/* Username */}

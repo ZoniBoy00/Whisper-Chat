@@ -3,6 +3,7 @@ import {
   Check,
   Copy,
   Hourglass,
+  Link2,
   Loader2,
   LogOut,
   MessageCircle,
@@ -28,7 +29,7 @@ import type {
 } from "../types";
 import { cx, formatTime, mediaUrl, shortPeerId } from "../lib/format";
 import { conversationPreview } from "../lib/chatList";
-import { relayErrorCode, searchUsers } from "../lib/relay";
+import { relayErrorCode, searchUsers, getInviteLink } from "../lib/relay";
 import { copyText } from "../lib/clipboard";
 import { useI18n } from "../i18n/I18nContext";
 import { Avatar } from "./Avatar";
@@ -136,6 +137,21 @@ export function Sidebar({
   const { t } = useI18n();
   const [menuOpen, setMenuOpen] = useState(false);
   const [confirming, setConfirming] = useState(false);
+  const [inviteCopied, setInviteCopied] = useState(false);
+
+  /** Copy our whisper:// invite link to the clipboard (best-effort). */
+  const handleShareInvite = async () => {
+    try {
+      const link = await getInviteLink();
+      const ok = await copyText(link);
+      if (ok) {
+        setInviteCopied(true);
+        setTimeout(() => setInviteCopied(false), 1600);
+      }
+    } catch {
+      // Best-effort: the peer ID copy button next to it always works.
+    }
+  };
   const [rowMenu, setRowMenu] = useState<RowMenuState | null>(null);
   const [query, setQuery] = useState("");
   const [serverResults, setServerResults] = useState<ProfileInfo[] | null>(null);
@@ -304,6 +320,18 @@ export function Sidebar({
                 {t("sidebar.identity_local_note")}
               </p>
               <div className="my-1 h-px bg-wp-line/10" />
+              <button
+                type="button"
+                onClick={() => void handleShareInvite()}
+                className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-xs font-medium text-wp-dim transition hover:bg-wp-panel-3 hover:text-wp-text"
+              >
+                {inviteCopied ? (
+                  <Check className="h-3.5 w-3.5 text-wp-online" />
+                ) : (
+                  <Link2 className="h-3.5 w-3.5" />
+                )}
+                {inviteCopied ? t("common.copied") : t("common.share_invite")}
+              </button>
               <button
                 type="button"
                 onClick={handleReset}

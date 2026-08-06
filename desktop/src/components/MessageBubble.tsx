@@ -1,8 +1,11 @@
-import type { MouseEvent, ReactNode } from "react";
-import { Check, CheckCheck } from "lucide-react";
+import { useState, type MouseEvent, type ReactNode } from "react";
+import { Check, CheckCheck, SmilePlus } from "lucide-react";
 import type { Message } from "../types";
 import { cx, findMatches, formatTime, shortPeerId } from "../lib/format";
 import { useI18n } from "../i18n/I18nContext";
+
+/** The emoji palette offered by the quick-reaction picker. */
+const REACTION_EMOJIS = ["👍", "❤️", "😂", "😮", "😢", "🙏", "🔥", "🎉"];
 
 interface MessageBubbleProps {
   message: Message;
@@ -85,6 +88,9 @@ export function MessageBubble({
 }: MessageBubbleProps) {
   const { t } = useI18n();
   const { outgoing } = message;
+  // Hover state drives the quick-reaction button; the picker opens inline.
+  const [hovered, setHovered] = useState(false);
+  const [pickerOpen, setPickerOpen] = useState(false);
   // Read receipts: "sent" = single gray tick, "delivered" = double gray tick,
   // "read" = double blue tick.
   const read = outgoing && message.status === "read";
@@ -96,20 +102,67 @@ export function MessageBubble({
   return (
     <div
       className={cx(
-        "flex flex-col",
+        "group flex flex-col",
         animate && "animate-msg-in",
         outgoing ? "items-end" : "items-start"
       )}
+      onMouseEnter={() => setHovered(true)}
+      onMouseLeave={() => {
+        setHovered(false);
+        setPickerOpen(false);
+      }}
     >
       <div
         className={cx(
-          "max-w-[68%] rounded-2xl px-4 py-2.5 shadow-sm shadow-black/20",
+          "relative max-w-[68%] rounded-2xl px-4 py-2.5 shadow-sm shadow-black/20",
           outgoing
             ? "rounded-br-md bg-gradient-to-br from-wp-bubble-out-2 to-wp-bubble-out"
             : "rounded-bl-md bg-wp-bubble-in"
         )}
         onContextMenu={onContextMenu}
       >
+        {/* Quick-reaction button: appears on hover (WhatsApp-style). */}
+        {onReact && (hovered || pickerOpen) ? (
+          <button
+            type="button"
+            onClick={() => setPickerOpen((open) => !open)}
+            title={t("chat.add_reaction")}
+            aria-label={t("chat.add_reaction")}
+            aria-expanded={pickerOpen}
+            className={cx(
+              "absolute -top-3 z-10 inline-flex h-6 w-6 items-center justify-center rounded-full bg-wp-panel-2 text-wp-dim shadow-md shadow-black/30 ring-1 ring-wp-line/10 transition hover:text-wp-accent active:scale-90",
+              outgoing ? "-left-3" : "-right-3"
+            )}
+          >
+            <SmilePlus className="h-3.5 w-3.5" aria-hidden="true" />
+          </button>
+        ) : null}
+        {/* Inline emoji picker (a child of the bubble, so hover stays true). */}
+        {pickerOpen ? (
+          <div
+            className={cx(
+              "absolute -top-11 z-20 flex items-center gap-0.5 rounded-full bg-wp-panel-2 p-1.5 shadow-xl shadow-black/40 ring-1 ring-wp-line/10",
+              outgoing ? "-left-3" : "-right-3"
+            )}
+            role="menu"
+            aria-label={t("chat.react_to_message")}
+          >
+            {REACTION_EMOJIS.map((emoji) => (
+              <button
+                key={emoji}
+                type="button"
+                role="menuitem"
+                onClick={() => {
+                  onReact?.(message, emoji);
+                  setPickerOpen(false);
+                }}
+                className="rounded-full px-0.5 py-0.5 text-lg leading-none transition hover:bg-wp-panel-3 active:scale-90"
+              >
+                {emoji}
+              </button>
+            ))}
+          </div>
+        ) : null}
         {message.quote ? (
           <div className="mb-2 rounded-lg border-l-2 border-wp-accent/60 bg-black/15 px-3 py-1.5">
             <p className="truncate text-xs font-semibold text-wp-accent">
