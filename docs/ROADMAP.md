@@ -5,7 +5,7 @@
 > general-purpose chat — a WhatsApp/Signal/Telegram replacement without
 > backdoors or scanning mechanisms.
 >
-> **Date:** 2026-08-06 (updated: disappearing messages + countdown, message editing, delete for everyone, group read receipts, rename, system messages, daily logs + local time, autobackup, restart-proof sessions, CSP, CI hardening)
+> **Date:** 2026-08-06 (updated: SQLCipher at-rest, Megolm key rotation, disappearing messages + countdown, message editing, delete for everyone, group read receipts, rename, system messages, daily logs + local time, autobackup, restart-proof sessions, CSP, CI hardening)
 > **Status:** Phases 0–6.10 done — full local MVP; relay deployment to a real VPS is the next milestone
 > **Origin:** App specification + Gemini cross-check + Byte evaluation
 > **Working title (before branding):** Operation Ghost
@@ -332,7 +332,7 @@ impact and effort. Pull items into the phase table when they get scheduled.
 - [x] Relay ops: structured logging (`RUST_LOG`-controllable, peer-ID level only) + graceful shutdown on Ctrl+C/SIGTERM
 - [x] Robustness fixes: FIFO→keyed request resolution (get_group_info), error-code→queue routing (stale groups evicted), legacy avatar sync, contact-only group cleanup
 
-**Test counts (2026-08-06):** 326 unit tests — e2ee-core 86, whisper-relay 141,
+**Test counts (2026-08-06):** 328 unit tests — e2ee-core 88, whisper-relay 141,
 whisper-desktop 99; smoke suite all green (reactions/replies/typing travel
 inside existing encrypted envelopes; invites/join links/avatar pushes added
 relay handlers with their own tests).
@@ -340,9 +340,12 @@ relay handlers with their own tests).
 **⏳ Next up:**
 - [ ] Deploy the relay to Hetzner (systemd unit ready) → real two-machine E2EE test
 - [ ] Production hardening: binary integrity check (devtools already disabled in release; no console)
-- [ ] At-rest encryption: build the Windows client with the SQLCipher codec (NASM + Perl toolchain) so the local history DB is encrypted — currently plain SQLite on stock Windows-MSVC builds (documented honestly in README)
-- [ ] Megolm key rotation in groups (periodic re-share) so a key leaked later cannot decrypt past group history (backward secrecy)
 - [ ] Public repo (open source) once remote testing is solid
+
+**✅ Done (2026-08-06):**
+- [x] At-rest encryption: Windows client now builds with `bundled-sqlcipher-vendored-openssl` — the local history DB is SQLCipher-encrypted with an identity-derived key (statically linked; users need no extra installs). Build requires NASM + Perl on PATH (MSYS2). Breaking change: pre-existing plain-SQLite databases cannot be opened (keyed DBs only)
+- [x] Megolm key rotation: group outbound sessions rotate to a fresh key every 200 messages; the new key is queued on the outbox BEFORE the triggering message so recipients swap inbounds in time; backward secrecy (a leaked key cannot decrypt post-rotation messages)
+- [x] Phase 6.9 follow-up: message editing + delete-for-everyone — `EditPayload`/`DeletePayload` E2EE control envelopes (Double Ratchet 1:1 + Megolm groups), `edited` flag + store migration, context-menu "Edit" with a composer edit bar, "(edited)" marker, own-message guard (`MessageNotFound`), `chat-message-edited`/`chat-message-deleted` events
 
 ---
 
