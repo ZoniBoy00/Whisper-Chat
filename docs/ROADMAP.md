@@ -5,8 +5,8 @@
 > general-purpose chat — a WhatsApp/Signal/Telegram replacement without
 > backdoors or scanning mechanisms.
 >
-> **Date:** 2026-08-05 (updated: branding, product vision, hardening, deployment security, relay logging + graceful shutdown, i18n/notifications UX)
-> **Status:** Planning (Phase 1) — relay + crypto core coded and tested
+> **Date:** 2026-08-06 (updated: reactions/replies, invites + safety numbers, join links, group typing, avatar self-heal, toasts)
+> **Status:** Phases 0–6.10 done — full local MVP; relay deployment to a real VPS is the next milestone
 > **Origin:** App specification + Gemini cross-check + Byte evaluation
 > **Working title (before branding):** Operation Ghost
 
@@ -180,8 +180,8 @@ talks to whom, IP) is visible just as in Signal/WhatsApp — this is an
 | **6.6** | **i18n + notifications:** EN/FI translations, native notifications + sounds, unread badges, pinned chats, in-chat message search, day separators, context menus, auto-reconnect | 1–2 | ✅ **done** |
 | **6.7** | **Group multi-sender:** every member sends with their own outbound Megolm session (created on first group-key receipt); connection toasts | 1 | ✅ **done** |
 | **6.8** | **Friend system (anti-spam):** signed friend requests + accept/decline/remove, server-enforced `not_contacts` gating (1:1 envelopes, pre-keys, group member adds), Contacts tab with live Online / Last seen + one-click removal | 2 | ✅ **done** |
-| **6.9** | **Message interactions:** emoji reactions (E2EE state-signal envelopes, reaction pills on bubbles, emoji picker), quoted replies (tagged plaintext payload, reply bar in the composer) | 2 | ✅ **done** |
-| **6.10** | **Invite links + safety numbers:** `whisper://invite` links (share via clipboard, parse on add-contact), Signal-style safety numbers (60-digit + short tag, QR code, local verified flag) | 1–2 | ✅ **done** |
+| **6.9** | **Message interactions:** emoji reactions (E2EE state-signal envelopes, reaction pills on bubbles, shared ReactionPicker — context menu + quick-react button), quoted replies (tagged plaintext payload, reply bar in the composer) | 2 | ✅ **done** |
+| **6.10** | **Invite links + safety numbers + join links:** `whisper://invite` (share, profile popup, OS deep links via single-instance + deep-link plugins) and `whisper://join` (group join links with secret token, name + avatar embedded, join dialog), Signal-style safety numbers (60-digit + short tag, QR code, local verified flag) | 1–2 | ✅ **done** |
 | **6.11** | **Multi-device sync:** one identity on several devices (Signal-style key backup / signed device list) | 2 | 🔒 After MVP |
 | **7** | **Media + calls:** encrypted file transfer (AES-GCM key exchange, `/media` extension), WebRTC (DTLS-SRTP) + coturn, voice messages | 2 | 🔒 After MVP |
 | **8** | **Mobile:** Flutter + flutter_rust_bridge; push (APNs/FCM — only "you have a message") | separate | 🔒 After MVP |
@@ -283,10 +283,10 @@ impact and effort. Pull items into the phase table when they get scheduled.
 
 | Priority | Feature | Notes |
 |---|---|---|
-| 🔥 High | **Emoji reactions** | `reaction` receipt-type, shown on the bubble (like Signal) |
-| 🔥 High | **Quoted replies** | tap a message → "Reply"; renders the quoted bubble |
-| 🔥 High | **Invite links** | share `whisper://<peer-id>`; new users see the name + avatar before accepting |
-| 🔥 High | **Safety number verification** | QR scan between devices to verify the key fingerprint (no server trust) |
+| ✅ Done | **Emoji reactions** | E2EE state-signal envelopes, pills on bubbles, shared ReactionPicker (context menu + quick-react button) — 1:1 and groups |
+| ✅ Done | **Quoted replies** | tagged plaintext payload, composer reply bar, quoted bubble rendering |
+| ✅ Done | **Invite links + join links** | `whisper://invite` (profile preview popup) + `whisper://join` (group links with secret token, name + avatar in the link, join dialog) |
+| ✅ Done | **Safety number verification** | 60-digit + short tag + QR code + local verified flag (no server trust) |
 | 🔥 High | **Disappearing messages** | per-chat timer (off/5s/30s/1m/1h/1d), auto-delete both ends + server TTL |
 | 💪 Medium | **Message editing** | edit within a window; E2EE edit envelope |
 | 💪 Medium | **Delete for everyone** | E2EE delete receipt; the server drops queued copies |
@@ -295,12 +295,11 @@ impact and effort. Pull items into the phase table when they get scheduled.
 | 💪 Medium | **Archived chats** | fold old conversations out of the list (unarchive on new message) |
 | 💪 Medium | **Chat backgrounds/themes** | per-chat wallpaper + accent (client-side only) |
 | 💪 Medium | **Message font scale** | small/normal/large (setting exists — wire into bubbles) |
-| 💪 Medium | **Self-destructing identity** | wipe all local data from Settings (already resets identity) |
 | 💪 Medium | **Session health report** | list of sessions/devices with "verify/revoke" actions (Signal-style) |
 | 🧠 Nice-to-have | **Status/Stories** | ephemeral 24h photo/text status (WhatsApp-style) |
 | 🧠 Nice-to-have | **Pinned messages in groups** | admin pins a message to the top |
 | 🧠 Nice-to-have | **Group admin controls** | only-admins-can-send, group name/photo lock, disband group |
-| 🧠 Nice-to-have | **Search inside chats** | exists per-chat — extend to global message search |
+| 🧠 Nice-to-have | **Global message search** | per-chat search exists — extend across conversations |
 | 🧠 Nice-to-have | **Spell-check / autocorrect** | client-side only (never sent) |
 | 🧠 Nice-to-have | **Message padding** | random-size padding to flatten traffic patterns (metadata) |
 | 🧠 Nice-to-have | **Web client (WASM)** | e2ee-core → wasm-bindgen; read-only companion or full client |
@@ -311,9 +310,18 @@ impact and effort. Pull items into the phase table when they get scheduled.
 ## 14. Status & Next Steps (TODO)
 
 **✅ Done (2026-08-06):**
-- [x] Phase 6.9: emoji reactions (E2EE state-signal envelopes, pills + emoji picker) and quoted replies (tagged plaintext payload `{"kind":"text",..}`, composer reply bar) — both 1:1 and groups, no server changes
-- [x] Phase 6.10: invite links (`whisper://invite?peer=..`, share via clipboard, paste-to-add parsing) and safety numbers (60-digit + 8-hex short tag via SHA-256 over sorted identity keys, QR code, local verified flag)
-- [x] OS-level deep links: `tauri-plugin-deep-link` + `tauri-plugin-single-instance` — clicking a `whisper://` link in a browser opens Whisper with the invite pre-loaded in the Add-contact dialog (Windows: HKCU scheme registration)
+- [x] Phase 6.9: emoji reactions (E2EE state-signal envelopes, pills + shared ReactionPicker for context menu AND quick-react button, viewport-clamped + portal-rendered) and quoted replies (tagged plaintext payload `{"kind":"text",..}`, composer reply bar) — both 1:1 and groups
+- [x] Phase 6.10: invite links (`whisper://invite?peer=..` + name/user hints, share via clipboard with toasts, profile preview popup) and safety numbers (60-digit + 8-hex short tag via SHA-256 over sorted identity keys, QR code, local verified flag)
+- [x] OS-level deep links: `tauri-plugin-deep-link` + `tauri-plugin-single-instance` — clicking a `whisper://` link in a browser opens Whisper with the invite/join pre-loaded (Windows: HKCU scheme registration; every dev instance registers its own exe so links reach the running dev server)
+- [x] Group invites: `group_invite` / accept / decline wire protocol, Sidebar "Group invites" section, invitee sees group name + inviter, inviter learns the outcome
+- [x] Group join links: `whisper://join?group=..&token=..&name=..&avatar=..` — any member can copy the link (Group info), the relay authorizes joins by a secret token, join dialog shows group name + photo
+- [x] Group typing with names: Megolm typing payloads attributed to the writer — "ZoniBoy typing…" / "3 members typing…" in the group header
+- [x] Live member counts: the relay fans `group_member_left`/`group_avatar_set` to all members and clients emit `group-updated` on roster changes
+- [x] Group metadata persistence: new `group_meta` table keeps group names + avatars across restarts
+- [x] Avatar self-heal: avatars retry when the relay (re)connects (img key bump forces a real re-request)
+- [x] Toasts render inside dialogs (native `<dialog>` top layer) so feedback is never hidden behind Settings
+- [x] Copy-toasts for Whisper ID / invite link / group join link
+- [x] Bugfixes: group transfer wire field (`peer_id` → `new_owner_peer_id`, was `bad_message`), optimistic group messages render plain text (not the JSON payload), `already_member` routes to the join queue, message-id sharing makes reactions resolve across devices, picker transform-ancestor clipping
 
 **✅ Done (2026-08-05):**
 - [x] Phase 0: workspace, CI (test/clippy/fmt/smoke jobs), AGENTS.md, .gitignore
@@ -328,14 +336,16 @@ impact and effort. Pull items into the phase table when they get scheduled.
 - [x] Relay ops: structured logging (`RUST_LOG`-controllable, peer-ID level only) + graceful shutdown on Ctrl+C/SIGTERM
 - [x] Robustness fixes: FIFO→keyed request resolution (get_group_info), error-code→queue routing (stale groups evicted), legacy avatar sync, contact-only group cleanup
 
-**Test counts (2026-08-06):** 311 unit tests — e2ee-core 75, whisper-relay 140,
-whisper-desktop 96; smoke suite all green (relay untouched by 6.9/6.10 — both
-features travel inside existing encrypted envelopes).
+**Test counts (2026-08-06):** 316 unit tests — e2ee-core 80, whisper-relay 140,
+whisper-desktop 96; smoke suite all green (reactions/replies/typing travel
+inside existing encrypted envelopes; invites/join links/avatar pushes added
+relay handlers with their own tests).
 
 **⏳ Next up:**
-- [ ] Phase 6.9 follow-up: message editing + delete-for-everyone (E2EE edit/delete receipts)
 - [ ] Deploy the relay to Hetzner (systemd unit ready) → real two-machine E2EE test
 - [ ] Phase 6.5: disappearing messages (per-chat TTL, auto-delete both ends)
+- [ ] Phase 6.9 follow-up: message editing + delete-for-everyone (E2EE edit/delete receipts)
+- [ ] Production hardening: lock `devtools: false` in release config, integrity check
 - [ ] Public repo (open source) once remote testing is solid
 
 ---
