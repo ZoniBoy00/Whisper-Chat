@@ -1,9 +1,49 @@
-import { useRef, useState, type MouseEvent, type ReactNode } from "react";
+import { useEffect, useRef, useState, type MouseEvent, type ReactNode } from "react";
 import { Check, CheckCheck, SmilePlus, Timer } from "lucide-react";
 import type { Message } from "../types";
 import { cx, findMatches, formatTime, shortPeerId } from "../lib/format";
 import { useI18n } from "../i18n/I18nContext";
 import { ReactionPicker } from "./ReactionPicker";
+
+/** Format a remaining lifetime as a compact countdown: "45s", "1:30", "2h 5m",
+ *  "1d 3h". */
+function formatExpiry(ms: number): string {
+  const total = Math.max(0, Math.ceil(ms / 1000));
+  if (total < 60) return `${total}s`;
+  const minutes = Math.floor(total / 60);
+  const seconds = total % 60;
+  if (minutes < 60) return `${minutes}:${String(seconds).padStart(2, "0")}`;
+  const hours = Math.floor(minutes / 60);
+  const remMinutes = minutes % 60;
+  if (hours < 24) return `${hours}h ${remMinutes}m`;
+  const days = Math.floor(hours / 24);
+  return `${days}d ${hours % 24}h`;
+}
+
+/** Live countdown for a disappearing message: how long until it is purged on
+ *  both ends. Re-renders once per second; once the deadline passes it renders
+ *  nothing (the backend purges the message momentarily and the
+ *  `chat-message-deleted` event removes it from the thread). */
+function ExpiryTimer({ expiresAt, label }: { expiresAt: number; label: string }) {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const id = window.setInterval(() => setNow(Date.now()), 1000);
+    return () => window.clearInterval(id);
+  }, []);
+  const remaining = expiresAt - now;
+  if (remaining <= 0) return null;
+  return (
+    <span
+      className="inline-flex items-center gap-0.5 text-[10px] font-medium tabular-nums text-wp-faint"
+      title={label}
+      role="img"
+      aria-label={label}
+    >
+      <Timer className="h-3 w-3" strokeWidth={2.2} />
+      {formatExpiry(remaining)}
+    </span>
+  );
+}
 
 interface MessageBubbleProps {
   message: Message;
@@ -186,11 +226,9 @@ export function MessageBubble({
             />
           ) : null}
           {message.expiresAt ? (
-            <Timer
-              className="h-3.5 w-3.5"
-              strokeWidth={2.2}
-              role="img"
-              aria-label={t("bubble.disappearing")}
+            <ExpiryTimer
+              expiresAt={message.expiresAt}
+              label={t("bubble.disappearing")}
             />
           ) : null}
           <span className="text-xs font-medium tabular-nums">
