@@ -411,12 +411,8 @@ impl Relay {
                 .await;
             return;
         };
-        let group_name = self
-            .inner
-            .store
-            .get_group(group_id)
-            .map(|g| g.name)
-            .unwrap_or_default();
+        let group = self.inner.store.get_group(group_id);
+        let group_name = group.as_ref().map(|g| g.name.clone()).unwrap_or_default();
         // URL-encode the name so the join dialog can show it before joining.
         let mut encoded = String::new();
         for byte in group_name.bytes() {
@@ -427,7 +423,11 @@ impl Relay {
                 _ => encoded.push_str(&format!("%{byte:02X}")),
             }
         }
-        let link = format!("whisper://join?group={group_id}&token={token}&name={encoded}");
+        let mut link = format!("whisper://join?group={group_id}&token={token}&name={encoded}");
+        // Include the avatar hash so the join dialog can show the photo too.
+        if let Some(hash) = group.as_ref().and_then(|g| g.avatar_hash.clone()) {
+            link.push_str(&format!("&avatar={hash}"));
+        }
         let _ = self
             .send(peer_id, ServerMessage::GroupJoinLink { link })
             .await;
