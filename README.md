@@ -57,7 +57,11 @@ sender and the recipient can read them.
 - **Offline delivery** — SQLite-backed offline queue with a 7-day TTL and
   `fetch_since` sync, so you never miss a message while away.
 - **Encrypted local history** — messages, sessions, contacts and settings
-  persist in an encrypted store (SQLCipher-capable) across restarts.
+  persist in a keyed SQLite store across restarts. The store is
+  SQLCipher-encrypted **when the build ships the SQLCipher codec** (detected
+  at runtime via `PRAGMA cipher_version`); the stock `bundled` SQLite build
+  used on Windows-MSVC is unencrypted at rest. Enabling the SQLCipher feature
+  is tracked on the roadmap.
 - **Rate limiting & DoS guards** — per-IP token bucket (60/min default) and an
   8 MiB envelope size cap.
 - **Modern dark UI** — clean, minimalist, Signal/Telegram-grade desktop shell

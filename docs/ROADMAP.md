@@ -333,6 +333,8 @@ relay handlers with their own tests).
 - [ ] Phase 6.5: disappearing messages (per-chat TTL, auto-delete both ends)
 - [ ] Phase 6.9 follow-up: message editing + delete-for-everyone (E2EE edit/delete receipts)
 - [ ] Production hardening: lock `devtools: false` in release config, integrity check
+- [ ] At-rest encryption: build the Windows client with the SQLCipher codec (NASM + Perl toolchain) so the local history DB is encrypted — currently plain SQLite on stock Windows-MSVC builds (documented honestly in README)
+- [ ] Megolm key rotation in groups (periodic re-share) so a key leaked later cannot decrypt past group history (backward secrecy)
 - [ ] Public repo (open source) once remote testing is solid
 
 ---
