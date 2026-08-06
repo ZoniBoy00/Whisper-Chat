@@ -29,15 +29,14 @@ tokio = { version = "1", features = ["macros", "rt-multi-thread", "net", "time",
 tokio-tungstenite = "0.30"
 vodozemac = "0.10"
 sha2 = "0.11"
-# SQLCipher at-rest encryption (the `bundled-sqlcipher` /
-# `bundled-sqlcipher-vendored-openssl` features) cannot build on a stock
-# Windows-MSVC toolchain: SQLCipher needs OpenSSL, and the vendored OpenSSL
-# build needs a native (non-Cygwin) Perl plus NASM, neither of which is
-# guaranteed present. We ship the plain `bundled` SQLite build and detect the
-# codec at runtime (`PRAGMA cipher_version`): when a future build enables the
-# SQLCipher features, `store.rs` automatically keys the database with the
-# identity-derived key; on a plain build the same code runs unencrypted.
-rusqlite = { version = "0.40", features = ["bundled"] }
+# SQLCipher at-rest encryption. The `bundled-sqlcipher-vendored-openssl`
+# feature compiles SQLCipher (and its OpenSSL dependency) from source, so the
+# local history database is encrypted with a key derived from the identity.
+# The build needs NASM + Perl on PATH (installed via MSYS2: `pacman -S nasm
+# perl`). `store.rs` detects the codec at runtime (`PRAGMA cipher_version`)
+# and keys the database with the identity-derived key; on a plain `bundled`
+# build the same code runs unencrypted.
+rusqlite = { version = "0.40", features = ["bundled-sqlcipher-vendored-openssl"] }
 e2ee-core = { path = "../../e2ee-core" }
 tauri-plugin-deep-link = "2"
 tauri-plugin-single-instance = "2"
