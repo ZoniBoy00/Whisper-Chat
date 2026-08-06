@@ -8,6 +8,11 @@ on:
     paths-ignore:
       - "docs/**"
 
+# Explicit least-privilege token: checkout needs repository contents; the
+# audit job additionally grants checks/issues write for its status check.
+permissions:
+  contents: read
+
 jobs:
   test:
     name: Test
