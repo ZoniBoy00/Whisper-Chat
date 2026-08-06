@@ -227,7 +227,7 @@ export const translations = {
     "contacts.already_contacts": "You\u2019re already contacts",
     "contacts.already_pending": "A request is already pending",
     "contacts.not_in_contacts": "You must be contacts first",
-    "contacts.you_are_contacts": "You are now contacts with {name}",
+    "contacts.you_are_contacts": "You and {name} are now contacts",
     "contacts.request_received": "New friend request from {name}",
     "contacts.request_declined": "{name} declined your friend request",
     "contacts.contact_removed": "Contact removed",
