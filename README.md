@@ -30,8 +30,12 @@ sender and the recipient can read them.
   the sidebar) or share a `whisper://join` link; anyone with the link can join
   (WhatsApp-style). Group name and photo travel inside the link.
 - **Read receipts, typing & presence** — blue double ticks when a message is
-  read, live "typing…" indicators with the writer's name in groups
-  ("ZoniBoy typing…", "3 members typing…") and Online / Last seen status.
+  read (1:1 and groups), live "typing…" indicators with the writer's name in
+  groups ("ZoniBoy typing…", "3 members typing…") and Online / Last seen
+  status.
+- **Group management** — Megolm groups with owner/admin roles, member
+  add/remove, group photos, rename, WhatsApp-style "X joined/left" system
+  messages and live member counts.
 - **Emoji reactions & quoted replies** — react to any message (end-to-end
   encrypted state signals), reply to a message with the quoted bubble rendered
   in the composer (Signal-style). Works in 1:1 chats and groups.
@@ -78,6 +82,13 @@ sender and the recipient can read them.
 - **Auto-reconnect** — the client reconnects to the relay automatically and
   surfaces connection state in the UI. Avatars self-heal: a client opened
   before the relay was up loads every image once the connection is established.
+- **Restart-proof sessions** — hydrated sessions and group keys are re-shared
+  after a restart, so the first group message sent by a restarted client
+  arrives immediately (no warm-up message needed).
+- **Daily log files** — each run appends to `whisper-YYYY-MM-DD.log` (local
+  time, no ANSI colors) with a one-click "Open logs folder" action in Settings.
+- **Automatic backups** — optional daily autobackup (enabled/directory/keep
+  count) plus full export/import of identity + history as a single JSON file.
 - **Cross-platform future** — Tauri desktop today, Flutter mobile coming (one
   shared Rust crypto core).
 - **Hardened release builds** — `lto="fat"`, `panic="abort"`, `strip=true`
@@ -239,7 +250,7 @@ cargo fmt --check
 
 ## Testing & TDD
 
-- **316 unit tests** across the workspace (e2ee-core 80, whisper-desktop 96,
+- **317 unit tests** across the workspace (e2ee-core 81, whisper-desktop 96,
   whisper-relay 140)
 - **92 smoke tests** covering live routing, offline delivery, SQLite
   persistence, `fetch_since` sync, rate limiting and signed-hello spoofing
@@ -263,9 +274,10 @@ Licensed under the **MIT License**. Cryptography is provided by
 1:1 integration, polished UI/UX.
 
 **Beyond MVP (done):** groups (owner/admin roles, multi-sender, ownership
-transfer, invites + join links), emoji reactions, quoted replies, safety
-numbers + QR, invite/join deep links, i18n (EN/FI), notifications, presence
-and privacy controls.
+transfer, invites + join links, rename, read receipts, system messages), emoji
+reactions, quoted replies, safety numbers + QR, invite/join deep links, i18n
+(EN/FI), notifications, presence and privacy controls, daily log files and
+automatic backups.
 
 **Next up:** relay deployment to a real VPS (two-machine E2EE test),
 disappearing messages, message editing + delete-for-everyone, media/calls,

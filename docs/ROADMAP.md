@@ -5,7 +5,7 @@
 > general-purpose chat — a WhatsApp/Signal/Telegram replacement without
 > backdoors or scanning mechanisms.
 >
-> **Date:** 2026-08-06 (updated: reactions/replies, invites + safety numbers, join links, group typing, avatar self-heal, toasts)
+> **Date:** 2026-08-06 (updated: group read receipts, rename, system messages, daily logs + local time, autobackup, restart-proof sessions, CSP, CI hardening)
 > **Status:** Phases 0–6.10 done — full local MVP; relay deployment to a real VPS is the next milestone
 > **Origin:** App specification + Gemini cross-check + Byte evaluation
 > **Working title (before branding):** Operation Ghost
@@ -297,6 +297,13 @@ impact and effort. Pull items into the phase table when they get scheduled.
 ## 13. Status & Next Steps (TODO)
 
 **✅ Done (2026-08-06):**
+- [x] Group read receipts: Megolm `ReadPayload` read-by sets, `mark_read` fires only when messages are actually visible on screen (never on receipt), `readByCount` in the UI
+- [x] Group rename (`rename_group` wire) + WhatsApp-style "X joined/left the group" system messages + live member counts via `group-updated`
+- [x] Daily log files: `whisper-YYYY-MM-DD.log` under `%APPDATA%/com.whisper.desktop/logs/`, local-time timestamps on client AND relay (LocalTimer), no ANSI colors in files, "Open logs folder" button in Settings
+- [x] Automatic backups: autobackup toggle/directory/keep-count with a daily scheduler + "Back up now"; full export/import of identity + history as one JSON package
+- [x] Restart-proof sessions: hydrated group keys are re-shared before the first group send (`key_shared_this_session`), group sessions persist after every Megolm decrypt, lazy 1:1 session heal — **plus the seq-seed fix**: envelope seqs now start from wall-clock millis so a restart never collides with the recipient's (sender, seq) dedupe set (previously every message of a fresh run was silently dropped as a "duplicate" until the counter passed the old peak — the "third message finally arrives" bug)
+- [x] CSP (`default-src 'self'` + explicit img/ws/ipc exceptions) in `tauri.conf.json`
+- [x] CI hardening: `rustsec/audit-check@v2.0.0`, workflow + audit `permissions` (contents: read, checks/issues: write)
 - [x] Phase 6.9: emoji reactions (E2EE state-signal envelopes, pills + shared ReactionPicker for context menu AND quick-react button, viewport-clamped + portal-rendered) and quoted replies (tagged plaintext payload `{"kind":"text",..}`, composer reply bar) — both 1:1 and groups
 - [x] Phase 6.10: invite links (`whisper://invite?peer=..` + name/user hints, share via clipboard with toasts, profile preview popup) and safety numbers (60-digit + 8-hex short tag via SHA-256 over sorted identity keys, QR code, local verified flag)
 - [x] OS-level deep links: `tauri-plugin-deep-link` + `tauri-plugin-single-instance` — clicking a `whisper://` link in a browser opens Whisper with the invite/join pre-loaded (Windows: HKCU scheme registration; every dev instance registers its own exe so links reach the running dev server)
@@ -323,7 +330,7 @@ impact and effort. Pull items into the phase table when they get scheduled.
 - [x] Relay ops: structured logging (`RUST_LOG`-controllable, peer-ID level only) + graceful shutdown on Ctrl+C/SIGTERM
 - [x] Robustness fixes: FIFO→keyed request resolution (get_group_info), error-code→queue routing (stale groups evicted), legacy avatar sync, contact-only group cleanup
 
-**Test counts (2026-08-06):** 316 unit tests — e2ee-core 80, whisper-relay 140,
+**Test counts (2026-08-06):** 317 unit tests — e2ee-core 81, whisper-relay 140,
 whisper-desktop 96; smoke suite all green (reactions/replies/typing travel
 inside existing encrypted envelopes; invites/join links/avatar pushes added
 relay handlers with their own tests).
@@ -332,7 +339,7 @@ relay handlers with their own tests).
 - [ ] Deploy the relay to Hetzner (systemd unit ready) → real two-machine E2EE test
 - [ ] Phase 6.5: disappearing messages (per-chat TTL, auto-delete both ends)
 - [ ] Phase 6.9 follow-up: message editing + delete-for-everyone (E2EE edit/delete receipts)
-- [ ] Production hardening: lock `devtools: false` in release config, integrity check
+- [ ] Production hardening: binary integrity check (devtools already disabled in release; no console)
 - [ ] At-rest encryption: build the Windows client with the SQLCipher codec (NASM + Perl toolchain) so the local history DB is encrypted — currently plain SQLite on stock Windows-MSVC builds (documented honestly in README)
 - [ ] Megolm key rotation in groups (periodic re-share) so a key leaked later cannot decrypt past group history (backward secrecy)
 - [ ] Public repo (open source) once remote testing is solid
