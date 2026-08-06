@@ -1426,18 +1426,20 @@ mod tests {
         let path = temp_db_path("group-inbound-migration");
         let _ = std::fs::remove_file(&path);
         // Simulate a database created before multi-sender Megolm: one inbound
-        // session per group, no sender column.
+        // session per group, no sender column. Keyed with the SQLCipher key
+        // when the codec is compiled in, like a real legacy database would be.
         {
             let conn = Connection::open(&path).expect("open legacy db");
-            conn.execute_batch(
-                "CREATE TABLE group_inbound (
+            conn.execute_batch(&format!(
+                "PRAGMA key = \"x'{TEST_KEY}'\";
+                 CREATE TABLE group_inbound (
                      group_id TEXT PRIMARY KEY,
                      name     TEXT NOT NULL,
                      pickle   TEXT NOT NULL
                  );
                  INSERT INTO group_inbound (group_id, name, pickle)
-                     VALUES ('g1', 'Squad', '{\"ratchet\":1}');",
-            )
+                     VALUES ('g1', 'Squad', '{{\"ratchet\":1}}');"
+            ))
             .expect("create legacy schema");
         }
         let store = ChatStore::open(&path, TEST_KEY).expect("migrated db must open");
@@ -1464,11 +1466,14 @@ mod tests {
         let _ = std::fs::remove_file(&path);
         // Simulate a database created before disappearing messages: a
         // `messages` table WITHOUT the expires_at column (which the initial
-        // CREATE INDEX used to reference, breaking the open).
+        // CREATE INDEX used to reference, breaking the open). The database is
+        // created with the SQLCipher key (when the codec is compiled in), the
+        // same way ChatStore::open would have created it.
         {
             let conn = Connection::open(&path).expect("open legacy db");
-            conn.execute_batch(
-                "CREATE TABLE messages (
+            conn.execute_batch(&format!(
+                "PRAGMA key = \"x'{TEST_KEY}'\";
+                 CREATE TABLE messages (
                      id        TEXT PRIMARY KEY,
                      peer_id   TEXT NOT NULL,
                      text      TEXT NOT NULL,
@@ -1480,8 +1485,8 @@ mod tests {
                      system_json TEXT
                  );
                  INSERT INTO messages (id, peer_id, text, outgoing, timestamp, status)
-                     VALUES ('m-1', 'peer-1', 'old', 0, 1, 'delivered');",
-            )
+                     VALUES ('m-1', 'peer-1', 'old', 0, 1, 'delivered');"
+            ))
             .expect("create legacy schema");
         }
         let store = ChatStore::open(&path, TEST_KEY).expect("migrated db must open");
