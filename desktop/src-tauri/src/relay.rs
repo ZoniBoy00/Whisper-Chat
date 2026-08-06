@@ -663,6 +663,10 @@ pub struct UIMessage {
     /// member has read it.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub read_by: Vec<String>,
+    /// Epoch milliseconds at which this disappearing message auto-deletes on
+    /// both ends; `None` for regular messages that persist forever.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub expires_at: Option<u64>,
 }
 
 /// One emoji reaction attached to a message by a peer.
@@ -706,6 +710,14 @@ pub struct ReactionEvent {
 pub struct ChatMessageEvent {
     pub peer_id: String,
     pub message: UIMessage,
+}
+
+/// Payload of the `chat-message-deleted` event emitted when disappearing
+/// messages expire: the affected thread and the ids the UI should remove.
+#[derive(Debug, Clone, Serialize)]
+pub struct ChatMessageDeletedEvent {
+    pub peer_id: String,
+    pub message_ids: Vec<String>,
 }
 
 /// Payload of the `relay-status` event emitted on connect/disconnect.
@@ -907,6 +919,9 @@ pub struct ChatState {
     /// Outgoing (pending) friend requests: peer IDs we asked who have not
     /// answered yet.
     pub friend_requests_outgoing: Vec<String>,
+    /// Per-chat disappearing-message timers (seconds, 0 = off), keyed by peer
+    /// or group id. Renders the timer badge in each chat header.
+    pub chat_expirations: HashMap<String, u64>,
 }
 
 /// Persisted user preferences stored in `settings.json`.
@@ -1058,6 +1073,9 @@ struct RelayInner {
     store: RwLock<Option<ChatStore>>,
     /// In-memory copy of the persisted settings.
     settings: RwLock<Settings>,
+    /// Per-chat disappearing-message timers (seconds, 0 = off), keyed by peer
+    /// or group id. Local setting: only affects messages THIS identity sends.
+    chat_expirations: RwLock<HashMap<String, u64>>,
     /// In-memory copy of the persisted display names.
     profiles: RwLock<Profiles>,
     /// The local identity, loaded from disk on first connect.
@@ -1213,6 +1231,7 @@ impl RelayClient {
                 identity_path,
                 store: RwLock::new(None),
                 settings: RwLock::new(Settings::default()),
+                chat_expirations: RwLock::new(HashMap::new()),
                 profiles: RwLock::new(Profiles::default()),
                 identity: Mutex::new(None),
                 sessions: Mutex::new(HashMap::new()),
@@ -1595,7 +1614,7 @@ impl RelayClient {
         self.send_wire(&wire, seq)?;
 
         self.ensure_contact(peer_id)?;
-        let msg = self.record_outgoing(peer_id, FIRST_MESSAGE_TEXT, "", None)?;
+        let msg = self.record_outgoing(peer_id, FIRST_MESSAGE_TEXT, "", None, None)?;
         self.record_pending_ack(seq, &msg.id)?;
         let _ = self.inner.app.emit(
             "chat-message",
@@ -1635,10 +1654,14 @@ impl RelayClient {
             // payload; every recipient stores the message under this same id,
             // which is what lets reactions/replies resolve across devices.
             let message_id = self.next_message_id(client_id);
+            let expires_in_seconds = self.chat_expire_seconds(peer_id);
+            let expires_at =
+                (expires_in_seconds > 0).then(|| now_millis() + expires_in_seconds * 1000);
             let payload = ChatPayload::Text(TextPayload {
                 text: text.to_string(),
                 quote,
                 message_id: Some(message_id.clone()),
+                expires_in_seconds: (expires_in_seconds > 0).then_some(expires_in_seconds),
             });
             let bytes = serde_json::to_vec(&payload)?;
             return self.send_group_payload(
@@ -1650,6 +1673,7 @@ impl RelayClient {
                     quote: None,
                     message_id: Some(message_id),
                     display_text: Some(text.to_string()),
+                    expires_at,
                 },
             );
         }
@@ -1663,6 +1687,8 @@ impl RelayClient {
         }
         // Same id-sharing scheme as the group path above.
         let message_id = self.next_message_id(client_id);
+        let expires_in_seconds = self.chat_expire_seconds(peer_id);
+        let expires_at = (expires_in_seconds > 0).then(|| now_millis() + expires_in_seconds * 1000);
         let (olm, session_id) = {
             let mut sessions = mutex_guard(&self.inner.sessions)?;
             let session = sessions
@@ -1673,6 +1699,7 @@ impl RelayClient {
                 text: text.to_string(),
                 quote,
                 message_id: Some(message_id.clone()),
+                expires_in_seconds: (expires_in_seconds > 0).then_some(expires_in_seconds),
             });
             let olm = session.encrypt(&serde_json::to_vec(&payload)?)?;
             (olm, session_id)
@@ -1692,7 +1719,7 @@ impl RelayClient {
         // envelope immediately and the inbound loop may process that ack while
         // this command is still returning.
         let seq = self.next_seq();
-        let msg = self.record_outgoing_with_id(peer_id, message_id, text, None)?;
+        let msg = self.record_outgoing_with_id(peer_id, message_id, text, None, expires_at)?;
         self.record_pending_ack(seq, &msg.id)?;
 
         if let Err(err) = self.send_wire(&wire, seq) {
@@ -1786,7 +1813,27 @@ impl RelayClient {
             groups,
             friend_requests_incoming,
             friend_requests_outgoing,
+            chat_expirations: read_guard(&self.inner.chat_expirations)?.clone(),
         })
+    }
+
+    /// The configured disappearing-message timer (seconds) for a peer or
+    /// group; 0 means the chat never expires its messages.
+    fn chat_expire_seconds(&self, peer_id: &str) -> u64 {
+        read_guard(&self.inner.chat_expirations)
+            .map(|map| map.get(peer_id).copied().unwrap_or(0))
+            .unwrap_or(0)
+    }
+
+    /// Set (or clear, with `0`) the disappearing-message timer for a chat.
+    pub fn set_chat_expiration(&self, peer_id: &str, seconds: u64) -> Result<(), RelayError> {
+        write_guard(&self.inner.chat_expirations)?.insert(peer_id.to_string(), seconds);
+        self.ensure_store_open()?;
+        self.store_guard()?
+            .as_ref()
+            .ok_or(RelayError::StoreNotOpen)?
+            .set_chat_expire_seconds(peer_id, seconds)?;
+        Ok(())
     }
 
     /// Remember an envelope's (sender, seq) pair and report whether it has
@@ -2175,7 +2222,13 @@ impl RelayClient {
                 match parse_plaintext(&inbound.plaintext) {
                     ParsedPayload::Text(text) => Ok(Some((
                         sender.clone(),
-                        self.record_incoming(&sender, text.text, text.quote, text.message_id)?,
+                        self.record_incoming(
+                            &sender,
+                            text.text,
+                            text.quote,
+                            text.message_id,
+                            text.expires_in_seconds,
+                        )?,
                     ))),
                     ParsedPayload::Reaction(reaction) => {
                         self.handle_reaction(
@@ -2240,7 +2293,13 @@ impl RelayClient {
                         // the user has not opened yet.
                         Ok(Some((
                             sender.clone(),
-                            self.record_incoming(&sender, text.text, text.quote, text.message_id)?,
+                            self.record_incoming(
+                                &sender,
+                                text.text,
+                                text.quote,
+                                text.message_id,
+                                text.expires_in_seconds,
+                            )?,
                         )))
                     }
                     ParsedPayload::Reaction(reaction) => {
@@ -2343,6 +2402,7 @@ impl RelayClient {
             stored_group_outbound,
             stored_group_inbound,
             stored_group_meta,
+            stored_chat_expirations,
         ) = {
             let store = self.store_guard()?;
             let store = store.as_ref().ok_or(RelayError::StoreNotOpen)?;
@@ -2373,6 +2433,7 @@ impl RelayClient {
                 store.load_group_outbound()?,
                 store.load_group_inbound()?,
                 store.load_group_meta()?,
+                store.all_chat_expirations()?,
             )
         };
 
@@ -2465,6 +2526,9 @@ impl RelayClient {
             contacts.push(contact.peer_id);
         }
         *write_guard(&self.inner.contacts)? = contacts;
+
+        // Per-chat disappearing-message timers survive restarts.
+        *write_guard(&self.inner.chat_expirations)? = stored_chat_expirations;
 
         let mut settings = read_guard(&self.inner.settings)?.clone();
         settings.relay_url = relay_url.filter(|url| !url.is_empty());
@@ -2629,6 +2693,7 @@ impl RelayClient {
         text: String,
         quote: Option<Quote>,
         message_id: Option<String>,
+        expires_in_seconds: Option<u64>,
     ) -> Result<UIMessage, RelayError> {
         let id = match message_id.clone() {
             Some(id) => id,
@@ -2637,7 +2702,10 @@ impl RelayClient {
                 self.inner.next_msg_id.fetch_add(1, Ordering::SeqCst)
             ),
         };
-        tracing::info!(peer = %peer_id, msg_id = %id, "recording incoming message");
+        // Disappearing messages expire `expires_in_seconds` after RECEIPT, so
+        // both ends delete around the same time regardless of clock skew.
+        let expires_at = expires_in_seconds.map(|secs| now_millis() + secs * 1000);
+        tracing::info!(peer = %peer_id, msg_id = %id, expires = ?expires_at, "recording incoming message");
         let message = UIMessage {
             id,
             text,
@@ -2648,6 +2716,7 @@ impl RelayClient {
             reactions: Vec::new(),
             system: None,
             read_by: Vec::new(),
+            expires_at,
         };
         self.ensure_contact(peer_id)?;
         write_guard(&self.inner.messages)?
@@ -2669,9 +2738,10 @@ impl RelayClient {
         text: &str,
         client_id: &str,
         quote: Option<Quote>,
+        expires_at: Option<u64>,
     ) -> Result<UIMessage, RelayError> {
         let id = self.next_message_id(client_id);
-        self.record_outgoing_with_id(peer_id, id, text, quote)
+        self.record_outgoing_with_id(peer_id, id, text, quote, expires_at)
     }
 
     /// Decide the id for the next outgoing message: the UI-provided client id
@@ -2698,6 +2768,7 @@ impl RelayClient {
         id: String,
         text: &str,
         quote: Option<Quote>,
+        expires_at: Option<u64>,
     ) -> Result<UIMessage, RelayError> {
         let message = UIMessage {
             id,
@@ -2709,6 +2780,7 @@ impl RelayClient {
             reactions: Vec::new(),
             system: None,
             read_by: Vec::new(),
+            expires_at,
         };
         write_guard(&self.inner.messages)?
             .entry(peer_id.to_string())
@@ -3005,6 +3077,49 @@ impl RelayClient {
         // neither flip its status nor resurrect the row.
         if let Ok(mut pending_acks) = self.inner.pending_acks.lock() {
             pending_acks.retain(|_, id| id != message_id);
+        }
+        Ok(())
+    }
+
+    /// Delete every message whose disappearing deadline has passed, dropping
+    /// them from memory and the store and notifying the UI (which removes them
+    /// from the thread). Called once per second by the expiry loop.
+    pub fn delete_expired_and_emit(&self) -> Result<(), RelayError> {
+        self.ensure_store_open()?;
+        let expired = self
+            .store_guard()?
+            .as_ref()
+            .ok_or(RelayError::StoreNotOpen)?
+            .delete_expired_messages(now_millis())?;
+        if expired.is_empty() {
+            return Ok(());
+        }
+        // Drop the expired messages from the in-memory thread buffers.
+        {
+            let mut messages = write_guard(&self.inner.messages)?;
+            for (message_id, peer_id) in &expired {
+                if let Some(msgs) = messages.get_mut(peer_id) {
+                    msgs.retain(|message| &message.id != message_id);
+                }
+            }
+        }
+        // Group the removed ids per thread so the UI can purge them in one pass.
+        let mut per_peer: HashMap<String, Vec<String>> = HashMap::new();
+        for (message_id, peer_id) in &expired {
+            per_peer
+                .entry(peer_id.clone())
+                .or_default()
+                .push(message_id.clone());
+        }
+        for (peer_id, message_ids) in per_peer {
+            tracing::info!(peer = %peer_id, count = message_ids.len(), "disappearing messages expired");
+            let _ = self.inner.app.emit(
+                "chat-message-deleted",
+                ChatMessageDeletedEvent {
+                    peer_id,
+                    message_ids,
+                },
+            );
         }
         Ok(())
     }
@@ -3345,6 +3460,7 @@ mod tests {
                 reactions: Vec::new(),
                 system: None,
                 read_by: Vec::new(),
+                expires_at: None,
             }],
         );
 
@@ -3369,6 +3485,7 @@ mod tests {
                 reactions: Vec::new(),
                 system: None,
                 read_by: Vec::new(),
+                expires_at: None,
             }],
         );
 
@@ -3394,6 +3511,7 @@ mod tests {
                 reactions: Vec::new(),
                 system: None,
                 read_by: Vec::new(),
+                expires_at: None,
             }],
         );
 
@@ -3416,6 +3534,7 @@ mod tests {
                 reactions: Vec::new(),
                 system: None,
                 read_by: Vec::new(),
+                expires_at: None,
             }],
         );
 
@@ -3517,6 +3636,7 @@ mod tests {
             }],
             system: None,
             read_by: Vec::new(),
+            expires_at: None,
         };
         let json = serde_json::to_value(&message).expect("serialize");
         assert_eq!(json["quote"]["message_id"], "m-0");
@@ -3536,6 +3656,7 @@ mod tests {
             reactions: Vec::new(),
             system: None,
             read_by: Vec::new(),
+            expires_at: None,
         };
         let json = serde_json::to_value(&message).expect("serialize");
         assert!(json.get("quote").is_none(), "absent quote must be skipped");

@@ -168,10 +168,13 @@ impl ChatStore {
                 status    TEXT NOT NULL,
                 client_id TEXT,
                 quote_json TEXT,
-                system_json TEXT
+                system_json TEXT,
+                expires_at INTEGER
             );
             CREATE INDEX IF NOT EXISTS idx_messages_peer_timestamp
                 ON messages (peer_id, timestamp);
+            CREATE INDEX IF NOT EXISTS idx_messages_expires_at
+                ON messages (expires_at);
             CREATE TABLE IF NOT EXISTS reactions (
                 peer_id    TEXT NOT NULL,
                 message_id TEXT NOT NULL,
@@ -207,6 +210,10 @@ impl ChatStore {
             CREATE TABLE IF NOT EXISTS settings (
                 key   TEXT PRIMARY KEY,
                 value TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS chat_settings (
+                peer_id          TEXT PRIMARY KEY,
+                expire_seconds   INTEGER NOT NULL DEFAULT 0
             );
             CREATE TABLE IF NOT EXISTS group_meta (
                 group_id    TEXT PRIMARY KEY,
@@ -252,6 +259,11 @@ impl ChatStore {
         }
         if !message_columns.iter().any(|c| c.as_str() == "system_json") {
             conn.execute_batch("ALTER TABLE messages ADD COLUMN system_json TEXT;")?;
+        }
+        // Migration: `messages` gained a nullable `expires_at` column for
+        // disappearing messages. Older rows simply never expire (NULL).
+        if !message_columns.iter().any(|c| c.as_str() == "expires_at") {
+            conn.execute_batch("ALTER TABLE messages ADD COLUMN expires_at INTEGER;")?;
         }
 
         // Migration: `contacts` gained `curve25519_key` (for safety numbers)
@@ -411,8 +423,8 @@ impl ChatStore {
         let conn = self.conn()?;
         conn.execute(
             "INSERT INTO messages
-                 (id, peer_id, text, outgoing, timestamp, status, client_id, quote_json, system_json)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+                 (id, peer_id, text, outgoing, timestamp, status, client_id, quote_json, system_json, expires_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
              ON CONFLICT(id) DO UPDATE SET
                  peer_id   = excluded.peer_id,
                  text      = excluded.text,
@@ -421,7 +433,8 @@ impl ChatStore {
                  status    = excluded.status,
                  client_id = excluded.client_id,
                  quote_json = excluded.quote_json,
-                 system_json = excluded.system_json",
+                 system_json = excluded.system_json,
+                 expires_at = excluded.expires_at",
             params![
                 message.id,
                 peer_id,
@@ -431,9 +444,77 @@ impl ChatStore {
                 message.status,
                 client_id,
                 quote_json,
-                system_json
+                system_json,
+                message.expires_at.map(|millis| millis as i64)
             ],
         )?;
+        Ok(())
+    }
+
+    /// Delete every message whose disappearing deadline has passed, along with
+    /// their reactions. Returns the (peer_id, message_id) pairs removed so the
+    /// caller can drop them from the in-memory state and notify the UI.
+    pub fn delete_expired_messages(&self, now: u64) -> Result<Vec<(String, String)>, StoreError> {
+        let mut conn = self.conn()?;
+        let expired: Vec<(String, String)> = {
+            let mut stmt = conn.prepare(
+                "SELECT id, peer_id FROM messages
+                 WHERE expires_at IS NOT NULL AND expires_at <= ?1",
+            )?;
+            let rows = stmt.query_map(params![now as i64], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })?;
+            let collected: Vec<(String, String)> =
+                rows.collect::<rusqlite::Result<Vec<(String, String)>>>()?;
+            collected
+        };
+        if expired.is_empty() {
+            return Ok(Vec::new());
+        }
+        let tx = conn.transaction()?;
+        for (message_id, _) in &expired {
+            tx.execute("DELETE FROM messages WHERE id = ?1", params![message_id])?;
+            tx.execute(
+                "DELETE FROM reactions WHERE message_id = ?1",
+                params![message_id],
+            )?;
+        }
+        tx.commit()?;
+        Ok(expired)
+    }
+
+    /// Every per-chat disappearing-message timer currently configured.
+    pub fn all_chat_expirations(&self) -> Result<HashMap<String, u64>, StoreError> {
+        let conn = self.conn()?;
+        let mut stmt = conn.prepare("SELECT peer_id, expire_seconds FROM chat_settings")?;
+        let rows = stmt.query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)? as u64))
+        })?;
+        let mut map = HashMap::new();
+        for row in rows {
+            let (peer_id, seconds) = row?;
+            map.insert(peer_id, seconds);
+        }
+        Ok(map)
+    }
+
+    /// Set (or clear, with `0`) the disappearing-message timer for a peer or
+    /// group. The setting is local — it only affects messages THIS identity
+    /// sends; recipients apply the per-message deadline they receive.
+    pub fn set_chat_expire_seconds(&self, peer_id: &str, seconds: u64) -> Result<(), StoreError> {
+        let conn = self.conn()?;
+        if seconds == 0 {
+            conn.execute(
+                "DELETE FROM chat_settings WHERE peer_id = ?1",
+                params![peer_id],
+            )?;
+        } else {
+            conn.execute(
+                "INSERT INTO chat_settings (peer_id, expire_seconds) VALUES (?1, ?2)
+                 ON CONFLICT(peer_id) DO UPDATE SET expire_seconds = excluded.expire_seconds",
+                params![peer_id, seconds as i64],
+            )?;
+        }
         Ok(())
     }
 
@@ -519,7 +600,7 @@ impl ChatStore {
         let reactions = self.reactions_for(peer_id)?;
         let conn = self.conn()?;
         let mut stmt = conn.prepare(
-            "SELECT id, text, outgoing, timestamp, status, quote_json, system_json
+            "SELECT id, text, outgoing, timestamp, status, quote_json, system_json, expires_at
              FROM messages WHERE peer_id = ?1
              ORDER BY timestamp, id",
         )?;
@@ -543,7 +624,8 @@ impl ChatStore {
                 quote,
                 reactions: Vec::new(), // hydrated below
                 system,
-                read_by: Vec::new(), // not persisted; re-derived from receipts
+                read_by: Vec::new(),
+                expires_at: row.get::<_, Option<i64>>(7)?.map(|millis| millis as u64),
             })
         })?;
         let mut messages = Vec::new();
@@ -761,7 +843,49 @@ mod tests {
             reactions: Vec::new(),
             system: None,
             read_by: Vec::new(),
+            expires_at: None,
         }
+    }
+
+    #[test]
+    fn delete_expired_messages_removes_only_overdue_ones() {
+        let store = ChatStore::open_in_memory(TEST_KEY).expect("open in-memory store");
+        let now = 1_000_000;
+        let mut overdue = sample_message("m-1", "gone", true, "delivered");
+        overdue.expires_at = Some(now - 1); // deadline passed
+        let mut on_time = sample_message("m-2", "stays", true, "delivered");
+        on_time.expires_at = Some(now + 60_000); // still alive
+        let persistent = sample_message("m-3", "forever", true, "delivered"); // no expiry
+        for message in [&overdue, &on_time, &persistent] {
+            store
+                .upsert_message("peer-1", message, None)
+                .expect("persist");
+        }
+
+        let removed = store.delete_expired_messages(now).expect("purge expired");
+        assert_eq!(removed, vec![("m-1".to_string(), "peer-1".to_string())]);
+
+        let remaining = store.messages_for("peer-1").expect("load messages");
+        let ids: Vec<&str> = remaining.iter().map(|m| m.id.as_str()).collect();
+        assert_eq!(ids, vec!["m-2", "m-3"]);
+    }
+
+    #[test]
+    fn chat_expiration_settings_roundtrip_and_clear() {
+        let store = ChatStore::open_in_memory(TEST_KEY).expect("open in-memory store");
+        assert_eq!(store.all_chat_expirations().expect("empty").len(), 0);
+
+        store.set_chat_expire_seconds("peer-1", 30).expect("set");
+        store.set_chat_expire_seconds("peer-2", 3600).expect("set");
+        let map = store.all_chat_expirations().expect("read back");
+        assert_eq!(map.get("peer-1"), Some(&30));
+        assert_eq!(map.get("peer-2"), Some(&3600));
+
+        // Clearing (0) removes the row entirely.
+        store.set_chat_expire_seconds("peer-1", 0).expect("clear");
+        let map = store.all_chat_expirations().expect("read back");
+        assert!(!map.contains_key("peer-1"));
+        assert_eq!(map.get("peer-2"), Some(&3600));
     }
 
     fn temp_db_path(name: &str) -> std::path::PathBuf {

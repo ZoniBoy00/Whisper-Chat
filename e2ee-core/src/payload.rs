@@ -71,6 +71,13 @@ pub struct TextPayload {
     /// correctly on both ends.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub message_id: Option<String>,
+    /// Disappearing-message lifetime in seconds: both ends auto-delete the
+    /// message `expires_in_seconds` after it was sent/received. `None` (the
+    /// default for older senders) means the message persists forever. Carried
+    /// inside the encrypted payload, so the relay stays zero-knowledge — it
+    /// cannot see which messages will expire.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expires_in_seconds: Option<u64>,
 }
 
 impl TextPayload {
@@ -80,6 +87,7 @@ impl TextPayload {
             text: text.into(),
             quote: None,
             message_id: None,
+            expires_in_seconds: None,
         }
     }
 
@@ -89,6 +97,7 @@ impl TextPayload {
             text: text.into(),
             quote: Some(quote),
             message_id: None,
+            expires_in_seconds: None,
         }
     }
 
@@ -98,6 +107,21 @@ impl TextPayload {
             text: text.into(),
             quote: None,
             message_id: Some(message_id.into()),
+            expires_in_seconds: None,
+        }
+    }
+
+    /// Create a text payload that expires `seconds` after send/receive.
+    pub fn with_expiration(
+        text: impl Into<String>,
+        message_id: Option<String>,
+        expires_in_seconds: u64,
+    ) -> Self {
+        Self {
+            text: text.into(),
+            quote: None,
+            message_id,
+            expires_in_seconds: Some(expires_in_seconds),
         }
     }
 }
@@ -392,6 +416,50 @@ mod tests {
                 assert_eq!(text.message_id.as_deref(), Some("out-7"));
             }
             ChatPayload::Reaction(_) | ChatPayload::Typing(_) | ChatPayload::Read(_) => {
+                panic!("expected text")
+            }
+        }
+    }
+
+    #[test]
+    fn text_payload_with_expiration_roundtrips() {
+        let payload = ChatPayload::Text(TextPayload::with_expiration(
+            "secret",
+            Some("out-9".into()),
+            30,
+        ));
+        let json = serde_json::to_string(&payload).expect("serialize");
+        let restored: ChatPayload = serde_json::from_str(&json).expect("deserialize");
+
+        match restored {
+            ChatPayload::Text(text) => {
+                assert_eq!(text.text, "secret");
+                assert_eq!(text.expires_in_seconds, Some(30));
+            }
+            ChatPayload::Reaction(_) | ChatPayload::Typing(_) | ChatPayload::Read(_) => {
+                panic!("expected text")
+            }
+        }
+    }
+
+    #[test]
+    fn text_payload_without_expiration_skips_the_field_in_json() {
+        let payload = ChatPayload::Text(TextPayload::new("hi"));
+        let json = serde_json::to_string(&payload).expect("serialize");
+        assert!(
+            !json.contains("expires_in_seconds"),
+            "absent expiration must be skipped: {json}"
+        );
+    }
+
+    #[test]
+    fn parse_text_envelope_exposes_expiration() {
+        let bytes = br#"{"kind":"text","text":"bye","expires_in_seconds":3600}"#;
+        match parse_plaintext(bytes) {
+            ParsedPayload::Text(text) => {
+                assert_eq!(text.expires_in_seconds, Some(3600));
+            }
+            ParsedPayload::Reaction(_) | ParsedPayload::Typing(_) | ParsedPayload::Read(_) => {
                 panic!("expected text")
             }
         }

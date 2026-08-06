@@ -40,6 +40,7 @@ import {
   onGroupUpdated,
   onMessageReadBy,  onMessageReaction,
   onMessageStatus,
+  onMessageDeleted,
   onPresence,
   onReconnecting,
   onRelayStatus,
@@ -56,6 +57,7 @@ import {
   sendReadReceipt as relaySendReadReceipt,
   sendTyping as relaySendTyping,
   setDisplayName as persistDisplayName,
+  setChatExpirationCommand,
   transferOwnership as relayTransferOwnership,
 } from "../lib/relay";
 import { shortPeerId } from "../lib/format";
@@ -205,6 +207,11 @@ export interface ChatStateApi {
   declineGroupInvite: (groupId: string) => Promise<void>;
   /** Join a group via its shareable join link. */
   joinGroupByLink: (groupId: string, token: string) => Promise<void>;
+  /** Per-chat disappearing-message timers (seconds, 0 = off), keyed by peer or
+   *  group id. Renders the timer badge in each chat header. */
+  chatExpirations: Record<string, number>;
+  /** Set (or clear, with 0) the disappearing-message timer for a chat. */
+  setChatExpiration: (peerId: string, seconds: number) => Promise<void>;
 }
 
 /** Owns the chat state (contacts, messages, groups, connection, presence,
@@ -242,6 +249,7 @@ export function useChatState({
   const [presence, setPresence] = useState<Record<string, PresenceInfo>>({});
   const [activePeerId, setActivePeerIdState] = useState<string | null>(null);
   const [unread, setUnread] = useState<Record<string, number>>({});
+  const [chatExpirations, setChatExpirations] = useState<Record<string, number>>({});
 
   // The chat-message listener is registered once but must read the *current*
   // notification prefs and contact list, so they live in a ref updated on
@@ -294,6 +302,7 @@ export function useChatState({
       setPresence(state.presence);
       setFriendRequestsIncoming(state.friend_requests_incoming);
       setFriendRequestsOutgoing(state.friend_requests_outgoing);
+      setChatExpirations(state.chat_expirations ?? {});
       // Best-effort: pending group invites live server-side; a failed fetch
       // just leaves the current list as-is.
       getGroupInvites().then(setGroupInvites).catch(() => {});
@@ -426,6 +435,20 @@ export function useChatState({
               });
             }
             return changed ? next : prev;
+          });
+        })
+      );
+      // Disappearing messages: when the backend purges expired messages, drop
+      // them from the React state so they vanish from the thread immediately.
+      const messageDeletedUnlisten = await register(() =>
+        onMessageDeleted(({ peer_id, message_ids }) => {
+          if (disposed) return;
+          setMessages((prev) => {
+            const list = prev[peer_id];
+            if (!list) return prev;
+            const ids = new Set(message_ids);
+            const next = list.filter((m) => !ids.has(m.id));
+            return next.length === list.length ? prev : { ...prev, [peer_id]: next };
           });
         })
       );
@@ -674,6 +697,7 @@ export function useChatState({
         !statusUnlisten ||
         !reconnectingUnlisten ||
         !messageStatusUnlisten ||
+        !messageDeletedUnlisten ||
         !typingUnlisten ||
         !reactionUnlisten ||
         !groupInviteUnlisten ||
@@ -1024,6 +1048,23 @@ export function useChatState({
     [refresh, toast, t]
   );
 
+  /** Set (or clear) the disappearing-message timer for a chat. Applies to
+   *  future messages we send there. */
+  const setChatExpiration = useCallback(
+    async (peerId: string, seconds: number) => {
+      await setChatExpirationCommand(peerId, seconds);
+      setChatExpirations((prev) =>
+        seconds === 0
+          ? (() => {
+              const { [peerId]: _removed, ...rest } = prev;
+              return rest;
+            })()
+          : { ...prev, [peerId]: seconds }
+      );
+    },
+    []
+  );
+
   return {
     contacts,
     friendRequestsIncoming,
@@ -1044,6 +1085,8 @@ export function useChatState({
     activePeerId,
     setActivePeerId,
     unread,
+    chatExpirations,
+    setChatExpiration,
     connect,
     refresh,
     sendMessage,

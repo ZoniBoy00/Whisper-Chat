@@ -21,6 +21,9 @@ export interface Message {
   /** How many members have read this outgoing group message; the UI renders
    *  a blue tick once every other member has read it. */
   readByCount?: number;
+  /** Epoch milliseconds at which this disappearing message auto-deletes on
+   *  both ends; undefined for regular messages that persist forever. */
+  expiresAt?: number;
 }
 
 /** The quoted message a reply refers to (snapshot sent inside the encrypted
@@ -167,6 +170,9 @@ export interface ChatState {
   friend_requests_incoming: FriendRequestIncoming[];
   /** Outgoing pending friend requests: peer IDs we asked, unanswered. */
   friend_requests_outgoing: string[];
+  /** Per-chat disappearing-message timers (seconds, 0 = off), keyed by peer
+   *  or group id. Renders the timer badge in each chat header. */
+  chat_expirations: Record<string, number>;
 }
 
 /** Payload of the `chat-message` event emitted for new plaintext. */

@@ -15,6 +15,7 @@ import {
   MessagesSquare,
   Plus,
   Search,
+  Timer,
   Trash2,
   Users,
   X,
@@ -82,6 +83,10 @@ interface ChatViewProps {
   onReact: (messageId: string, emoji: string, active: boolean) => void;
   /** Mark the conversation as read end-to-end when its messages are visible. */
   onMarkRead: (peerId: string, messageId?: string | null) => void;
+  /** The conversation's disappearing-message timer in seconds (0 = off). */
+  expireSeconds: number;
+  /** Set (or clear, with 0) the disappearing-message timer for this chat. */
+  onSetExpiration: (seconds: number) => void;
 }
 
 /** The right-click state of a message: where to open the menu + the target. */
@@ -115,6 +120,8 @@ export function ChatView({
   onDeleteMessage,
   onReact,
   onMarkRead,
+  expireSeconds,
+  onSetExpiration,
 }: ChatViewProps) {
   const { t, language } = useI18n();
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -123,6 +130,21 @@ export function ChatView({
   const [replyTo, setReplyTo] = useState<Message | null>(null);
   /** The reaction picker popover target (position + message). */
   const [emojiPicker, setEmojiPicker] = useState<MessageMenuState | null>(null);
+  /** Whether the disappearing-message timer dropdown in the header is open. */
+  const [expiryMenuOpen, setExpiryMenuOpen] = useState(false);
+
+  /** Disappearing-message options: Off / 5s / 30s / 1m / 1h / 1d. */
+  const EXPIRY_OPTIONS: { seconds: number; label: string }[] = [
+    { seconds: 0, label: t("chat.expiry_off") },
+    { seconds: 5, label: t("chat.expiry_5s") },
+    { seconds: 30, label: t("chat.expiry_30s") },
+    { seconds: 60, label: t("chat.expiry_1m") },
+    { seconds: 3600, label: t("chat.expiry_1h") },
+    { seconds: 86400, label: t("chat.expiry_1d") },
+  ];
+  const currentExpiryLabel =
+    EXPIRY_OPTIONS.find((option) => option.seconds === expireSeconds)?.label ??
+    t("chat.expiry_off");
 
   // ---- In-chat message search --------------------------------------------
   const [searchOpen, setSearchOpen] = useState(false);
@@ -433,6 +455,64 @@ export function ChatView({
             <Info className="h-5 w-5" />
           </button>
         ) : null}
+        {/* Disappearing-message timer for this chat. */}
+        <div className="relative">
+          <button
+            type="button"
+            onClick={() => setExpiryMenuOpen((open) => !open)}
+            title={t("chat.expiry_toggle", { label: currentExpiryLabel })}
+            aria-label={t("chat.expiry_toggle", { label: currentExpiryLabel })}
+            aria-expanded={expiryMenuOpen}
+            className={cx(
+              "relative rounded-lg p-2 transition",
+              expireSeconds > 0
+                ? "text-wp-accent hover:bg-wp-accent/10"
+                : "text-wp-dim hover:bg-wp-panel-2 hover:text-wp-text"
+            )}
+          >
+            <Timer className="h-5 w-5" />
+            {expireSeconds > 0 ? (
+              <span className="absolute right-0.5 top-0.5 h-1.5 w-1.5 rounded-full bg-wp-accent" />
+            ) : null}
+          </button>
+          {expiryMenuOpen ? (
+            <>
+              <div
+                className="fixed inset-0 z-30"
+                onClick={() => setExpiryMenuOpen(false)}
+                aria-hidden="true"
+              />
+              <div className="absolute right-0 top-full z-40 mt-2 w-40 overflow-hidden rounded-xl border border-wp-line/10 bg-wp-panel-2 py-1 shadow-xl shadow-black/40">
+                <p className="px-3 pb-1 pt-2 text-[11px] font-semibold uppercase tracking-wide text-wp-faint">
+                  {t("chat.expiry_title")}
+                </p>
+                {EXPIRY_OPTIONS.map((option) => (
+                  <button
+                    key={option.seconds}
+                    type="button"
+                    onClick={() => {
+                      setExpiryMenuOpen(false);
+                      if (option.seconds !== expireSeconds) {
+                        void onSetExpiration(option.seconds);
+                      }
+                    }}
+                    className={cx(
+                      "flex w-full items-center justify-between px-3 py-2 text-left text-sm transition",
+                      option.seconds === expireSeconds
+                        ? "bg-wp-accent/10 font-semibold text-wp-accent"
+                        : "text-wp-dim hover:bg-wp-panel-3 hover:text-wp-text"
+                    )}
+                  >
+                    {option.label}
+                    {option.seconds === expireSeconds ? (
+                      <span className="text-wp-accent">✓</span>
+                    ) : null}
+                  </button>
+                ))}
+              </div>
+            </>
+          ) : null}
+        </div>
         <button
           type="button"
           onClick={() => setSearchOpen((open) => !open)}

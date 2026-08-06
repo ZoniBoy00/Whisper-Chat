@@ -765,6 +765,14 @@ export function MainView({ peerId, onReset }: MainViewProps) {
           )
         }
         onMarkRead={chat.markConversationRead}
+        expireSeconds={
+          chat.activePeerId ? chat.chatExpirations[chat.activePeerId] ?? 0 : 0
+        }
+        onSetExpiration={(seconds) =>
+          chat.activePeerId
+            ? void chat.setChatExpiration(chat.activePeerId, seconds)
+            : undefined
+        }
         draft={chat.activePeerId ? drafts[chat.activePeerId] ?? "" : ""}
         onDraftChange={handleDraftChange}
       />

@@ -267,6 +267,19 @@ async fn send_message(
         .map_err(|e| e.to_string())
 }
 
+/// Set (or clear, with `seconds = 0`) the disappearing-message timer for a
+/// chat. Applies to future messages THIS identity sends to that peer/group.
+#[tauri::command]
+fn set_chat_expiration(
+    state: State<'_, RelayClient>,
+    peer_id: String,
+    seconds: u64,
+) -> Result<(), String> {
+    state
+        .set_chat_expiration(&peer_id, seconds)
+        .map_err(|e| e.to_string())
+}
+
 /// React to a message with an emoji. `active` is the sender's freshly computed
 /// absolute state (true = react, false = unreact) and travels inside the
 /// encrypted payload, so no relay or server changes are involved.
@@ -1231,6 +1244,20 @@ pub fn run() {
                 });
             }
 
+            // Disappearing messages: every second, purge messages whose
+            // deadline has passed and let the UI know which ones to remove.
+            // Best-effort — a transient store error just waits for the next
+            // tick.
+            {
+                let handle = app.handle().clone();
+                tauri::async_runtime::spawn(async move {
+                    loop {
+                        let _ = handle.state::<RelayClient>().delete_expired_and_emit();
+                        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+                    }
+                });
+            }
+
             setup_splash_screen(app)?;
 
             Ok(())
@@ -1244,6 +1271,7 @@ pub fn run() {
             publish_prekeys,
             start_chat,
             send_message,
+            set_chat_expiration,
             send_reaction,
             get_invite_link,
             get_safety_number,
