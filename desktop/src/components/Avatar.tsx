@@ -19,6 +19,10 @@ export function Avatar({ name, size = 40, src, variant = "peer" }: AvatarProps) 
   // blob not yet replicated) is retried a few times before the letter fallback
   // takes over, so an avatar self-heals instead of staying blank.
   const [attempt, setAttempt] = useState(0);
+  // Monotonic counter bumped on every (re)connect. Used as the <img> key so a
+  // failed load actually re-attempts: browsers never re-request an <img> with
+  // the same src when React merely re-renders it.
+  const [reconnectKey, setReconnectKey] = useState(0);
 
   // When the relay (re)connects, every avatar re-arms and retries: a client
   // started before the server came up would otherwise pin the letter fallback
@@ -28,7 +32,7 @@ export function Avatar({ name, size = 40, src, variant = "peer" }: AvatarProps) 
     listen<{ connected: boolean }>("relay-status", (event) => {
       if (event.payload.connected) {
         setImageFailed(false);
-        setAttempt(0);
+        setReconnectKey((key) => key + 1);
       }
     }).then((fn) => {
       unlisten = fn;
@@ -48,6 +52,7 @@ export function Avatar({ name, size = 40, src, variant = "peer" }: AvatarProps) 
   if (src && !imageFailed) {
     return (
       <img
+        key={`${src}-${attempt}-${reconnectKey}`}
         src={src}
         alt=""
         width={size}
