@@ -796,6 +796,30 @@ fn append_client_log(state: State<'_, LogBuffer>, level: String, message: String
     state.write_line(&level, "webview", &message);
 }
 
+/// Open the daily client log folder (`<app-data>/logs`) in the OS file
+/// manager, so users can grab the log file for a bug report.
+#[tauri::command]
+fn open_logs_folder(app: tauri::AppHandle) -> Result<(), String> {
+    let dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| e.to_string())?
+        .join("logs");
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    let opener = if cfg!(target_os = "windows") {
+        "explorer"
+    } else if cfg!(target_os = "macos") {
+        "open"
+    } else {
+        "xdg-open"
+    };
+    std::process::Command::new(opener)
+        .arg(&dir)
+        .spawn()
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
 /// Persist our own public display name and announce it to the relay so other
 /// peers can show it when they look us up.
 #[tauri::command]
@@ -1211,6 +1235,7 @@ pub fn run() {
             set_group_avatar,
             get_client_logs,
             append_client_log,
+            open_logs_folder,
             export_identity,
             import_identity,
             export_everything,

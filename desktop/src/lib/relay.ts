@@ -45,6 +45,11 @@ export function appendClientLog(level: string, message: string): Promise<void> {
   return invoke("append_client_log", { level, message });
 }
 
+/** Open the daily client log folder in the OS file manager. */
+export function openLogsFolder(): Promise<void> {
+  return invoke("open_logs_folder");
+}
+
 /** Generate and publish a fresh batch of one-time pre-keys. */
 export function publishPrekeys(): Promise<void> {
   return invoke("publish_prekeys");
