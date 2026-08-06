@@ -391,4 +391,52 @@ mod tests {
             b"payload"
         );
     }
+
+    #[test]
+    fn message_index_increments_with_each_encryption() {
+        // The rotation trigger: `message_index()` must climb with every
+        // encrypted message so the caller can rotate after a bounded number.
+        let mut outbound = OutboundGroup::new();
+        assert_eq!(outbound.message_index(), 0);
+        for expected in 1..=5 {
+            let _ = outbound.encrypt(b"x");
+            assert_eq!(outbound.message_index(), expected);
+        }
+    }
+
+    #[test]
+    fn rotation_fresh_session_key_differs_and_old_key_cannot_decrypt() {
+        // Rotating to a fresh OutboundGroup yields a DIFFERENT session key:
+        // the old key (which an attacker may have captured) can no longer
+        // decrypt anything encrypted after the rotation — backward secrecy.
+        let mut old = OutboundGroup::new();
+        let old_key = old.session_key();
+        // Burn some messages on the old stream, then rotate.
+        for _ in 0..3 {
+            let _ = old.encrypt(b"before");
+        }
+        let rotated = OutboundGroup::new();
+        assert_ne!(
+            old_key,
+            rotated.session_key(),
+            "rotation must mint a new key"
+        );
+
+        // The old inbound (from the old key) opens old ciphertext but NOT the
+        // fresh stream's ciphertext.
+        let mut old_inbound = InboundGroup::new(&old_key).expect("old key parses");
+        let pre = old.encrypt(b"old message");
+        assert_eq!(
+            old_inbound
+                .decrypt(&pre)
+                .expect("old key opens old message"),
+            b"old message"
+        );
+        let mut rotated_outbound = rotated;
+        let post = rotated_outbound.encrypt(b"new message");
+        assert!(
+            old_inbound.decrypt(&post).is_err(),
+            "the rotated-away key must not open post-rotation messages"
+        );
+    }
 }
