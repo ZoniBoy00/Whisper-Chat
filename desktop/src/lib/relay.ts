@@ -536,6 +536,21 @@ export function onMessageEdited(
   );
 }
 
+/** Payload of the `contacts-rehydrated` event: the contact list was merged
+ *  back from the relay (e.g. after a database reset). */
+export interface ContactsRehydratedEvent {
+  peer_ids: string[];
+}
+
+/** Subscribe to contact-list rehydration. Returns an unlisten function. */
+export function onContactsRehydrated(
+  handler: (event: ContactsRehydratedEvent) => void
+): Promise<UnlistenFn> {
+  return listen<ContactsRehydratedEvent>("contacts-rehydrated", (event) =>
+    handler(event.payload)
+  );
+}
+
 /** Edit one of our own messages: replace its text on every device. */
 export function editMessageCommand(
   peerId: string,

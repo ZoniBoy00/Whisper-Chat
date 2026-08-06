@@ -44,6 +44,7 @@ import {
   onMessageStatus,
   onMessageDeleted,
   onMessageEdited,
+  onContactsRehydrated,
   onPresence,
   onReconnecting,
   onRelayStatus,
@@ -678,6 +679,15 @@ export function useChatState({
           toast(t("contacts.you_are_contacts", { name }), "success");
         })
       );
+      // The relay rehydrated the contact list after a database reset/restore:
+      // resync quietly (no "you are now contacts" toast — these are old
+      // friendships, not new ones).
+      const contactsRehydratedUnlisten = await register(() =>
+        onContactsRehydrated(() => {
+          if (disposed) return;
+          void refresh();
+        })
+      );
       const requestDeclinedUnlisten = await register(() =>
         onFriendRequestDeclined(({ peer_id }) => {
           if (disposed) return;
@@ -745,6 +755,7 @@ export function useChatState({
         !groupRemovedUnlisten ||
         !friendRequestUnlisten ||
         !contactAddedUnlisten ||
+        !contactsRehydratedUnlisten ||
         !requestDeclinedUnlisten ||
         !contactRemovedUnlisten
       ) {

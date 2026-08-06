@@ -903,6 +903,14 @@ pub struct ContactAddedEvent {
     pub display_name: Option<String>,
 }
 
+/// Payload of the `contacts-rehydrated` event: the contact list was merged
+/// from the relay (after a database reset/restore). Carries the freshly
+/// learned peer IDs so the UI can refresh without a toast.
+#[derive(Debug, Clone, Serialize)]
+pub struct ContactsRehydratedEvent {
+    pub peer_ids: Vec<String>,
+}
+
 /// Payload of the `friend-request-declined` event emitted when my outgoing
 /// request was declined, so the UI can drop it from the Requests section.
 #[derive(Debug, Clone, Serialize)]
