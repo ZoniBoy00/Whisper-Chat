@@ -183,7 +183,7 @@ talks to whom, IP) is visible just as in Signal/WhatsApp — this is an
 | **6.9** | **Message interactions:** emoji reactions (E2EE state-signal envelopes, reaction pills on bubbles, shared ReactionPicker — context menu + quick-react button), quoted replies (tagged plaintext payload, reply bar in the composer) | 2 | ✅ **done** |
 | **6.10** | **Invite links + safety numbers + join links:** `whisper://invite` (share, profile popup, OS deep links via single-instance + deep-link plugins) and `whisper://join` (group join links with secret token, name + avatar embedded, join dialog), Signal-style safety numbers (60-digit + short tag, QR code, local verified flag) | 1–2 | ✅ **done** |
 | **6.11** | **Multi-device sync:** one identity on several devices (Signal-style key backup / signed device list) | 2 | 🔒 After MVP |
-| **7** | **Media + calls:** encrypted file transfer (AES-GCM key exchange, `/media` extension), WebRTC (DTLS-SRTP) + coturn, voice messages | 2 | 🔒 After MVP |
+| **7** | **Media + calls:** encrypted file transfer (AES-GCM key exchange, `/media` extension) — design in [`docs/MEDIA-SYSTEM.md`](MEDIA-SYSTEM.md), WebRTC (DTLS-SRTP) + coturn, voice messages | 2 | 🔒 After MVP |
 | **8** | **Mobile:** Flutter + flutter_rust_bridge; push (APNs/FCM — only "you have a message") | separate | 🔒 After MVP |
 | **9** | **Audit + PQ:** cargo audit, fuzz, external review, threat model, X25519Kyber768 | — | 🔒 After MVP |
 
