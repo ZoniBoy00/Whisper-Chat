@@ -80,26 +80,38 @@ impl RelayClient {
         if let Some(tx) = mutex_guard(&self.inner.pending_contacts_list)?.pop_front() {
             let _ = tx.send(Ok(peers.clone()));
         }
+        let mut added = Vec::new();
         {
             let mut contacts = write_guard(&self.inner.contacts)?;
             for peer in &peers {
                 if !contacts.iter().any(|known| known == peer) {
                     contacts.push(peer.clone());
+                    added.push(peer.clone());
                 }
             }
         }
-        let store_guard = self.store_guard()?;
-        let store = store_guard.as_ref().ok_or(RelayError::StoreNotOpen)?;
-        for peer in &peers {
-            let _ = store.upsert_contact(&ContactRow {
-                peer_id: peer.clone(),
-                display_name: None,
-                username: None,
-                avatar_url: None,
-                last_seen: None,
-                curve25519_key: None,
-                verified: false,
-            });
+        if !added.is_empty() {
+            let store_guard = self.store_guard()?;
+            let store = store_guard.as_ref().ok_or(RelayError::StoreNotOpen)?;
+            for peer in &added {
+                let _ = store.upsert_contact(&ContactRow {
+                    peer_id: peer.clone(),
+                    display_name: None,
+                    username: None,
+                    avatar_url: None,
+                    last_seen: None,
+                    curve25519_key: None,
+                    verified: false,
+                });
+            }
+            // Tell the UI to resync its chat list — without the "you are now
+            // contacts" toast that `contact-added` implies.
+            let _ = self.inner.app.emit(
+                "contacts-rehydrated",
+                ContactsRehydratedEvent {
+                    peer_ids: added.clone(),
+                },
+            );
         }
         Ok(())
     }
