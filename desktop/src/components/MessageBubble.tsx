@@ -88,8 +88,7 @@ export function MessageBubble({
 }: MessageBubbleProps) {
   const { t } = useI18n();
   const { outgoing } = message;
-  // Hover state drives the quick-reaction button; the picker opens inline.
-  const [hovered, setHovered] = useState(false);
+  // The inline reaction picker opens on the quick-reaction button click.
   const [pickerOpen, setPickerOpen] = useState(false);
   // Read receipts: "sent" = single gray tick, "delivered" = double gray tick,
   // "read" = double blue tick.
@@ -106,11 +105,6 @@ export function MessageBubble({
         animate && "animate-msg-in",
         outgoing ? "items-end" : "items-start"
       )}
-      onMouseEnter={() => setHovered(true)}
-      onMouseLeave={() => {
-        setHovered(false);
-        setPickerOpen(false);
-      }}
     >
       <div
         className={cx(
@@ -121,8 +115,8 @@ export function MessageBubble({
         )}
         onContextMenu={onContextMenu}
       >
-        {/* Quick-reaction button: appears on hover (WhatsApp-style). */}
-        {onReact && (hovered || pickerOpen) ? (
+        {/* Quick-reaction button: always visible so reactions are discoverable. */}
+        {onReact ? (
           <button
             type="button"
             onClick={() => setPickerOpen((open) => !open)}

@@ -1478,32 +1478,41 @@ impl RelayClient {
         // sendable without any user action.
         if read_guard(&self.inner.groups)?.contains_key(peer_id) {
             self.ensure_outbound_session(peer_id).await?;
-            return match quote {
-                Some(quote) => {
-                    let payload =
-                        ChatPayload::Text(TextPayload::with_quote(text.to_string(), quote.clone()));
-                    let bytes = serde_json::to_vec(&payload)?;
-                    self.send_group_payload(peer_id, &bytes, true, client_id, Some(quote))
-                }
-                None => self.send_group_message(peer_id, text, client_id),
-            };
+            // The message id is decided up front and embedded in the encrypted
+            // payload; every recipient stores the message under this same id,
+            // which is what lets reactions/replies resolve across devices.
+            let message_id = self.next_message_id(client_id);
+            let payload = ChatPayload::Text(TextPayload {
+                text: text.to_string(),
+                quote,
+                message_id: Some(message_id.clone()),
+            });
+            let bytes = serde_json::to_vec(&payload)?;
+            return self.send_group_payload(
+                peer_id,
+                &bytes,
+                true,
+                client_id,
+                None,
+                Some(message_id),
+            );
         }
 
         let my_peer_id = self.my_peer_id()?;
+        // Same id-sharing scheme as the group path above.
+        let message_id = self.next_message_id(client_id);
         let (olm, session_id) = {
             let mut sessions = mutex_guard(&self.inner.sessions)?;
             let session = sessions
                 .get_mut(peer_id)
                 .ok_or_else(|| RelayError::NoSession(peer_id.to_string()))?;
             let session_id = session.session_id();
-            let plaintext: Vec<u8> = match &quote {
-                Some(quote) => serde_json::to_vec(&ChatPayload::Text(TextPayload::with_quote(
-                    text.to_string(),
-                    quote.clone(),
-                )))?,
-                None => text.as_bytes().to_vec(),
-            };
-            let olm = session.encrypt(&plaintext)?;
+            let payload = ChatPayload::Text(TextPayload {
+                text: text.to_string(),
+                quote,
+                message_id: Some(message_id.clone()),
+            });
+            let olm = session.encrypt(&serde_json::to_vec(&payload)?)?;
             (olm, session_id)
         };
 
@@ -1521,7 +1530,7 @@ impl RelayClient {
         // envelope immediately and the inbound loop may process that ack while
         // this command is still returning.
         let seq = self.next_seq();
-        let msg = self.record_outgoing(peer_id, text, client_id, quote)?;
+        let msg = self.record_outgoing_with_id(peer_id, message_id, text, None)?;
         self.record_pending_ack(seq, &msg.id)?;
 
         if let Err(err) = self.send_wire(&wire, seq) {
@@ -1943,7 +1952,7 @@ impl RelayClient {
                 match parse_plaintext(&inbound.plaintext) {
                     ParsedPayload::Text(text) => Ok(Some((
                         sender.clone(),
-                        self.record_incoming(&sender, text.text, text.quote)?,
+                        self.record_incoming(&sender, text.text, text.quote, text.message_id)?,
                     ))),
                     ParsedPayload::Reaction(reaction) => {
                         self.handle_reaction(
@@ -2012,7 +2021,7 @@ impl RelayClient {
                         }
                         Ok(Some((
                             sender.clone(),
-                            self.record_incoming(&sender, text.text, text.quote)?,
+                            self.record_incoming(&sender, text.text, text.quote, text.message_id)?,
                         )))
                     }
                     ParsedPayload::Reaction(reaction) => {
@@ -2359,17 +2368,26 @@ impl RelayClient {
     // ---------------------------------------------------------------------
 
     /// Record an inbound plaintext message and add the sender as a contact.
+    ///
+    /// When the sender embedded their own `message_id` in the encrypted
+    /// payload, the message is stored under that SAME id — the shared id is
+    /// what lets reactions and replies (which reference the sender's id)
+    /// resolve on both ends. Legacy messages without one get a local `in-N`.
     fn record_incoming(
         &self,
         peer_id: &str,
         text: String,
         quote: Option<Quote>,
+        message_id: Option<String>,
     ) -> Result<UIMessage, RelayError> {
         let message = UIMessage {
-            id: format!(
-                "in-{}",
-                self.inner.next_msg_id.fetch_add(1, Ordering::SeqCst)
-            ),
+            id: match message_id {
+                Some(id) => id,
+                None => format!(
+                    "in-{}",
+                    self.inner.next_msg_id.fetch_add(1, Ordering::SeqCst)
+                ),
+            },
             text,
             outgoing: false,
             timestamp: now_millis(),
@@ -2398,14 +2416,35 @@ impl RelayClient {
         client_id: &str,
         quote: Option<Quote>,
     ) -> Result<UIMessage, RelayError> {
-        let id = if client_id.is_empty() {
+        let id = self.next_message_id(client_id);
+        self.record_outgoing_with_id(peer_id, id, text, quote)
+    }
+
+    /// Decide the id for the next outgoing message: the UI-provided client id
+    /// (a UUID in practice), or a generated `out-N` when none was supplied.
+    fn next_message_id(&self, client_id: &str) -> String {
+        if client_id.is_empty() {
             format!(
                 "out-{}",
                 self.inner.next_msg_id.fetch_add(1, Ordering::SeqCst)
             )
         } else {
             client_id.to_string()
-        };
+        }
+    }
+
+    /// Record an outbound message under an already-decided id. `send_message`
+    /// uses this so the id that travels inside the encrypted payload (where
+    /// the recipient picks it up) is exactly the id the sender stores the
+    /// message under — that shared id is what makes reactions and replies
+    /// resolve on both ends.
+    fn record_outgoing_with_id(
+        &self,
+        peer_id: &str,
+        id: String,
+        text: &str,
+        quote: Option<Quote>,
+    ) -> Result<UIMessage, RelayError> {
         let message = UIMessage {
             id,
             text: text.to_string(),
@@ -2419,12 +2458,7 @@ impl RelayClient {
             .entry(peer_id.to_string())
             .or_default()
             .push(message.clone());
-        let stored_client_id = if client_id.is_empty() {
-            None
-        } else {
-            Some(client_id)
-        };
-        self.persist_message(peer_id, &message, stored_client_id)?;
+        self.persist_message(peer_id, &message, None)?;
         self.persist_next_msg_id()?;
         Ok(message)
     }

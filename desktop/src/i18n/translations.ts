@@ -157,6 +157,12 @@ export const translations = {
     "safety.verify": "Mark as verified",
     "safety.unverify": "Remove verification",
 
+    // ---- Invite preview dialog -------------------------------------------
+    "invite.hint":
+      "This person invited you to Whisper. Add them to start chatting — every message is end-to-end encrypted.",
+    "invite.add_friend": "Add friend",
+    "invite.request_sent": "Friend request sent!",
+
     // ---- Composer --------------------------------------------------------
     "composer.type_a_message": "Type a message",
     "composer.message_aria": "Message",
@@ -562,6 +568,12 @@ export const translations = {
       "Vertaa tätä numeroa {name}:n kanssa toisen kanavan kautta. Jos se täsmää, keskustelu on suojattu.",
     "safety.verify": "Merkitse varmistetuksi",
     "safety.unverify": "Poista varmistus",
+
+    // ---- Invite preview dialog -------------------------------------------
+    "invite.hint":
+      "Tämä henkilö kutsui sinut Whisperiin. Lisää hänet kaveriksi aloittaaksesi keskustelun — jokainen viesti on end-to-end-salattu.",
+    "invite.add_friend": "Lisää kaveriksi",
+    "invite.request_sent": "Kaveripyyntö lähetetty!",
 
     // ---- Composer --------------------------------------------------------
     "composer.type_a_message": "Kirjoita viesti",

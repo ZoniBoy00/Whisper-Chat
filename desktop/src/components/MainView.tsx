@@ -35,6 +35,7 @@ import { Sidebar } from "./Sidebar";
 import { ChatView } from "./ChatView";
 import { AddContactDialog } from "./AddContactDialog";
 import { GroupInfoDialog } from "./GroupInfoDialog";
+import { InvitePreviewDialog } from "./InvitePreviewDialog";
 import { NewGroupDialog } from "./NewGroupDialog";
 import { ProfileDialog } from "./ProfileDialog";
 import { SettingsDialog } from "./SettingsDialog";
@@ -42,15 +43,6 @@ import { SettingsDialog } from "./SettingsDialog";
 interface MainViewProps {
   peerId: string;
   onReset: () => void;
-}
-
-/** Extract the target peer ID from a whisper:// deep link (invite or verify).
- *  Returns null for anything that is not a well-formed link. */
-function extractPeerIdFromLink(url: string): string | null {
-  const match = url.match(
-    /^whisper:\/\/(?:invite|verify)\?[^]*\bpeer=([0-9a-f]{24})\b/i
-  );
-  return match ? match[1] : null;
 }
 
 export function MainView({ peerId, onReset }: MainViewProps) {
@@ -77,9 +69,8 @@ export function MainView({ peerId, onReset }: MainViewProps) {
   const [newGroupOpen, setNewGroupOpen] = useState(false);
   const [groupInfoGroupId, setGroupInfoGroupId] = useState<string | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
-  // Pre-fill for the Add-contact dialog: set when a whisper:// deep link or
-  // invite paste opens it, so the target peer is already in the field.
-  const [inviteValue, setInviteValue] = useState("");
+  // The raw whisper:// link that opened the invite preview popup.
+  const [inviteLink, setInviteLink] = useState<string | null>(null);
   // Peer whose profile dialog is open; null when closed.
   const [profilePeerId, setProfilePeerId] = useState<string | null>(null);
   // Pinned conversations (client-side, persisted per identity in localStorage).
@@ -125,15 +116,16 @@ export function MainView({ peerId, onReset }: MainViewProps) {
   }, [messageFontScale]);
 
   // Deep links: a whisper:// invite that launched the app (drained from the
-  // pending queue) or arrived while running (live event) pre-fills the
-  // Add-contact dialog so the target peer is one click away.
+  // pending queue) or arrived while running (live event) opens a popup with
+  // the invited peer's profile and a one-click friend request.
   useEffect(() => {
     let disposed = false;
     let unlisten: (() => void) | undefined;
     const openInvite = (url: string) => {
-      if (disposed || !extractPeerIdFromLink(url)) return;
-      setInviteValue(url);
-      setAddDialogOpen(true);
+      if (disposed || !/^whisper:\/\/(?:invite|verify)\?[^]*\bpeer=[0-9a-f]{24}\b/i.test(url)) {
+        return;
+      }
+      setInviteLink(url);
     };
     void getPendingDeepLink().then((links) => {
       if (disposed) return;
@@ -705,7 +697,16 @@ export function MainView({ peerId, onReset }: MainViewProps) {
         onOpenChange={setAddDialogOpen}
         onAdd={handleSendFriendRequest}
         myPeerId={peerId}
-        initialValue={inviteValue}
+      />
+      <InvitePreviewDialog
+        open={inviteLink !== null}
+        onOpenChange={(open) => {
+          if (!open) setInviteLink(null);
+        }}
+        link={inviteLink ?? ""}
+        relayUrl={relayUrl}
+        onAdd={handleSendFriendRequest}
+        myPeerId={peerId}
       />
       <NewGroupDialog
         open={newGroupOpen}
