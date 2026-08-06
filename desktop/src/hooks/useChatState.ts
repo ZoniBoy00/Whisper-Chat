@@ -36,6 +36,7 @@ import {
   onGroupInviteOutcome,
   onGroupInviteReceived,
   onGroupRemoved,
+  onGroupUpdated,
   onMessageReaction,
   onMessageStatus,
   onPresence,
@@ -493,6 +494,15 @@ export function useChatState({
           );
         })
       );
+      // A roster push (member added/left/removed, role change) updated the
+      // backend's in-memory group; refresh so the chat list and member counts
+      // reflect it immediately.
+      const groupUpdatedUnlisten = await register(() =>
+        onGroupUpdated(() => {
+          if (disposed) return;
+          void refresh();
+        })
+      );
       const contactUpdatedUnlisten = await register(() =>
         onContactUpdated(({ peer_id, display_name, avatar_url }) => {
           if (disposed) return;
@@ -640,6 +650,7 @@ export function useChatState({
         !reactionUnlisten ||
         !groupInviteUnlisten ||
         !groupInviteOutcomeUnlisten ||
+        !groupUpdatedUnlisten ||
         !contactUpdatedUnlisten ||
         !presenceUnlisten ||
         !groupRemovedUnlisten ||

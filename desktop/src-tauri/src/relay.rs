@@ -598,6 +598,14 @@ pub struct GroupRemovedEvent {
     pub group_id: String,
 }
 
+/// Payload of the `group-updated` event emitted when a group's roster changes
+/// (member added/left/removed, promoted/demoted, ownership transferred). The
+/// UI refreshes the chat list so member counts stay current.
+#[derive(Debug, Clone, Serialize)]
+pub struct GroupUpdatedEvent {
+    pub group_id: String,
+}
+
 /// A message in a shape the UI can render directly.
 #[derive(Debug, Clone, Serialize)]
 pub struct UIMessage {
