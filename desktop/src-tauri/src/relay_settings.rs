@@ -185,6 +185,13 @@ impl RelayClient {
             return self.send_group_typing(peer_id, is_typing);
         }
         tracing::info!(peer = %peer_id, "1:1 typing path");
+        // Lazy session heal: a session can be missing after a restart (or if
+        // it was never persisted). Re-establish it with a handshake so the
+        // typing indicator (and later messages) go through without waiting for
+        // the user to open the chat.
+        if !mutex_guard(&self.inner.sessions)?.contains_key(peer_id) {
+            self.start_chat(peer_id).await?;
+        }
         let kind = if is_typing {
             ReceiptKind::Typing
         } else {

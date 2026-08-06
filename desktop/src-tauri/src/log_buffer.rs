@@ -174,6 +174,20 @@ fn level_name(level: &tracing::Level) -> &'static str {
     }
 }
 
+/// Formats timestamps as local wall-clock RFC 3339 (`2026-08-06T16:48:00.123Z`
+/// style, but with the local UTC offset) so logs match the user's clock.
+struct LocalTimer;
+
+impl tracing_subscriber::fmt::time::FormatTime for LocalTimer {
+    fn format_time(&self, w: &mut tracing_subscriber::fmt::format::Writer<'_>) -> std::fmt::Result {
+        use time::format_description::well_known::Rfc3339;
+        let now =
+            time::OffsetDateTime::now_local().unwrap_or_else(|_| time::OffsetDateTime::now_utc());
+        let rendered = now.format(&Rfc3339).unwrap_or_else(|_| "?".into());
+        w.write_str(&rendered)
+    }
+}
+
 /// Initialize `tracing` for the app: every event is written to stderr (dev
 /// console), mirrored into the shared ring buffer that backs the Logs settings
 /// tab, and — when `log_dir` is provided — appended to a daily file
@@ -181,7 +195,10 @@ fn level_name(level: &tracing::Level) -> &'static str {
 /// reports. Call once from the Tauri setup hook; a second call is a no-op
 /// (`try_init` returns the existing default subscriber unchanged).
 pub fn init_tracing(buffer: &LogBuffer, log_dir: Option<PathBuf>) {
+    // Local wall-clock timestamps (not UTC), so logs match the user's clock.
+    let timer = LocalTimer;
     let stderr_layer = tracing_subscriber::fmt::layer()
+        .with_timer(timer)
         .with_writer(std::io::stderr)
         .with_target(true)
         .with_filter(LevelFilter::INFO);
@@ -195,6 +212,7 @@ pub fn init_tracing(buffer: &LogBuffer, log_dir: Option<PathBuf>) {
             // WITHOUT ANSI colours — the escape codes would make the file
             // unreadable in a plain text editor / GitHub issue.
             let file_layer = tracing_subscriber::fmt::layer()
+                .with_timer(LocalTimer)
                 .with_writer(file)
                 .with_target(true)
                 .with_ansi(false)

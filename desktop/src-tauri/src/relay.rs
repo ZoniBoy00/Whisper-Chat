@@ -1645,6 +1645,12 @@ impl RelayClient {
         }
 
         let my_peer_id = self.my_peer_id()?;
+        // Lazy session heal: a missing 1:1 session (e.g. after a restart)
+        // would otherwise reject the message; re-establish it with a
+        // handshake first.
+        if !mutex_guard(&self.inner.sessions)?.contains_key(peer_id) {
+            self.start_chat(peer_id).await?;
+        }
         // Same id-sharing scheme as the group path above.
         let message_id = self.next_message_id(client_id);
         let (olm, session_id) = {
@@ -2389,7 +2395,7 @@ impl RelayClient {
                             my_role: Some("owner".to_string()),
                             avatar_url: meta_avatar,
                             outbound: Some(outbound),
-                key_shared_this_session: false,
+                            key_shared_this_session: false,
                         },
                     );
                 }
@@ -2414,7 +2420,7 @@ impl RelayClient {
                         my_role: None,
                         avatar_url: meta_avatar,
                         outbound: None,
-                key_shared_this_session: false,
+                        key_shared_this_session: false,
                     });
                 }
             }
