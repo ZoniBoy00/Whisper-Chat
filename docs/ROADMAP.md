@@ -234,20 +234,7 @@ must not be "unwind" in production; secrets never go into the JS/UI layer.
 
 ---
 
-## 10. Multi-Agent Division of Labor
-
-| Agent | Where | Role |
-|---|---|---|
-| **OpenCode + Agnes** | Joni's PC | Lead coder — feature lanes |
-| **Byte (me)** | VPS/Hermes | Planning, architecture, tests, review, infra, deploy |
-| **OpenCode (2nd instance)** | Joni's PC | Parallel feature lane / review |
-
-**Per phase:** Joni → "go" → bite-sized tasks → parallel coders (max 3) →
-tester → reviewer → report → approval → push.
-
----
-
-## 11. Infra & Repo
+## 10. Infra & Repo
 
 - **Relay:** Hetzner VPS + systemd (`whisper-relay.service`), Cloudflare
   Tunnel or direct port.
@@ -259,7 +246,7 @@ tester → reviewer → report → approval → push.
 
 ---
 
-## 12. Risks & Realism
+## 11. Risks & Realism
 
 | Risk | Mitigation |
 |---|---|
@@ -276,7 +263,7 @@ tester → reviewer → report → approval → push.
 
 ---
 
-## 13. Future Features (Idea Backlog)
+## 12. Future Features (Idea Backlog)
 
 A running wishlist of WhatsApp/Signal/Telegram-style features, prioritized by
 impact and effort. Pull items into the phase table when they get scheduled.
@@ -307,7 +294,7 @@ impact and effort. Pull items into the phase table when they get scheduled.
 
 ---
 
-## 14. Status & Next Steps (TODO)
+## 13. Status & Next Steps (TODO)
 
 **✅ Done (2026-08-06):**
 - [x] Phase 6.9: emoji reactions (E2EE state-signal envelopes, pills + shared ReactionPicker for context menu AND quick-react button, viewport-clamped + portal-rendered) and quoted replies (tagged plaintext payload `{"kind":"text",..}`, composer reply bar) — both 1:1 and groups
