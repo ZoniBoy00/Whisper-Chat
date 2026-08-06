@@ -23,7 +23,7 @@ export interface Message {
   readByCount?: number;
   /** Epoch milliseconds at which this disappearing message auto-deletes on
    *  both ends; undefined for regular messages that persist forever. */
-  expiresAt?: number;
+  expires_at?: number;
 }
 
 /** The quoted message a reply refers to (snapshot sent inside the encrypted
