@@ -52,6 +52,22 @@ pub(crate) struct GroupKeyPayload {
     pub(crate) sender: String,
 }
 
+/// Options for recording a group plaintext payload as an outgoing message.
+///
+/// `display_text` is the human-readable text recorded for the optimistic
+/// message — the plaintext itself is a tagged JSON payload and must never be
+/// shown raw. `message_id` is the pre-decided id that travels inside the
+/// encrypted payload (so recipients store the message under the same id); when
+/// absent the `client_id` scheme is used.
+pub(crate) struct GroupSend {
+    /// Whether the payload is recorded as an ordinary outgoing chat message.
+    pub record: bool,
+    pub client_id: String,
+    pub quote: Option<e2ee_core::Quote>,
+    pub message_id: Option<String>,
+    pub display_text: Option<String>,
+}
+
 impl RelayClient {
     /// Create a group on the relay, build the Megolm outbound session, register
     /// the group locally and share its `session_key` to every member over the
@@ -321,7 +337,7 @@ impl RelayClient {
     ) -> Result<(), RelayError> {
         self.group_op(ClientMessage::TransferOwnership {
             group_id: group_id.to_string(),
-            peer_id: peer_id.to_string(),
+            new_owner_peer_id: peer_id.to_string(),
         })
         .await
     }
@@ -507,25 +523,29 @@ impl RelayClient {
             message_id, emoji, active,
         ));
         let bytes = serde_json::to_vec(&payload)?;
-        self.send_group_payload(group_id, &bytes, false, "", None, None)
+        self.send_group_payload(
+            group_id,
+            &bytes,
+            GroupSend {
+                record: false,
+                client_id: String::new(),
+                quote: None,
+                message_id: None,
+                display_text: None,
+            },
+        )
     }
 
     /// Megolm-encrypt a serialized plaintext payload and fan it out to every
     /// member. When `record` is set the payload is treated as an ordinary
     /// outgoing chat message (optimistic insertion, ack mapping, rollback on
     /// send failure); otherwise it is a best-effort control signal (reaction,
-    /// typing) that is never recorded in the thread. `quote` is attached to
-    /// the recorded message when it was a quoted reply. `message_id` is the
-    /// pre-decided id that travels inside the encrypted payload; when absent
-    /// it falls back to the `client_id` scheme.
+    /// typing) that is never recorded in the thread.
     pub(crate) fn send_group_payload(
         &self,
         group_id: &str,
         plaintext: &[u8],
-        record: bool,
-        client_id: &str,
-        quote: Option<e2ee_core::Quote>,
-        message_id: Option<String>,
+        options: GroupSend,
     ) -> Result<(), RelayError> {
         let my_peer_id = self.my_peer_id()?;
         // Encrypt with our own outbound Megolm session. Every member owns one
@@ -563,20 +583,19 @@ impl RelayClient {
         };
 
         let seq = self.next_seq();
-        let recorded = if record {
-            let msg = match message_id {
-                Some(id) => self.record_outgoing_with_id(
-                    group_id,
-                    id,
-                    &String::from_utf8_lossy(plaintext),
-                    quote,
-                )?,
-                None => self.record_outgoing(
-                    group_id,
-                    &String::from_utf8_lossy(plaintext),
-                    client_id,
-                    quote,
-                )?,
+        let recorded = if options.record {
+            // Record the HUMAN-READABLE text (not the tagged JSON plaintext)
+            // so the sender's own optimistic message renders normally.
+            let shown_text = options
+                .display_text
+                .unwrap_or_else(|| String::from_utf8_lossy(plaintext).into_owned());
+            let msg = match options.message_id {
+                Some(id) => {
+                    self.record_outgoing_with_id(group_id, id, &shown_text, options.quote)?
+                }
+                None => {
+                    self.record_outgoing(group_id, &shown_text, &options.client_id, options.quote)?
+                }
             };
             self.record_pending_ack(seq, &msg.id)?;
             Some(msg)
@@ -1246,12 +1265,12 @@ mod tests {
 
         let transfer = serde_json::to_value(ClientMessage::TransferOwnership {
             group_id: "g-1".into(),
-            peer_id: "bob".into(),
+            new_owner_peer_id: "bob".into(),
         })
         .expect("serialize");
         assert_eq!(transfer["type"], "transfer_ownership");
         assert_eq!(transfer["group_id"], "g-1");
-        assert_eq!(transfer["peer_id"], "bob");
+        assert_eq!(transfer["new_owner_peer_id"], "bob");
     }
 
     #[test]
