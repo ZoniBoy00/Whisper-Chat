@@ -997,6 +997,23 @@ impl Relay {
                         },
                     )
                     .await;
+                // Fan the change out to every other member so their chat list
+                // and group header pick up the new photo without waiting for a
+                // get_group_info round-trip.
+                let members = self.inner.store.list_group_members(group_id);
+                for member in members {
+                    if member == peer_id {
+                        continue;
+                    }
+                    let _ = self
+                        .send(
+                            &member,
+                            ServerMessage::GroupAvatarSet {
+                                group_id: group_id.to_string(),
+                            },
+                        )
+                        .await;
+                }
             }
             Err(err) => {
                 tracing::error!(peer = %peer_id, group = %group_id, "failed to persist group avatar: {err}");
