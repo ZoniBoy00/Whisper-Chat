@@ -3,7 +3,9 @@ import { Loader2, Users, X } from "lucide-react";
 import { cx, shortPeerId } from "../lib/format";
 import { relayErrorCode } from "../lib/relay";
 import { useI18n } from "../i18n/I18nContext";
+import { useToast } from "../hooks/useToast";
 import { Avatar } from "./Avatar";
+import { ToastViewport } from "./Toast";
 
 interface JoinGroupDialogProps {
   open: boolean;
@@ -14,13 +16,22 @@ interface JoinGroupDialogProps {
   onJoin: (groupId: string, token: string) => Promise<void>;
 }
 
-/** Extract the group id + token from a `whisper://join?group=..&token=..` link. */
-function parseJoinLink(url: string): { groupId: string; token: string } | null {
+/** Extract the group id + token (+ optional display name) from a
+ *  `whisper://join?group=..&token=..&name=..` link. */
+function parseJoinLink(url: string): {
+  groupId: string;
+  token: string;
+  groupName: string | null;
+} | null {
   const match = url.match(
     /^whisper:\/\/join\/?\?[^]*\bgroup=([0-9a-f-]+)\b[^]*\btoken=([0-9a-f-]+)\b/i
   );
   if (!match) return null;
-  return { groupId: match[1], token: match[2] };
+  const nameMatch = url.match(/[?&]name=([^&]+)/i);
+  const groupName = nameMatch
+    ? decodeURIComponent(nameMatch[1].replace(/\+/g, " "))
+    : null;
+  return { groupId: match[1], token: match[2], groupName };
 }
 
 /** Popup shown when a `whisper://join` link is opened: confirm joining the
@@ -32,6 +43,7 @@ export function JoinGroupDialog({
   onJoin,
 }: JoinGroupDialogProps) {
   const { t } = useI18n();
+  const { toasts, dismiss } = useToast();
   const dialogRef = useRef<HTMLDialogElement>(null);
   const [joining, setJoining] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -80,7 +92,7 @@ export function JoinGroupDialog({
     }
   };
 
-  const name = parsed ? shortPeerId(parsed.groupId, 16) : "";
+  const name = parsed?.groupName ?? (parsed ? shortPeerId(parsed.groupId, 16) : "");
 
   return (
     <dialog
@@ -108,7 +120,7 @@ export function JoinGroupDialog({
             id="join-group-title"
             className="mt-3 max-w-full truncate font-display text-lg font-semibold tracking-tight text-wp-text"
           >
-            {t("join.title")}
+            {parsed?.groupName ?? t("join.title")}
           </h2>
           {parsed ? (
             <p className="mt-1 font-mono text-xs text-wp-faint">
@@ -144,6 +156,7 @@ export function JoinGroupDialog({
           </button>
         </div>
       </div>
+      <ToastViewport toasts={toasts} onDismiss={dismiss} />
     </dialog>
   );
 }

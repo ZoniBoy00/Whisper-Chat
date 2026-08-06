@@ -1918,10 +1918,23 @@ impl RelayClient {
                             send_error(tx, &code);
                         }
                     }
-                    // Group invite errors.
-                    "not_invited" | "already_invited" | "already_member" => {
+                    // Group invite errors. `already_member` can also answer a
+                    // join-link request, so fall through to that queue when no
+                    // invite op is waiting.
+                    "not_invited" | "already_invited" => {
                         if let Some(tx) =
                             mutex_guard(&self.inner.pending_group_invite_op)?.pop_front()
+                        {
+                            send_error(tx, &code);
+                        }
+                    }
+                    "already_member" => {
+                        if let Some(tx) =
+                            mutex_guard(&self.inner.pending_group_invite_op)?.pop_front()
+                        {
+                            send_error(tx, &code);
+                        } else if let Some(tx) =
+                            mutex_guard(&self.inner.pending_group_join_op)?.pop_front()
                         {
                             send_error(tx, &code);
                         }

@@ -411,7 +411,23 @@ impl Relay {
                 .await;
             return;
         };
-        let link = format!("whisper://join?group={group_id}&token={token}");
+        let group_name = self
+            .inner
+            .store
+            .get_group(group_id)
+            .map(|g| g.name)
+            .unwrap_or_default();
+        // URL-encode the name so the join dialog can show it before joining.
+        let mut encoded = String::new();
+        for byte in group_name.bytes() {
+            match byte {
+                b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                    encoded.push(byte as char)
+                }
+                _ => encoded.push_str(&format!("%{byte:02X}")),
+            }
+        }
+        let link = format!("whisper://join?group={group_id}&token={token}&name={encoded}");
         let _ = self
             .send(peer_id, ServerMessage::GroupJoinLink { link })
             .await;
