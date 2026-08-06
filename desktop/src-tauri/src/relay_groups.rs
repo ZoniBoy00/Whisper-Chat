@@ -548,7 +548,7 @@ impl RelayClient {
     ) -> Result<(), RelayError> {
         let payload = e2ee_core::ChatPayload::Typing(e2ee_core::TypingPayload::new(is_typing));
         let bytes = serde_json::to_vec(&payload)?;
-        tracing::debug!(group = %group_id, typing = %is_typing, "sending group typing indicator");
+        tracing::info!(group = %group_id, typing = %is_typing, "sending group typing indicator");
         self.send_group_payload(
             group_id,
             &bytes,
@@ -742,7 +742,7 @@ impl RelayClient {
             e2ee_core::ParsedPayload::Typing(typing) => {
                 // The typing indicator carries the WRITER's peer id so the UI
                 // can render "ZoniBoy typing…" (or "3 members typing…").
-                tracing::debug!(group = %group_id, sender = %wire.sender_peer_id, typing = %typing.active, "group typing received");
+                tracing::info!(group = %group_id, sender = %wire.sender_peer_id, typing = %typing.active, "group typing received");
                 let _ = self.inner.app.emit(
                     "typing",
                     TypingEvent {
