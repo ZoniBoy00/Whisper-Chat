@@ -285,6 +285,52 @@ fn mark_contact_verified(
         .map_err(|e| e.to_string())
 }
 
+/// Invite `peer_id` to `group_id` (owner/admin only). The invitee accepts or
+/// declines; they join the roster only on accept.
+#[tauri::command]
+async fn send_group_invite(
+    state: State<'_, RelayClient>,
+    group_id: String,
+    peer_id: String,
+) -> Result<(), String> {
+    state
+        .send_group_invite(&group_id, &peer_id)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// Accept a pending invite to `group_id`.
+#[tauri::command]
+async fn accept_group_invite(
+    state: State<'_, RelayClient>,
+    group_id: String,
+) -> Result<(), String> {
+    state
+        .accept_group_invite(&group_id)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// Decline a pending invite to `group_id`.
+#[tauri::command]
+async fn decline_group_invite(
+    state: State<'_, RelayClient>,
+    group_id: String,
+) -> Result<(), String> {
+    state
+        .decline_group_invite(&group_id)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// Fetch the pending group invites for this identity.
+#[tauri::command]
+async fn get_group_invites(
+    state: State<'_, RelayClient>,
+) -> Result<Vec<relay::GroupInviteInfo>, String> {
+    state.get_group_invites().await.map_err(|e| e.to_string())
+}
+
 /// Snapshot of identity, connection, contacts and messages for the UI.
 #[tauri::command]
 async fn get_chat_state(state: State<'_, RelayClient>) -> Result<ChatState, String> {
@@ -820,6 +866,10 @@ pub fn run() {
             get_invite_link,
             get_safety_number,
             mark_contact_verified,
+            send_group_invite,
+            accept_group_invite,
+            decline_group_invite,
+            get_group_invites,
             get_chat_state,
             disconnect_relay,
             reset_relay,

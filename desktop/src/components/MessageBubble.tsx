@@ -1,4 +1,5 @@
 import {
+  useEffect,
   useLayoutEffect,
   useRef,
   useState,
@@ -129,6 +130,25 @@ export function MessageBubble({
       y: Math.max(8, Math.min(pickerPos.y - rect.height - 8, window.innerHeight - rect.height - 8)),
     });
   }, [pickerOpen, pickerPos]);
+
+  // Dismiss the picker on any press outside it (or Escape).
+  useEffect(() => {
+    if (!pickerOpen) return;
+    const handlePointerDown = (event: PointerEvent) => {
+      if (pickerRef.current && !pickerRef.current.contains(event.target as Node)) {
+        setPickerOpen(false);
+      }
+    };
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setPickerOpen(false);
+    };
+    document.addEventListener("pointerdown", handlePointerDown);
+    window.addEventListener("keydown", handleKeyDown);
+    return () => {
+      document.removeEventListener("pointerdown", handlePointerDown);
+      window.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [pickerOpen]);
   // Read receipts: "sent" = single gray tick, "delivered" = double gray tick,
   // "read" = double blue tick.
   const read = outgoing && message.status === "read";

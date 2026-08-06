@@ -147,6 +147,240 @@ impl Relay {
         }
     }
 
+    /// Invite `target` to join `group_id`. Unlike [`Self::add_group_member`]
+    /// the invitee is NOT added to the roster immediately — they receive a
+    /// `group_invite_received` push and decide (accept/decline). Only the
+    /// owner or an admin may invite, and only accepted contacts may be
+    /// invited.
+    pub(crate) async fn group_invite(&self, peer_id: &str, ip: &str, group_id: &str, target: &str) {
+        if !self.take_group_slot(peer_id, ip).await {
+            return;
+        }
+        let role = self.inner.store.get_member_role(group_id, peer_id);
+        if !matches!(role.as_deref(), Some("owner") | Some("admin")) {
+            let _ = self
+                .send(
+                    peer_id,
+                    ServerMessage::Error {
+                        code: "not_admin".into(),
+                    },
+                )
+                .await;
+            return;
+        }
+        if self.inner.store.get_group(group_id).is_none() {
+            let _ = self
+                .send(
+                    peer_id,
+                    ServerMessage::Error {
+                        code: "group_not_found".into(),
+                    },
+                )
+                .await;
+            return;
+        }
+        if self.inner.store.is_group_member(group_id, target) {
+            let _ = self
+                .send(
+                    peer_id,
+                    ServerMessage::Error {
+                        code: "already_member".into(),
+                    },
+                )
+                .await;
+            return;
+        }
+        if !self.inner.store.are_contacts(peer_id, target) {
+            let _ = self
+                .send(
+                    peer_id,
+                    ServerMessage::Error {
+                        code: "not_contacts".into(),
+                    },
+                )
+                .await;
+            return;
+        }
+        if self.inner.store.is_group_invited(group_id, target) {
+            let _ = self
+                .send(
+                    peer_id,
+                    ServerMessage::Error {
+                        code: "already_invited".into(),
+                    },
+                )
+                .await;
+            return;
+        }
+
+        match self.inner.store.invite_to_group(group_id, target, peer_id) {
+            Ok(()) => {
+                tracing::info!(inviter = %peer_id, group = %group_id, target = %target, "group invite sent");
+                let _ = self.send(peer_id, ServerMessage::GroupInviteSent).await;
+                let group_name = self
+                    .inner
+                    .store
+                    .get_group(group_id)
+                    .map(|g| g.name)
+                    .unwrap_or_default();
+                let _ = self
+                    .send(
+                        target,
+                        ServerMessage::GroupInviteReceived {
+                            group_id: group_id.to_string(),
+                            group_name,
+                            inviter_peer_id: peer_id.to_string(),
+                        },
+                    )
+                    .await;
+            }
+            Err(err) => {
+                tracing::error!(inviter = %peer_id, group = %group_id, "failed to store invite: {err}");
+            }
+        }
+    }
+
+    /// Accept a pending invite: the caller joins the roster, the invite row is
+    /// removed, the inviter gets a `group_invite_accepted` push and every
+    /// other member gets the usual `group_member_added` fan-out (so they share
+    /// their Megolm keys with the newcomer).
+    pub(crate) async fn group_invite_accept(&self, peer_id: &str, ip: &str, group_id: &str) {
+        if !self.take_group_slot(peer_id, ip).await {
+            return;
+        }
+        let inviter = {
+            let invites = self.inner.store.group_invites_for(peer_id);
+            invites
+                .iter()
+                .find(|(gid, _)| gid == group_id)
+                .map(|(_, inviter)| inviter.clone())
+        };
+        let Some(inviter) = inviter else {
+            let _ = self
+                .send(
+                    peer_id,
+                    ServerMessage::Error {
+                        code: "not_invited".into(),
+                    },
+                )
+                .await;
+            return;
+        };
+
+        match self
+            .inner
+            .store
+            .add_group_member(group_id, peer_id, unix_now())
+        {
+            Ok(()) => {
+                let _ = self.inner.store.remove_group_invite(group_id, peer_id);
+                tracing::info!(peer = %peer_id, group = %group_id, "group invite accepted");
+                let _ = self
+                    .send(peer_id, ServerMessage::GroupInviteAcceptedOk)
+                    .await;
+                let _ = self
+                    .send(
+                        &inviter,
+                        ServerMessage::GroupInviteAccepted {
+                            group_id: group_id.to_string(),
+                            peer_id: peer_id.to_string(),
+                        },
+                    )
+                    .await;
+                // Fan out the roster change so existing members share keys.
+                let members = self.inner.store.list_group_members(group_id);
+                for member in members {
+                    if member == peer_id {
+                        continue;
+                    }
+                    let _ = self
+                        .send(
+                            &member,
+                            ServerMessage::GroupMemberAdded {
+                                group_id: group_id.to_string(),
+                                peer_id: peer_id.to_string(),
+                            },
+                        )
+                        .await;
+                }
+            }
+            Err(err) => {
+                tracing::error!(peer = %peer_id, group = %group_id, "failed to accept invite: {err}");
+            }
+        }
+    }
+
+    /// Decline a pending invite: the invite row is removed and the inviter
+    /// gets a `group_invite_declined` push.
+    pub(crate) async fn group_invite_decline(&self, peer_id: &str, ip: &str, group_id: &str) {
+        if !self.take_group_slot(peer_id, ip).await {
+            return;
+        }
+        let inviter = {
+            let invites = self.inner.store.group_invites_for(peer_id);
+            invites
+                .iter()
+                .find(|(gid, _)| gid == group_id)
+                .map(|(_, inviter)| inviter.clone())
+        };
+        let Some(inviter) = inviter else {
+            let _ = self
+                .send(
+                    peer_id,
+                    ServerMessage::Error {
+                        code: "not_invited".into(),
+                    },
+                )
+                .await;
+            return;
+        };
+        match self.inner.store.remove_group_invite(group_id, peer_id) {
+            Ok(()) => {
+                tracing::info!(peer = %peer_id, group = %group_id, "group invite declined");
+                let _ = self
+                    .send(peer_id, ServerMessage::GroupInviteDeclinedOk)
+                    .await;
+                let _ = self
+                    .send(
+                        &inviter,
+                        ServerMessage::GroupInviteDeclined {
+                            group_id: group_id.to_string(),
+                            peer_id: peer_id.to_string(),
+                        },
+                    )
+                    .await;
+            }
+            Err(err) => {
+                tracing::error!(peer = %peer_id, group = %group_id, "failed to decline invite: {err}");
+            }
+        }
+    }
+
+    /// Reply with the caller's pending group invites (group id, name, inviter).
+    pub(crate) async fn get_group_invites(&self, peer_id: &str, ip: &str) {
+        if !self.take_group_slot(peer_id, ip).await {
+            return;
+        }
+        let invites = self.inner.store.group_invites_for(peer_id);
+        let mut out = Vec::with_capacity(invites.len());
+        for (group_id, inviter_peer_id) in invites {
+            let group_name = self
+                .inner
+                .store
+                .get_group(&group_id)
+                .map(|g| g.name)
+                .unwrap_or_default();
+            out.push(GroupInviteInfo {
+                group_id,
+                group_name,
+                inviter_peer_id,
+            });
+        }
+        let _ = self
+            .send(peer_id, ServerMessage::GroupInvites { invites: out })
+            .await;
+    }
+
     /// Remove the caller from a group's roster.
     pub(crate) async fn leave_group(&self, peer_id: &str, ip: &str, group_id: &str) {
         if !self.take_group_slot(peer_id, ip).await {
@@ -179,6 +413,7 @@ impl Relay {
         match self.inner.store.remove_group_member(group_id, peer_id) {
             Ok(()) => {
                 tracing::info!(peer = %peer_id, group = %group_id, "group member left");
+                // Confirm to the leaver...
                 let _ = self
                     .send(
                         peer_id,
@@ -188,6 +423,22 @@ impl Relay {
                         },
                     )
                     .await;
+                // ...and fan the roster change out to every remaining member so
+                // their member counts and rosters stay in sync (mirrors the
+                // add/remove fan-out). Offline members catch up on the next
+                // `get_group_info` round-trip.
+                let members = self.inner.store.list_group_members(group_id);
+                for member in members {
+                    let _ = self
+                        .send(
+                            &member,
+                            ServerMessage::GroupMemberLeft {
+                                group_id: group_id.to_string(),
+                                peer_id: peer_id.to_string(),
+                            },
+                        )
+                        .await;
+                }
             }
             Err(err) => {
                 tracing::error!(peer = %peer_id, group = %group_id, "failed to remove member: {err}");

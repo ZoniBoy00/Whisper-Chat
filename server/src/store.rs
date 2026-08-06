@@ -193,7 +193,16 @@ impl Store {
             CREATE INDEX IF NOT EXISTS idx_contacts_peer_a
                 ON contacts (peer_a);
             CREATE INDEX IF NOT EXISTS idx_contacts_peer_b
-                ON contacts (peer_b);",
+                ON contacts (peer_b);
+            CREATE TABLE IF NOT EXISTS group_invites (
+                group_id         TEXT NOT NULL,
+                peer_id          TEXT NOT NULL,
+                inviter_peer_id  TEXT NOT NULL,
+                created_at       INTEGER NOT NULL,
+                PRIMARY KEY (group_id, peer_id)
+            );
+            CREATE INDEX IF NOT EXISTS idx_group_invites_peer
+                ON group_invites (peer_id);",
         )?;
 
         // Migration: databases created before the group-roles feature lack the
@@ -758,6 +767,62 @@ impl Store {
             )
             .expect("valid statement");
         stmt.query_map(params![group_id], |r| r.get(0))
+            .expect("query ok")
+            .filter_map(|r| r.ok())
+            .collect()
+    }
+
+    // -- Group invites ----------------------------------------------------------
+
+    /// Record a pending group invite from `inviter` to `peer_id`.
+    pub fn invite_to_group(
+        &self,
+        group_id: &str,
+        peer_id: &str,
+        inviter_peer_id: &str,
+    ) -> Result<(), StoreError> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "INSERT OR IGNORE INTO group_invites (group_id, peer_id, inviter_peer_id, created_at)
+             VALUES (?1, ?2, ?3, ?4)",
+            params![group_id, peer_id, inviter_peer_id, unix_now()],
+        )?;
+        Ok(())
+    }
+
+    /// Whether `peer_id` has a pending invite to `group_id`.
+    pub fn is_group_invited(&self, group_id: &str, peer_id: &str) -> bool {
+        let conn = self.conn.lock().unwrap();
+        conn.query_row(
+            "SELECT 1 FROM group_invites WHERE group_id = ?1 AND peer_id = ?2",
+            params![group_id, peer_id],
+            |_| Ok(()),
+        )
+        .optional()
+        .unwrap_or(None)
+        .is_some()
+    }
+
+    /// Remove a pending group invite (after accept or decline).
+    pub fn remove_group_invite(&self, group_id: &str, peer_id: &str) -> Result<(), StoreError> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "DELETE FROM group_invites WHERE group_id = ?1 AND peer_id = ?2",
+            params![group_id, peer_id],
+        )?;
+        Ok(())
+    }
+
+    /// Every pending group invite for `peer_id`, as (group_id, inviter).
+    pub fn group_invites_for(&self, peer_id: &str) -> Vec<(String, String)> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn
+            .prepare(
+                "SELECT group_id, inviter_peer_id FROM group_invites
+                 WHERE peer_id = ?1 ORDER BY created_at",
+            )
+            .expect("valid statement");
+        stmt.query_map(params![peer_id], |r| Ok((r.get(0)?, r.get(1)?)))
             .expect("query ok")
             .filter_map(|r| r.ok())
             .collect()

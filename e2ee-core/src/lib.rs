@@ -34,7 +34,7 @@ pub mod session;
 pub mod wire;
 
 pub use payload::{
-    parse_plaintext, ChatPayload, ParsedPayload, Quote, ReactionPayload, TextPayload,
+    parse_plaintext, ChatPayload, ParsedPayload, Quote, ReactionPayload, TextPayload, TypingPayload,
 };
 pub use safety::{
     build_invite_link, is_valid_peer_id, parse_invite_link, safety_number, short_safety_number,

@@ -120,6 +120,8 @@ export const translations = {
     "chat.view_group_info_aria": "View {name} group info",
     "chat.last_seen_prefix": "Last seen ",
     "chat.typing": "typing\u2026",
+    "chat.typing_name": "{name} typing\u2026",
+    "chat.typing_many": "{n} members typing\u2026",
     "chat.messages_with": "Messages with {name}",
     "chat.actions_for_message": "Actions for message from {name}",
     "chat.copy_text": "Copy Text",
@@ -162,6 +164,17 @@ export const translations = {
       "This person invited you to Whisper. Add them to start chatting — every message is end-to-end encrypted.",
     "invite.add_friend": "Add friend",
     "invite.request_sent": "Friend request sent!",
+
+    // ---- Group invites ----------------------------------------------------
+    "invites.title": "Group invites",
+    "invites.from": "from {peer}",
+    "invites.accept": "Accept",
+    "invites.accept_aria": "Accept invite to {group}",
+    "invites.decline": "Decline",
+    "invites.decline_aria": "Decline invite to {group}",
+    "invites.received": "You were invited to {group}",
+    "invites.outcome_accepted": "{peer} accepted your invite",
+    "invites.outcome_declined": "{peer} declined your invite",
 
     // ---- Composer --------------------------------------------------------
     "composer.type_a_message": "Type a message",
@@ -410,6 +423,7 @@ export const translations = {
     "toast.member_removed": "Member removed from the group",
     "toast.group_transferred": "Group ownership transferred",
     "toast.member_added": "Member added",
+    "toast.invite_sent": "Invite sent",
     "toast.group_avatar_updated": "Group photo updated",
     "toast.group_removed": "You were removed from the group",
     "toast.history_cleared": "Chat history cleared",
@@ -532,6 +546,8 @@ export const translations = {
     "chat.view_group_info_aria": "Näytä ryhmän {name} tiedot",
     "chat.last_seen_prefix": "Nähty ",
     "chat.typing": "kirjoittaa…",
+    "chat.typing_name": "{name} kirjoittaa…",
+    "chat.typing_many": "{n} jäsentä kirjoittaa…",
     "chat.messages_with": "Viestit: {name}",
     "chat.actions_for_message": "Viestin toiminnot: {name}",
     "chat.copy_text": "Kopioi teksti",
@@ -574,6 +590,17 @@ export const translations = {
       "Tämä henkilö kutsui sinut Whisperiin. Lisää hänet kaveriksi aloittaaksesi keskustelun — jokainen viesti on end-to-end-salattu.",
     "invite.add_friend": "Lisää kaveriksi",
     "invite.request_sent": "Kaveripyyntö lähetetty!",
+
+    // ---- Group invites ----------------------------------------------------
+    "invites.title": "Ryhmäkutsut",
+    "invites.from": "kutsuja: {peer}",
+    "invites.accept": "Hyväksy",
+    "invites.accept_aria": "Hyväksy kutsu ryhmään {group}",
+    "invites.decline": "Hylkää",
+    "invites.decline_aria": "Hylkää kutsu ryhmään {group}",
+    "invites.received": "Sinut kutsuttiin ryhmään {group}",
+    "invites.outcome_accepted": "{peer} hyväksyi kutsusi",
+    "invites.outcome_declined": "{peer} hylkäsi kutsusi",
 
     // ---- Composer --------------------------------------------------------
     "composer.type_a_message": "Kirjoita viesti",
@@ -821,6 +848,7 @@ export const translations = {
     "toast.member_removed": "Jäsen poistettu ryhmästä",
     "toast.group_transferred": "Ryhmän omistajuus siirretty",
     "toast.member_added": "Jäsen lisätty",
+    "toast.invite_sent": "Kutsu lähetetty",
     "toast.group_avatar_updated": "Ryhmäkuva päivitetty",
     "toast.group_removed": "Sinut poistettiin ryhmästä",
     "toast.history_cleared": "Keskusteluhistoria tyhjennetty",

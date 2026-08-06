@@ -415,7 +415,7 @@ impl RelayClient {
     /// Kick off a best-effort background `get_group_info` for `group_id` so
     /// the roster (and therefore the member count shown by the chat list)
     /// refreshes without waiting for the user to open the group info panel.
-    fn spawn_group_info_refresh(&self, group_id: &str) {
+    pub(crate) fn spawn_group_info_refresh(&self, group_id: &str) {
         let client = self.clone();
         let id = group_id.to_string();
         tauri::async_runtime::spawn(async move {
@@ -522,6 +522,29 @@ impl RelayClient {
         let payload = e2ee_core::ChatPayload::Reaction(e2ee_core::ReactionPayload::new(
             message_id, emoji, active,
         ));
+        let bytes = serde_json::to_vec(&payload)?;
+        self.send_group_payload(
+            group_id,
+            &bytes,
+            GroupSend {
+                record: false,
+                client_id: String::new(),
+                quote: None,
+                message_id: None,
+                display_text: None,
+            },
+        )
+    }
+
+    /// Megolm-encrypt a group typing indicator and fan it out to every member.
+    /// The Megolm envelope is attributed to this identity, so recipients know
+    /// exactly who is composing. Best-effort, never recorded.
+    pub(crate) fn send_group_typing(
+        &self,
+        group_id: &str,
+        is_typing: bool,
+    ) -> Result<(), RelayError> {
+        let payload = e2ee_core::ChatPayload::Typing(e2ee_core::TypingPayload::new(is_typing));
         let bytes = serde_json::to_vec(&payload)?;
         self.send_group_payload(
             group_id,
@@ -697,9 +720,9 @@ impl RelayClient {
             None => return Ok(None),
         };
         // Group payloads use the same tagged envelope as 1:1 messages: an
-        // emoji reaction is applied to the target message, anything else is a
-        // (possibly quoting) text message. Legacy raw text parses as plain
-        // text too.
+        // emoji reaction is applied to the target message, a typing indicator
+        // is surfaced with the writer's identity, anything else is a (possibly
+        // quoting) text message. Legacy raw text parses as plain text too.
         match e2ee_core::parse_plaintext(&plaintext) {
             e2ee_core::ParsedPayload::Reaction(reaction) => {
                 // No end-to-end read receipts for group messages in the MVP
@@ -711,6 +734,19 @@ impl RelayClient {
                     &reaction.emoji,
                     reaction.active,
                 )?;
+                Ok(None)
+            }
+            e2ee_core::ParsedPayload::Typing(typing) => {
+                // The typing indicator carries the WRITER's peer id so the UI
+                // can render "ZoniBoy typing…" (or "3 members typing…").
+                let _ = self.inner.app.emit(
+                    "typing",
+                    TypingEvent {
+                        peer_id: group_id.to_string(),
+                        is_typing: typing.active,
+                        sender: Some(wire.sender_peer_id.clone()),
+                    },
+                );
                 Ok(None)
             }
             e2ee_core::ParsedPayload::Text(text) => Ok(Some(self.record_incoming(
@@ -1022,8 +1058,19 @@ impl RelayClient {
         self.send_group_key(member, group_id, &session_key, &group_name)
     }
 
-    /// A `group_member_left` reply resolves the in-flight leave request.
-    pub(crate) fn handle_group_member_left(&self) -> Result<(), RelayError> {
+    /// A `group_member_left` push: the leaver gets the confirmation (resolving
+    /// the in-flight leave request); every other member gets the same push and
+    /// drops the leaver from the cached roster, so member counts stay in sync.
+    pub(crate) fn handle_group_member_left(
+        &self,
+        group_id: &str,
+        peer_id: &str,
+    ) -> Result<(), RelayError> {
+        if let Ok(mut groups) = write_guard(&self.inner.groups) {
+            if let Some(group) = groups.get_mut(group_id) {
+                group.members.retain(|m| m.peer_id != peer_id);
+            }
+        }
         if let Some(tx) = mutex_guard(&self.inner.pending_group_op)?.pop_front() {
             let _ = tx.send(Ok(()));
         }
