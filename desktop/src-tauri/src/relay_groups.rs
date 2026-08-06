@@ -15,6 +15,11 @@
 
 use super::*;
 
+/// How many messages a Megolm outbound session may encrypt before the group
+/// rotates to a fresh session key. Bounded ratchet index keeps backward
+/// secrecy: a leaked key only decrypts up to this many recent messages.
+const GROUP_KEY_ROTATION_THRESHOLD: u32 = 200;
+
 /// Internal, in-memory group state. Not serializable: it owns the (secret)
 /// Megolm outbound session used to encrypt this identity's group messages.
 pub(crate) struct GroupInfoState {
@@ -596,6 +601,66 @@ impl RelayClient {
         options: GroupSend,
     ) -> Result<(), RelayError> {
         let my_peer_id = self.my_peer_id()?;
+        // Megolm key rotation: once the outbound ratchet has produced enough
+        // messages, mint a FRESH session and share its key to the other
+        // members. The key envelopes are queued on the outbox BEFORE this
+        // message's ciphertext, so every recipient installs the new inbound
+        // session before they need to decrypt it. Rotation gives backward
+        // secrecy: a leaked old key can never decrypt messages sent after it.
+        let rotated = {
+            let mut groups = write_guard(&self.inner.groups)?;
+            match groups.get_mut(group_id) {
+                Some(group) => {
+                    let needs_rotation = group
+                        .outbound
+                        .as_ref()
+                        .map(|outbound| outbound.message_index() >= GROUP_KEY_ROTATION_THRESHOLD)
+                        .unwrap_or(false);
+                    if needs_rotation {
+                        let fresh = OutboundGroup::new();
+                        let key = fresh.session_key();
+                        group.outbound = Some(fresh);
+                        group.key_shared_this_session = false;
+                        Some((key, group.name.clone(), group.members.clone()))
+                    } else {
+                        None
+                    }
+                }
+                None => None,
+            }
+        };
+        if let Some((new_key, group_name, members)) = rotated {
+            for member in &members {
+                if member.peer_id == my_peer_id {
+                    continue;
+                }
+                // Synchronous share: the key envelope is queued BEFORE this
+                // message's ciphertext (FIFO outbox), so the recipient swaps
+                // its inbound in time.
+                if mutex_guard(&self.inner.sessions)?.contains_key(&member.peer_id) {
+                    if let Err(err) =
+                        self.send_group_key(&member.peer_id, group_id, &new_key, &group_name)
+                    {
+                        tracing::warn!(group = %group_id, member = %member.peer_id, error = %err, "failed to share rotated key");
+                    }
+                } else {
+                    // No 1:1 session yet (fresh member): share in the background
+                    // (start_chat first). Their copy of this message may be
+                    // undecryptable, but every later message is fine.
+                    let client = self.clone();
+                    let member_id = member.peer_id.clone();
+                    let group = group_id.to_string();
+                    tauri::async_runtime::spawn(async move {
+                        if let Err(err) = client.share_group_key_to_member(&group, &member_id).await
+                        {
+                            tracing::warn!(group = %group, member = %member_id, error = %err, "failed to share rotated key to new member");
+                        }
+                    });
+                }
+            }
+            tracing::info!(group = %group_id, "group Megolm key rotated");
+            self.save_group_sessions()?;
+        }
         // Encrypt with our own outbound Megolm session. Every member owns one
         // in the multi-sender model (created on first group-key receipt or
         // healed by `ensure_outbound_session` before the first send), so the
