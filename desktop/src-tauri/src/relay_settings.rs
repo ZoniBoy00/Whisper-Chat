@@ -65,6 +65,15 @@ impl RelayClient {
             _ => store.delete_setting("message_font_scale")?,
         }
         store.set_setting("autostart", setting_str(settings.autostart))?;
+        store.set_setting(
+            "autobackup_enabled",
+            setting_str(settings.autobackup_enabled),
+        )?;
+        match &settings.autobackup_dir {
+            Some(dir) if !dir.is_empty() => store.set_setting("autobackup_dir", dir)?,
+            _ => store.delete_setting("autobackup_dir")?,
+        }
+        store.set_setting("autobackup_keep", &settings.autobackup_keep.to_string())?;
         *write_guard(&self.inner.settings)? = settings.clone();
         Ok(())
     }
@@ -138,6 +147,16 @@ impl RelayClient {
         }
         if let Some(value) = patch.autostart {
             settings.autostart = value;
+        }
+        if let Some(value) = patch.autobackup_enabled {
+            settings.autobackup_enabled = value;
+        }
+        if let Some(value) = patch.autobackup_dir.clone() {
+            // `Some(None)` / `Some("")` clears the folder; `Some(Some(path))` sets it.
+            settings.autobackup_dir = value.filter(|dir| !dir.is_empty());
+        }
+        if let Some(value) = patch.autobackup_keep {
+            settings.autobackup_keep = value.max(1);
         }
         self.save_settings(&settings)
     }

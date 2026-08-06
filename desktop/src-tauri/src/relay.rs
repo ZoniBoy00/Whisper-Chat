@@ -925,6 +925,17 @@ pub struct Settings {
     /// the OS-level autostart registration so the toggle restores on restart).
     #[serde(default)]
     pub autostart: bool,
+    /// Whether automatic full-profile backups are enabled (writes
+    /// `whisper-backup-<date>.json` into `autobackup_dir` on a schedule).
+    #[serde(default)]
+    pub autobackup_enabled: bool,
+    /// Directory for automatic backups — typically a cloud-synced folder
+    /// (Dropbox / OneDrive / Google Drive / Syncthing). `None` = not set.
+    #[serde(default)]
+    pub autobackup_dir: Option<String>,
+    /// How many recent backups to keep before pruning (default 7).
+    #[serde(default = "default_autobackup_keep")]
+    pub autobackup_keep: usize,
 }
 
 /// Serde default for the opt-out boolean preferences above.
@@ -948,8 +959,16 @@ impl Default for Settings {
             enter_to_send: true,
             message_font_scale: None,
             autostart: false,
+            autobackup_enabled: false,
+            autobackup_dir: None,
+            autobackup_keep: default_autobackup_keep(),
         }
     }
+}
+
+/// Serde default for how many automatic backups to keep.
+fn default_autobackup_keep() -> usize {
+    7
 }
 
 /// A partial settings update from the UI. `None` leaves the stored value
@@ -978,6 +997,13 @@ pub struct SettingsPatch {
     pub message_font_scale: Option<String>,
     #[serde(default)]
     pub autostart: Option<bool>,
+    #[serde(default)]
+    pub autobackup_enabled: Option<bool>,
+    /// `Some(Some(path))` sets the folder; `Some(None)`/`Some("")` clears it.
+    #[serde(default)]
+    pub autobackup_dir: Option<Option<String>>,
+    #[serde(default)]
+    pub autobackup_keep: Option<usize>,
 }
 
 /// Thread-safe handle to the relay client, managed as Tauri state.
@@ -2260,6 +2286,9 @@ impl RelayClient {
             enter_to_send,
             message_font_scale,
             autostart,
+            autobackup_enabled,
+            autobackup_dir,
+            autobackup_keep,
             stored_group_outbound,
             stored_group_inbound,
             stored_group_meta,
@@ -2287,6 +2316,9 @@ impl RelayClient {
                 store.get_setting("enter_to_send")?,
                 store.get_setting("message_font_scale")?,
                 store.get_setting("autostart")?,
+                store.get_setting("autobackup_enabled")?,
+                store.get_setting("autobackup_dir")?,
+                store.get_setting("autobackup_keep")?,
                 store.load_group_outbound()?,
                 store.load_group_inbound()?,
                 store.load_group_meta()?,
@@ -2395,6 +2427,12 @@ impl RelayClient {
         settings.enter_to_send = setting_bool(enter_to_send, true);
         settings.message_font_scale = message_font_scale.filter(|value| !value.is_empty());
         settings.autostart = setting_bool(autostart, false);
+        settings.autobackup_enabled = setting_bool(autobackup_enabled, false);
+        settings.autobackup_dir = autobackup_dir.filter(|value| !value.is_empty());
+        settings.autobackup_keep = autobackup_keep
+            .filter(|value| !value.is_empty())
+            .and_then(|value| value.parse().ok())
+            .unwrap_or(7);
         *write_guard(&self.inner.settings)? = settings;
 
         let mut profiles = read_guard(&self.inner.profiles)?.clone();
