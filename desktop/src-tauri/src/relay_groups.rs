@@ -1074,11 +1074,7 @@ impl RelayClient {
     /// session was hydrated from the store: recipients may hold a stale or
     /// absent inbound session (their persisted ratchet can lag or predate a
     /// crash), so re-sharing heals the group without requiring a 1:1 message.
-    async fn share_existing_key(
-        &self,
-        group_id: &str,
-        group_name: &str,
-    ) -> Result<(), RelayError> {
+    async fn share_existing_key(&self, group_id: &str, group_name: &str) -> Result<(), RelayError> {
         let my_peer_id = self.my_peer_id()?;
         let (session_key, members) = {
             let groups = read_guard(&self.inner.groups)?;
@@ -1372,7 +1368,7 @@ impl RelayClient {
                             my_role: my_role.clone(),
                             avatar_url: avatar_url.clone(),
                             outbound: None,
-                key_shared_this_session: false,
+                            key_shared_this_session: false,
                         },
                     );
                 }
