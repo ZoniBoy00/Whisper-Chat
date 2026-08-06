@@ -264,6 +264,12 @@ enum ClientMessage {
     /// List the caller's pending group invites as (group_id, group_name, inviter).
     #[serde(rename = "get_group_invites")]
     GetGroupInvites,
+    /// Get (or create) the group's shareable join link. Any member may ask.
+    #[serde(rename = "get_group_join_link")]
+    GetGroupJoinLink { group_id: String },
+    /// Join a group via a shareable join link (group_id + secret token).
+    #[serde(rename = "join_group")]
+    JoinGroup { group_id: String, token: String },
 }
 
 /// Messages the SERVER sends to the client.
@@ -437,6 +443,15 @@ pub(crate) enum ServerMessage {
     /// Reply to `get_group_invites`: the caller's pending group invites.
     #[serde(rename = "group_invites")]
     GroupInvites { invites: Vec<GroupInviteInfo> },
+    /// Reply to `get_group_join_link`: the shareable join link.
+    #[serde(rename = "group_join_link")]
+    GroupJoinLink { link: String },
+    /// Reply to `join_group`: the caller joined the group.
+    #[serde(rename = "group_join_ok")]
+    GroupJoinOk {
+        group_id: String,
+        group_name: String,
+    },
     /// Protocol error.
     Error { code: String },
 }
@@ -790,6 +805,12 @@ impl Relay {
                         }
                         Ok(ClientMessage::GetGroupInvites) => {
                             self.get_group_invites(&peer_id, &ip).await;
+                        }
+                        Ok(ClientMessage::GetGroupJoinLink { group_id }) => {
+                            self.get_group_join_link(&peer_id, &ip, &group_id).await;
+                        }
+                        Ok(ClientMessage::JoinGroup { group_id, token }) => {
+                            self.join_group(&peer_id, &ip, &group_id, &token).await;
                         }
                         Ok(ClientMessage::SendFriendRequest { peer_id: target }) => {
                             self.send_friend_request(&peer_id, &ip, &target).await;

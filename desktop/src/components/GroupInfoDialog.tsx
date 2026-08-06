@@ -4,6 +4,7 @@ import {
   ArrowLeftRight,
   Crown,
   ImagePlus,
+  Link2,
   Loader2,
   LogOut,
   ShieldCheck,
@@ -41,6 +42,8 @@ interface GroupInfoDialogProps {
   /** Our own peer ID; used to resolve our role from `owner_peer_id` when the
    *  server-reported `my_role` has not synced yet. */
   myPeerId: string;
+  /** Copy the group's shareable join link (any member). */
+  onCopyJoinLink: (groupId: string) => Promise<void>;
   onOpenChange: (open: boolean) => void;
   onFetchInfo: (groupId: string) => Promise<GroupInfo>;
   /** Add a member to the group's roster after creation (owner/admin). */
@@ -102,6 +105,7 @@ export function GroupInfoDialog({
   open,
   groupId,
   myPeerId,
+  onCopyJoinLink,
   onOpenChange,
   onFetchInfo,
   onAddMember,
@@ -660,6 +664,24 @@ export function GroupInfoDialog({
               ) : null}
             </div>
           ) : null}
+
+          <div className="border-t border-wp-line/10 pt-4">
+            <p className="mb-2 text-xs leading-snug text-wp-faint">
+              {t("groupInfo.join_link_hint")}
+            </p>
+            <button
+              type="button"
+              onClick={() => {
+                if (!groupId) return;
+                void onCopyJoinLink(groupId);
+              }}
+              disabled={busyPeer !== null || !groupId}
+              className="inline-flex items-center gap-2 rounded-xl border border-wp-line/10 px-3 py-2 text-xs font-semibold text-wp-dim transition hover:bg-wp-panel-3 hover:text-wp-text disabled:opacity-40"
+            >
+              <Link2 className="h-3.5 w-3.5" aria-hidden="true" />
+              {t("groupInfo.copy_join_link")}
+            </button>
+          </div>
 
           <div className="border-t border-wp-line/10 pt-4">
             {canManage && info && info.members.some((m) => m.role !== "owner") ? (

@@ -353,6 +353,10 @@ enum ClientMessage {
     GroupInviteDecline { group_id: String },
     #[serde(rename = "get_group_invites")]
     GetGroupInvites,
+    #[serde(rename = "get_group_join_link")]
+    GetGroupJoinLink { group_id: String },
+    #[serde(rename = "join_group")]
+    JoinGroup { group_id: String, token: String },
 }
 
 /// Messages the SERVER sends to the client (matches `server/src/relay.rs`).
@@ -515,6 +519,13 @@ enum ServerMessage {
     GroupInviteDeclined { group_id: String, peer_id: String },
     #[serde(rename = "group_invites")]
     GroupInvites { invites: Vec<GroupInviteInfo> },
+    #[serde(rename = "group_join_link")]
+    GroupJoinLink { link: String },
+    #[serde(rename = "group_join_ok")]
+    GroupJoinOk {
+        group_id: String,
+        group_name: String,
+    },
     /// A protocol error code.
     Error { code: String },
 }
@@ -1070,6 +1081,10 @@ struct RelayInner {
     pending_group_invite_op: Mutex<VecDeque<oneshot::Sender<GroupOpResponse>>>,
     /// In-flight `get_group_invites` snapshots, FIFO order.
     pending_group_invites_list: Mutex<VecDeque<oneshot::Sender<GroupInvitesResponse>>>,
+    /// In-flight `get_group_join_link` requests (link reply), FIFO order.
+    pending_group_join_link: Mutex<VecDeque<oneshot::Sender<GroupJoinLinkResponse>>>,
+    /// In-flight `join_group` confirmations, FIFO order.
+    pending_group_join_op: Mutex<VecDeque<oneshot::Sender<GroupOpResponse>>>,
     /// Pending group invites for this identity, in arrival order. Fed by
     /// `group_invite_received` pushes and `group_invites` snapshots.
     group_invites_incoming: RwLock<Vec<GroupInviteInfo>>,
@@ -1118,6 +1133,9 @@ type GroupOpResponse = Result<(), RelayError>;
 /// Result channel type for a `get_group_invites` snapshot.
 type GroupInvitesResponse = Result<Vec<GroupInviteInfo>, RelayError>;
 
+/// Result channel type for a `get_group_join_link` reply (the link string).
+type GroupJoinLinkResponse = Result<String, RelayError>;
+
 /// Result channel type for a friend-request command: the `friend_requests`
 /// snapshot the relay answers with.
 type ContactOpResponse = Result<FriendRequests, RelayError>;
@@ -1162,6 +1180,8 @@ impl RelayClient {
                 pending_group_op: Mutex::new(VecDeque::new()),
                 pending_group_invite_op: Mutex::new(VecDeque::new()),
                 pending_group_invites_list: Mutex::new(VecDeque::new()),
+                pending_group_join_link: Mutex::new(VecDeque::new()),
+                pending_group_join_op: Mutex::new(VecDeque::new()),
                 group_invites_incoming: RwLock::new(Vec::new()),
                 friend_requests_incoming: RwLock::new(Vec::new()),
                 friend_requests_outgoing: RwLock::new(Vec::new()),
@@ -1842,6 +1862,11 @@ impl RelayClient {
                 self.handle_group_invite_declined(&group_id, &peer_id)
             }
             ServerMessage::GroupInvites { invites } => self.handle_group_invites(invites),
+            ServerMessage::GroupJoinLink { link } => self.handle_group_join_link(link),
+            ServerMessage::GroupJoinOk {
+                group_id,
+                group_name,
+            } => self.handle_group_join_ok(&group_id, &group_name),
             ServerMessage::Error { code } => {
                 // Route the error to the queue that actually owns the failed
                 // request. A blind "oldest waiter across every queue" fallback
@@ -1897,6 +1922,14 @@ impl RelayClient {
                     "not_invited" | "already_invited" | "already_member" => {
                         if let Some(tx) =
                             mutex_guard(&self.inner.pending_group_invite_op)?.pop_front()
+                        {
+                            send_error(tx, &code);
+                        }
+                    }
+                    // Join-link errors.
+                    "invalid_join_token" => {
+                        if let Some(tx) =
+                            mutex_guard(&self.inner.pending_group_join_op)?.pop_front()
                         {
                             send_error(tx, &code);
                         }

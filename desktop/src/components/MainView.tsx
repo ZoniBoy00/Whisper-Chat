@@ -6,6 +6,7 @@ import {
   demoteMember,
   exportIdentity,
   getGroupInfo,
+  getGroupJoinLink,
   getPendingDeepLink,
   getSettings,
   importIdentity,
@@ -24,6 +25,7 @@ import {
 } from "../lib/relay";
 import { buildConversations } from "../lib/chatList";
 import { shortPeerId } from "../lib/format";
+import { copyText } from "../lib/clipboard";
 import { loadPinnedChats, persistPinnedChats } from "../lib/pinned";
 import { useI18n } from "../i18n/I18nContext";
 import { useChatState } from "../hooks/useChatState";
@@ -35,6 +37,7 @@ import { ChatView } from "./ChatView";
 import { AddContactDialog } from "./AddContactDialog";
 import { GroupInfoDialog } from "./GroupInfoDialog";
 import { InvitePreviewDialog } from "./InvitePreviewDialog";
+import { JoinGroupDialog } from "./JoinGroupDialog";
 import { NewGroupDialog } from "./NewGroupDialog";
 import { ProfileDialog } from "./ProfileDialog";
 import { SettingsDialog } from "./SettingsDialog";
@@ -70,6 +73,8 @@ export function MainView({ peerId, onReset }: MainViewProps) {
   const [settingsOpen, setSettingsOpen] = useState(false);
   // The raw whisper:// link that opened the invite preview popup.
   const [inviteLink, setInviteLink] = useState<string | null>(null);
+  // The raw whisper://join link that opened the group-join popup.
+  const [joinLink, setJoinLink] = useState<string | null>(null);
   // Peer whose profile dialog is open; null when closed.
   const [profilePeerId, setProfilePeerId] = useState<string | null>(null);
   // Pinned conversations (client-side, persisted per identity in localStorage).
@@ -121,7 +126,12 @@ export function MainView({ peerId, onReset }: MainViewProps) {
     let disposed = false;
     let unlisten: (() => void) | undefined;
     const openInvite = (url: string) => {
-      if (disposed || !/^whisper:\/\/(?:invite|verify)\/?\?[^]*\bpeer=[0-9a-f]{24}\b/i.test(url)) {
+      if (disposed) return;
+      if (/^whisper:\/\/join\/?\?/i.test(url)) {
+        setJoinLink(url);
+        return;
+      }
+      if (!/^whisper:\/\/(?:invite|verify)\/?\?[^]*\bpeer=[0-9a-f]{24}\b/i.test(url)) {
         return;
       }
       setInviteLink(url);
@@ -501,6 +511,20 @@ export function MainView({ peerId, onReset }: MainViewProps) {
     [chat.refresh, toast, t]
   );
 
+  /** Copy the group's shareable join link (any member). */
+  const handleCopyJoinLink = useCallback(
+    async (groupId: string) => {
+      try {
+        const link = await getGroupJoinLink(groupId);
+        const ok = await copyText(link);
+        if (ok) toast(t("common.invite_copied"), "success");
+      } catch (err) {
+        toast(String(err).replace(/^Error:\s*/, ""), "error");
+      }
+    },
+    [toast, t]
+  );
+
   /** Add a member to a group after creation (owner/admin). Sends an INVITE:
    *  the peer is not added until they accept. A refresh resyncs the roster so
    *  the member count and the info panel update right away. */
@@ -720,6 +744,14 @@ export function MainView({ peerId, onReset }: MainViewProps) {
         onAdd={handleSendFriendRequest}
         myPeerId={peerId}
       />
+      <JoinGroupDialog
+        open={joinLink !== null}
+        onOpenChange={(open) => {
+          if (!open) setJoinLink(null);
+        }}
+        link={joinLink ?? ""}
+        onJoin={(groupId, token) => chat.joinGroupByLink(groupId, token)}
+      />
       <NewGroupDialog
         open={newGroupOpen}
         onOpenChange={setNewGroupOpen}
@@ -731,6 +763,7 @@ export function MainView({ peerId, onReset }: MainViewProps) {
         open={groupInfoGroupId !== null}
         groupId={groupInfoGroupId}
         myPeerId={peerId}
+        onCopyJoinLink={handleCopyJoinLink}
         onOpenChange={(open) => {
           if (!open) setGroupInfoGroupId(null);
         }}

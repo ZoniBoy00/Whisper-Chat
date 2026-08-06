@@ -27,6 +27,7 @@ import {
   getChatState,
   getFriendRequests,
   getGroupInvites,
+  joinGroupByLink as relayJoinGroupByLink,
   onChatMessage,
   onContactAdded,
   onContactRemoved,
@@ -197,6 +198,8 @@ export interface ChatStateApi {
   acceptGroupInvite: (groupId: string) => Promise<void>;
   /** Decline a pending group invite. */
   declineGroupInvite: (groupId: string) => Promise<void>;
+  /** Join a group via its shareable join link. */
+  joinGroupByLink: (groupId: string, token: string) => Promise<void>;
 }
 
 /** Owns the chat state (contacts, messages, groups, connection, presence,
@@ -976,6 +979,16 @@ export function useChatState({
     []
   );
 
+  /** Join a group via its shareable join link. */
+  const joinGroupByLink = useCallback(
+    async (groupId: string, token: string) => {
+      await relayJoinGroupByLink(groupId, token);
+      await refresh();
+      toast(t("toast.group_joined"), "success");
+    },
+    [refresh, toast, t]
+  );
+
   return {
     contacts,
     friendRequestsIncoming,
@@ -1015,5 +1028,6 @@ export function useChatState({
     sendGroupInvite,
     acceptGroupInvite,
     declineGroupInvite,
+    joinGroupByLink,
   };
 }

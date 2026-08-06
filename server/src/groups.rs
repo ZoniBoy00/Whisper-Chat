@@ -381,6 +381,116 @@ impl Relay {
             .await;
     }
 
+    /// Get (or create) the group's shareable join link. Any member may ask.
+    /// The link is `whisper://join?group=<id>&token=<secret>` — the token
+    /// authorizes joining, so anyone with the link can join (like a WhatsApp
+    /// group invite).
+    pub(crate) async fn get_group_join_link(&self, peer_id: &str, ip: &str, group_id: &str) {
+        if !self.take_group_slot(peer_id, ip).await {
+            return;
+        }
+        if !self.inner.store.is_group_member(group_id, peer_id) {
+            let _ = self
+                .send(
+                    peer_id,
+                    ServerMessage::Error {
+                        code: "not_a_member".into(),
+                    },
+                )
+                .await;
+            return;
+        }
+        let Some(token) = self.inner.store.ensure_join_token(group_id) else {
+            let _ = self
+                .send(
+                    peer_id,
+                    ServerMessage::Error {
+                        code: "group_not_found".into(),
+                    },
+                )
+                .await;
+            return;
+        };
+        let link = format!("whisper://join?group={group_id}&token={token}");
+        let _ = self
+            .send(peer_id, ServerMessage::GroupJoinLink { link })
+            .await;
+    }
+
+    /// Join a group via a shareable join link. The secret token authorizes
+    /// the join; on success the caller is added to the roster and every other
+    /// member gets the usual `group_member_added` fan-out (so they share their
+    /// Megolm keys with the newcomer).
+    pub(crate) async fn join_group(&self, peer_id: &str, ip: &str, group_id: &str, token: &str) {
+        if !self.take_group_slot(peer_id, ip).await {
+            return;
+        }
+        if !self.inner.store.is_valid_join_token(group_id, token) {
+            let _ = self
+                .send(
+                    peer_id,
+                    ServerMessage::Error {
+                        code: "invalid_join_token".into(),
+                    },
+                )
+                .await;
+            return;
+        }
+        if self.inner.store.is_group_member(group_id, peer_id) {
+            let _ = self
+                .send(
+                    peer_id,
+                    ServerMessage::Error {
+                        code: "already_member".into(),
+                    },
+                )
+                .await;
+            return;
+        }
+        match self
+            .inner
+            .store
+            .add_group_member(group_id, peer_id, unix_now())
+        {
+            Ok(()) => {
+                tracing::info!(peer = %peer_id, group = %group_id, "joined group via link");
+                let group_name = self
+                    .inner
+                    .store
+                    .get_group(group_id)
+                    .map(|g| g.name)
+                    .unwrap_or_default();
+                let _ = self
+                    .send(
+                        peer_id,
+                        ServerMessage::GroupJoinOk {
+                            group_id: group_id.to_string(),
+                            group_name,
+                        },
+                    )
+                    .await;
+                let members = self.inner.store.list_group_members(group_id);
+                for member in members {
+                    if member == peer_id {
+                        continue;
+                    }
+                    let _ = self
+                        .send(
+                            &member,
+                            ServerMessage::GroupMemberAdded {
+                                group_id: group_id.to_string(),
+                                peer_id: peer_id.to_string(),
+                            },
+                        )
+                        .await;
+                }
+            }
+            Err(err) => {
+                tracing::error!(peer = %peer_id, group = %group_id, "failed to join via link: {err}");
+            }
+        }
+    }
+
     /// Remove the caller from a group's roster.
     pub(crate) async fn leave_group(&self, peer_id: &str, ip: &str, group_id: &str) {
         if !self.take_group_slot(peer_id, ip).await {
