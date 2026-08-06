@@ -53,6 +53,7 @@ fn take_pending_deep_link(state: State<'_, PendingDeepLink>) -> Vec<String> {
 /// Forward one deep link to the webview and park it in the pending queue (so
 /// a startup drain can still see it if the webview was not listening yet).
 fn handle_deep_link(app: &tauri::AppHandle, url: String) {
+    tracing::info!(url = %url, "deep link received");
     if let Some(state) = app.try_state::<PendingDeepLink>() {
         if let Ok(mut pending) = state.0.lock() {
             pending.push(url.clone());
@@ -868,6 +869,7 @@ pub fn run() {
     // so it would otherwise silently swallow the second window.
     let builder = if std::env::var("WHISPER_IDENTITY_FILE").is_err() {
         builder.plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
+            tracing::info!(?args, "second instance detected, forwarding");
             if let Some(url) = args.iter().find(|arg| arg.starts_with("whisper://")) {
                 handle_deep_link(app, url.clone());
             }

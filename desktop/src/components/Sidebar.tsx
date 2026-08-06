@@ -139,6 +139,25 @@ export function Sidebar({
   const [confirming, setConfirming] = useState(false);
   const [inviteCopied, setInviteCopied] = useState(false);
 
+  // The identity menu closes on any press outside it (or the ⋯ button).
+  const menuWrapRef = useRef<HTMLDivElement>(null);
+  const toggleRef = useRef<HTMLButtonElement>(null);
+  useEffect(() => {
+    if (!menuOpen) return;
+    const handlePointerDown = (event: PointerEvent) => {
+      const target = event.target as Node;
+      if (
+        menuWrapRef.current?.contains(target) ||
+        toggleRef.current?.contains(target)
+      ) {
+        return;
+      }
+      setMenuOpen(false);
+    };
+    document.addEventListener("pointerdown", handlePointerDown);
+    return () => document.removeEventListener("pointerdown", handlePointerDown);
+  }, [menuOpen]);
+
   /** Copy our whisper:// invite link to the clipboard (best-effort). */
   const handleShareInvite = async () => {
     try {
@@ -146,6 +165,7 @@ export function Sidebar({
       const ok = await copyText(link);
       if (ok) {
         setInviteCopied(true);
+        setMenuOpen(false);
         setTimeout(() => setInviteCopied(false), 1600);
       }
     } catch {
@@ -304,6 +324,7 @@ export function Sidebar({
         </button>
         <div className="relative">
           <button
+            ref={toggleRef}
             type="button"
             onClick={toggleMenu}
             title={t("sidebar.identity_options")}
@@ -315,7 +336,10 @@ export function Sidebar({
             <MoreVertical className="h-4 w-4" />
           </button>
           {menuOpen ? (
-            <div className="absolute right-0 top-10 z-20 w-64 animate-pop-in rounded-xl border border-wp-line/10 bg-wp-panel-2 p-1.5 shadow-xl shadow-black/40">
+            <div
+              ref={menuWrapRef}
+              className="absolute right-0 top-10 z-20 w-64 animate-pop-in rounded-xl border border-wp-line/10 bg-wp-panel-2 p-1.5 shadow-xl shadow-black/40"
+            >
               <p className="px-3 py-2 text-xs leading-relaxed text-wp-faint">
                 {t("sidebar.identity_local_note")}
               </p>
