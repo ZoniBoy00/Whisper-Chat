@@ -309,7 +309,10 @@ enum ClientMessage {
     /// Transfer group ownership to `peer_id` (owner only). The old owner
     /// becomes an admin; `peer_id` takes over the owner role.
     #[serde(rename = "transfer_ownership")]
-    TransferOwnership { group_id: String, peer_id: String },
+    TransferOwnership {
+        group_id: String,
+        new_owner_peer_id: String,
+    },
     /// Set a group's avatar image (base64, ≤2 MB). The relay stores the blob
     /// content-addressed and exposes it as `avatar_url` in group metadata.
     /// Only the owner or an admin may change the avatar.
@@ -1491,10 +1494,13 @@ impl RelayClient {
             return self.send_group_payload(
                 peer_id,
                 &bytes,
-                true,
-                client_id,
-                None,
-                Some(message_id),
+                relay_groups::GroupSend {
+                    record: true,
+                    client_id: client_id.to_string(),
+                    quote: None,
+                    message_id: Some(message_id),
+                    display_text: Some(text.to_string()),
+                },
             );
         }
 
