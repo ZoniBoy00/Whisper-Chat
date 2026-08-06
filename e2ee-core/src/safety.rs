@@ -129,12 +129,18 @@ pub fn build_invite_link(
 
 /// Parse and validate a `whisper://` invite link. Returns `None` for anything
 /// that is not a well-formed invite (wrong scheme, missing/invalid peer ID).
+///
+/// Accepts both `whisper://invite?peer=..` (as built) and
+/// `whisper://invite/?peer=..` (browsers/messengers normalize the empty path
+/// with a trailing slash when they make the link clickable).
 pub fn parse_invite_link(link: &str) -> Option<InviteLink> {
     let rest = link.strip_prefix("whisper://")?;
     let (path, query) = match rest.split_once('?') {
         Some((path, query)) => (path, query),
         None => (rest, ""),
     };
+    // Trim a trailing slash from the path (browser-normalized form).
+    let path = path.trim_end_matches('/');
     if path != "invite" {
         return None;
     }
@@ -300,6 +306,16 @@ mod tests {
         assert_eq!(parsed.peer_id, "a1b2c3d4e5f6a7b8c9d0e1f2");
         assert_eq!(parsed.display_name, None);
         assert_eq!(parsed.username, None);
+    }
+
+    #[test]
+    fn invite_link_with_normalized_trailing_slash_parses() {
+        // Browsers/messengers turn `whisper://invite?peer=..` into the
+        // clickable `whisper://invite/?peer=..` form; both must work.
+        let parsed = parse_invite_link("whisper://invite/?peer=a1b2c3d4e5f6a7b8c9d0e1f2")
+            .expect("parse normalized form");
+        assert_eq!(parsed.peer_id, "a1b2c3d4e5f6a7b8c9d0e1f2");
+        assert_eq!(parsed.display_name, None);
     }
 
     #[test]

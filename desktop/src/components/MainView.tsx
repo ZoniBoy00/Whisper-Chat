@@ -122,7 +122,7 @@ export function MainView({ peerId, onReset }: MainViewProps) {
     let disposed = false;
     let unlisten: (() => void) | undefined;
     const openInvite = (url: string) => {
-      if (disposed || !/^whisper:\/\/(?:invite|verify)\?[^]*\bpeer=[0-9a-f]{24}\b/i.test(url)) {
+      if (disposed || !/^whisper:\/\/(?:invite|verify)\/?\?[^]*\bpeer=[0-9a-f]{24}\b/i.test(url)) {
         return;
       }
       setInviteLink(url);

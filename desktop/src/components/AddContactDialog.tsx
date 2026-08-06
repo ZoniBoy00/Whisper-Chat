@@ -75,8 +75,9 @@ export function AddContactDialog({
   const submit = async () => {
     const raw = value.trim();
     // Accept either a bare Whisper ID or a `whisper://invite?peer=..` link
-    // (shared from another device via "Share invite").
-    const invite = raw.match(/^whisper:\/\/invite\?[^]*\bpeer=([0-9a-f]{24})\b/i);
+    // (shared from another device via "Share invite"). The browser-normalized
+    // `whisper://invite/?peer=..` form (trailing slash) is accepted too.
+    const invite = raw.match(/^whisper:\/\/invite\/?\?[^]*\bpeer=([0-9a-f]{24})\b/i);
     const peerId = (invite ? invite[1] : raw).toLowerCase();
     if (!PEER_ID_PATTERN.test(peerId)) {
       setError(t("addContact.invalid_peer_id"));
