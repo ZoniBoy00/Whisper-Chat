@@ -492,17 +492,6 @@ impl RelayClient {
         })
     }
 
-    /// Megolm-encrypt `text` with the group's outbound session and fan it out
-    /// to every member via the relay's `send_group_message`.
-    pub(crate) fn send_group_message(
-        &self,
-        group_id: &str,
-        text: &str,
-        client_id: &str,
-    ) -> Result<(), RelayError> {
-        self.send_group_payload(group_id, text.as_bytes(), true, client_id, None)
-    }
-
     /// Megolm-encrypt an emoji reaction and fan it out to every group member.
     /// Reactions are not chat messages: they are not recorded as optimistic
     /// outgoing messages and do not carry an ack mapping (best-effort, like
@@ -518,7 +507,7 @@ impl RelayClient {
             message_id, emoji, active,
         ));
         let bytes = serde_json::to_vec(&payload)?;
-        self.send_group_payload(group_id, &bytes, false, "", None)
+        self.send_group_payload(group_id, &bytes, false, "", None, None)
     }
 
     /// Megolm-encrypt a serialized plaintext payload and fan it out to every
@@ -526,7 +515,9 @@ impl RelayClient {
     /// outgoing chat message (optimistic insertion, ack mapping, rollback on
     /// send failure); otherwise it is a best-effort control signal (reaction,
     /// typing) that is never recorded in the thread. `quote` is attached to
-    /// the recorded message when it was a quoted reply.
+    /// the recorded message when it was a quoted reply. `message_id` is the
+    /// pre-decided id that travels inside the encrypted payload; when absent
+    /// it falls back to the `client_id` scheme.
     pub(crate) fn send_group_payload(
         &self,
         group_id: &str,
@@ -534,6 +525,7 @@ impl RelayClient {
         record: bool,
         client_id: &str,
         quote: Option<e2ee_core::Quote>,
+        message_id: Option<String>,
     ) -> Result<(), RelayError> {
         let my_peer_id = self.my_peer_id()?;
         // Encrypt with our own outbound Megolm session. Every member owns one
@@ -572,12 +564,20 @@ impl RelayClient {
 
         let seq = self.next_seq();
         let recorded = if record {
-            let msg = self.record_outgoing(
-                group_id,
-                &String::from_utf8_lossy(plaintext),
-                client_id,
-                quote,
-            )?;
+            let msg = match message_id {
+                Some(id) => self.record_outgoing_with_id(
+                    group_id,
+                    id,
+                    &String::from_utf8_lossy(plaintext),
+                    quote,
+                )?,
+                None => self.record_outgoing(
+                    group_id,
+                    &String::from_utf8_lossy(plaintext),
+                    client_id,
+                    quote,
+                )?,
+            };
             self.record_pending_ack(seq, &msg.id)?;
             Some(msg)
         } else {
@@ -694,9 +694,12 @@ impl RelayClient {
                 )?;
                 Ok(None)
             }
-            e2ee_core::ParsedPayload::Text(text) => {
-                Ok(Some(self.record_incoming(group_id, text.text, text.quote)?))
-            }
+            e2ee_core::ParsedPayload::Text(text) => Ok(Some(self.record_incoming(
+                group_id,
+                text.text,
+                text.quote,
+                text.message_id,
+            )?)),
         }
     }
 

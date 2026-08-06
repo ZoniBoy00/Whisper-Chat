@@ -57,14 +57,21 @@ pub struct TextPayload {
     /// The message this one replies to, when present.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub quote: Option<Quote>,
+    /// The sender's id for this message, when known. The recipient stores the
+    /// message under this SAME id (instead of a locally generated one), so
+    /// reactions and replies — which reference the sender's id — resolve
+    /// correctly on both ends.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message_id: Option<String>,
 }
 
 impl TextPayload {
-    /// Create a plain text payload without a quote.
+    /// Create a plain text payload without a quote or explicit message id.
     pub fn new(text: impl Into<String>) -> Self {
         Self {
             text: text.into(),
             quote: None,
+            message_id: None,
         }
     }
 
@@ -73,6 +80,16 @@ impl TextPayload {
         Self {
             text: text.into(),
             quote: Some(quote),
+            message_id: None,
+        }
+    }
+
+    /// Create a text payload carrying the sender's message id.
+    pub fn with_id(text: impl Into<String>, message_id: impl Into<String>) -> Self {
+        Self {
+            text: text.into(),
+            quote: None,
+            message_id: Some(message_id.into()),
         }
     }
 }
@@ -306,6 +323,39 @@ mod tests {
                 assert_eq!(text.text, "hi");
                 assert_eq!(text.quote, None);
             }
+            ParsedPayload::Reaction(_) => panic!("expected text"),
+        }
+    }
+
+    #[test]
+    fn text_payload_with_message_id_roundtrips() {
+        let payload = ChatPayload::Text(TextPayload::with_id("hello", "out-7"));
+        let json = serde_json::to_string(&payload).expect("serialize");
+        let restored: ChatPayload = serde_json::from_str(&json).expect("deserialize");
+
+        match restored {
+            ChatPayload::Text(text) => {
+                assert_eq!(text.message_id.as_deref(), Some("out-7"));
+            }
+            ChatPayload::Reaction(_) => panic!("expected text"),
+        }
+    }
+
+    #[test]
+    fn parse_text_envelope_exposes_the_sender_message_id() {
+        let bytes = br#"{"kind":"text","text":"hi","message_id":"9f8e-3ab"}"#;
+        match parse_plaintext(bytes) {
+            ParsedPayload::Text(text) => {
+                assert_eq!(text.message_id.as_deref(), Some("9f8e-3ab"));
+            }
+            ParsedPayload::Reaction(_) => panic!("expected text"),
+        }
+    }
+
+    #[test]
+    fn legacy_raw_text_has_no_message_id() {
+        match parse_plaintext(b"plain legacy text") {
+            ParsedPayload::Text(text) => assert_eq!(text.message_id, None),
             ParsedPayload::Reaction(_) => panic!("expected text"),
         }
     }

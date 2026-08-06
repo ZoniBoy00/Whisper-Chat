@@ -777,9 +777,14 @@ pub fn run() {
 
             // Register the whisper:// scheme (best-effort: in installed
             // bundles the installer does it; this covers dev/portable runs).
-            // Both `register` and the CLI-argument pickup are best-effort so a
-            // missing registration never blocks the app from starting.
-            let _ = app.deep_link().register("whisper");
+            // The second dev instance (`WHISPER_IDENTITY_FILE` set) must NOT
+            // register — otherwise the registry ends up pointing at the second
+            // dev exe and clicking a link while the app runs would launch the
+            // wrong binary. Both `register` and the CLI-argument pickup are
+            // best-effort so a missing registration never blocks startup.
+            if std::env::var("WHISPER_IDENTITY_FILE").is_err() {
+                let _ = app.deep_link().register("whisper");
+            }
             // The app was launched by clicking a whisper:// link: the plugin
             // parsed the CLI argument into `get_current()`.
             if let Ok(Some(urls)) = app.deep_link().get_current() {
