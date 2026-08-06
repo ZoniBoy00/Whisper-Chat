@@ -53,7 +53,7 @@ export function SettingsTabs({ children }: SettingsTabsProps) {
       <div
         role="tablist"
         aria-label={t("settings.sections_aria")}
-        className="flex flex-wrap gap-1.5 border-b border-wp-line/10 px-6 pb-4 pt-4"
+        className="flex shrink-0 flex-wrap gap-1.5 border-b border-wp-line/10 px-6 pb-4 pt-4"
       >
         {TABS.map((tab) => {
           const selected = activeTab === tab.id;
@@ -82,7 +82,7 @@ export function SettingsTabs({ children }: SettingsTabsProps) {
         })}
       </div>
 
-      <div className="max-h-[78vh] space-y-6 overflow-y-auto px-6 py-6">
+      <div className="min-h-0 flex-1 space-y-6 overflow-y-auto px-6 py-6">
         {children(activeTab)}
       </div>
     </>

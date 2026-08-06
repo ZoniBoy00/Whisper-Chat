@@ -154,7 +154,7 @@ export function SettingsDialog({
         close();
       }}
     >
-      <div className="w-[min(94vw,48rem)] rounded-2xl bg-wp-panel-2">
+      <div className="flex max-h-[92vh] w-[min(94vw,48rem)] flex-col rounded-2xl bg-wp-panel-2">
         <div className="flex items-center justify-between gap-4 border-b border-wp-line/10 px-6 py-5">
           <div className="flex items-center gap-3">
             <Settings className="h-5 w-5 text-wp-accent" aria-hidden="true" />
