@@ -1120,16 +1120,34 @@ impl RelayClient {
             .find(|m| m.peer_id == my_peer_id)
             .map(|m| m.role.clone());
         if let Ok(mut groups) = write_guard(&self.inner.groups) {
-            groups.entry(group_id.clone()).or_insert(GroupInfoState {
-                name: name.clone(),
-                members: members.clone(),
-                my_role: my_role.clone(),
-                avatar_url: avatar_url.clone(),
-                outbound: None,
-            });
+            match groups.get_mut(&group_id) {
+                // Existing group: refresh name, roster, our role and avatar so
+                // pushed/refreshed metadata always lands (e.g. the group photo
+                // set by another member).
+                Some(group) => {
+                    group.name = name.clone();
+                    group.members = members.clone();
+                    group.my_role = my_role.clone();
+                    group.avatar_url = avatar_url.clone();
+                }
+                None => {
+                    groups.insert(
+                        group_id.clone(),
+                        GroupInfoState {
+                            name: name.clone(),
+                            members: members.clone(),
+                            my_role: my_role.clone(),
+                            avatar_url: avatar_url.clone(),
+                            outbound: None,
+                        },
+                    );
+                }
+            }
         }
         // Persist the display metadata (name, avatar) so it survives restarts.
         self.persist_group_meta(&group_id, &name, avatar_url.as_deref());
+        // The roster/metadata changed: wake the UI (member count, avatar).
+        self.emit_group_updated(&group_id);
         // Resolve the matching request by group ID (concurrent lookups may be
         // answered out of order, so FIFO would misroute them).
         {
