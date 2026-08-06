@@ -31,7 +31,7 @@ use rusqlite::{params, Connection};
 
 use sha2::{Digest, Sha256};
 
-use crate::relay::UIMessage;
+use crate::relay::{ReactionView, UIMessage};
 
 /// Derive the database key from the identity file contents.
 ///
@@ -60,6 +60,9 @@ pub enum StoreError {
     /// A filesystem error while creating directories or removing the database.
     #[error("io error: {0}")]
     Io(#[from] std::io::Error),
+    /// A JSON (de)serialization error while persisting a quote snapshot.
+    #[error("json error: {0}")]
+    Json(#[from] serde_json::Error),
     /// A shared connection mutex was poisoned by a panicking task.
     #[error("store connection was poisoned by a panic")]
     Poisoned,
@@ -74,6 +77,12 @@ pub struct ContactRow {
     pub username: Option<String>,
     pub avatar_url: Option<String>,
     pub last_seen: Option<i64>,
+    /// The peer's public X25519 identity key (base64), when we have learned
+    /// it (pre-key bundle, handshake or profile). Used to compute safety
+    /// numbers without a live relay round-trip.
+    pub curve25519_key: Option<String>,
+    /// Whether we have verified this peer's safety number ("verified contact").
+    pub verified: bool,
 }
 
 /// A persisted inbound group session: `(group_id, sender_peer_id)` maps to the
@@ -157,10 +166,18 @@ impl ChatStore {
                 outgoing  INTEGER NOT NULL,
                 timestamp INTEGER NOT NULL,
                 status    TEXT NOT NULL,
-                client_id TEXT
+                client_id TEXT,
+                quote_json TEXT
             );
             CREATE INDEX IF NOT EXISTS idx_messages_peer_timestamp
                 ON messages (peer_id, timestamp);
+            CREATE TABLE IF NOT EXISTS reactions (
+                peer_id    TEXT NOT NULL,
+                message_id TEXT NOT NULL,
+                sender     TEXT NOT NULL,
+                emoji      TEXT NOT NULL,
+                PRIMARY KEY (peer_id, message_id, sender)
+            );
             CREATE TABLE IF NOT EXISTS sessions (
                 peer_id      TEXT PRIMARY KEY,
                 session_json TEXT NOT NULL
@@ -170,7 +187,9 @@ impl ChatStore {
                 display_name TEXT,
                 username     TEXT,
                 avatar_url   TEXT,
-                last_seen    INTEGER
+                last_seen    INTEGER,
+                curve25519_key TEXT,
+                verified     INTEGER NOT NULL DEFAULT 0
             );
             CREATE TABLE IF NOT EXISTS group_outbound (
                 group_id TEXT PRIMARY KEY,
@@ -213,6 +232,34 @@ impl ChatStore {
                  INSERT INTO group_inbound (group_id, sender, name, pickle)
                      SELECT group_id, '', name, pickle FROM group_inbound_legacy;
                  DROP TABLE group_inbound_legacy;",
+            )?;
+        }
+
+        // Migration: `messages` gained a nullable `quote_json` column for
+        // quoted replies. Older rows simply have no quote (NULL).
+        let message_columns: Vec<String> = conn
+            .prepare("PRAGMA table_info(messages)")?
+            .query_map([], |row| row.get::<_, String>(1))?
+            .collect::<rusqlite::Result<_>>()?;
+        if !message_columns.iter().any(|c| c.as_str() == "quote_json") {
+            conn.execute_batch("ALTER TABLE messages ADD COLUMN quote_json TEXT;")?;
+        }
+
+        // Migration: `contacts` gained `curve25519_key` (for safety numbers)
+        // and `verified` (contact verification state).
+        let contact_columns: Vec<String> = conn
+            .prepare("PRAGMA table_info(contacts)")?
+            .query_map([], |row| row.get::<_, String>(1))?
+            .collect::<rusqlite::Result<_>>()?;
+        if !contact_columns
+            .iter()
+            .any(|c| c.as_str() == "curve25519_key")
+        {
+            conn.execute_batch("ALTER TABLE contacts ADD COLUMN curve25519_key TEXT;")?;
+        }
+        if !contact_columns.iter().any(|c| c.as_str() == "verified") {
+            conn.execute_batch(
+                "ALTER TABLE contacts ADD COLUMN verified INTEGER NOT NULL DEFAULT 0;",
             )?;
         }
         Ok(())
@@ -305,17 +352,22 @@ impl ChatStore {
         message: &UIMessage,
         client_id: Option<&str>,
     ) -> Result<(), StoreError> {
+        let quote_json = match &message.quote {
+            Some(quote) => Some(serde_json::to_string(quote)?),
+            None => None,
+        };
         let conn = self.conn()?;
         conn.execute(
-            "INSERT INTO messages (id, peer_id, text, outgoing, timestamp, status, client_id)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+            "INSERT INTO messages (id, peer_id, text, outgoing, timestamp, status, client_id, quote_json)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
              ON CONFLICT(id) DO UPDATE SET
                  peer_id   = excluded.peer_id,
                  text      = excluded.text,
                  outgoing  = excluded.outgoing,
                  timestamp = excluded.timestamp,
                  status    = excluded.status,
-                 client_id = excluded.client_id",
+                 client_id = excluded.client_id,
+                 quote_json = excluded.quote_json",
             params![
                 message.id,
                 peer_id,
@@ -323,40 +375,124 @@ impl ChatStore {
                 message.outgoing as i64,
                 message.timestamp as i64,
                 message.status,
-                client_id
+                client_id,
+                quote_json
             ],
         )?;
         Ok(())
     }
 
     /// Remove a message row (used to roll back an optimistic record when a
-    /// send fails before the envelope leaves the client).
+    /// send fails before the envelope leaves the client). Reactions attached
+    /// to the message are removed with it.
     pub fn delete_message(&self, id: &str) -> Result<(), StoreError> {
-        let conn = self.conn()?;
-        conn.execute("DELETE FROM messages WHERE id = ?1", params![id])?;
+        let mut conn = self.conn()?;
+        let tx = conn.transaction()?;
+        tx.execute("DELETE FROM messages WHERE id = ?1", params![id])?;
+        tx.execute("DELETE FROM reactions WHERE message_id = ?1", params![id])?;
+        tx.commit()?;
         Ok(())
     }
 
-    /// The previously stored messages for `peer_id`, oldest first.
-    pub fn messages_for(&self, peer_id: &str) -> Result<Vec<UIMessage>, StoreError> {
+    /// Persist the absolute state of one `(peer_id, message_id, sender)`
+    /// reaction. The in-memory message map is the source of truth; this only
+    /// mirrors it on disk so the state survives restarts. `active = true`
+    /// upserts the emoji, `false` removes the row.
+    pub fn set_reaction_state(
+        &self,
+        peer_id: &str,
+        message_id: &str,
+        sender: &str,
+        emoji: &str,
+        active: bool,
+    ) -> Result<(), StoreError> {
+        let conn = self.conn()?;
+        if active {
+            conn.execute(
+                "INSERT INTO reactions (peer_id, message_id, sender, emoji)
+                 VALUES (?1, ?2, ?3, ?4)
+                 ON CONFLICT(peer_id, message_id, sender)
+                 DO UPDATE SET emoji = excluded.emoji",
+                params![peer_id, message_id, sender, emoji],
+            )?;
+        } else {
+            conn.execute(
+                "DELETE FROM reactions
+                 WHERE peer_id = ?1 AND message_id = ?2 AND sender = ?3",
+                params![peer_id, message_id, sender],
+            )?;
+        }
+        Ok(())
+    }
+
+    /// Every stored reaction for one conversation, keyed by message id and
+    /// ordered by insertion (rowid) so the UI renders pills deterministically.
+    pub fn reactions_for(
+        &self,
+        peer_id: &str,
+    ) -> Result<HashMap<String, Vec<ReactionView>>, StoreError> {
         let conn = self.conn()?;
         let mut stmt = conn.prepare(
-            "SELECT id, text, outgoing, timestamp, status
+            "SELECT message_id, sender, emoji FROM reactions
+             WHERE peer_id = ?1 ORDER BY rowid",
+        )?;
+        let rows = stmt.query_map(params![peer_id], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+            ))
+        })?;
+        let mut by_message: HashMap<String, Vec<ReactionView>> = HashMap::new();
+        for row in rows {
+            let (message_id, sender, emoji) = row?;
+            by_message
+                .entry(message_id)
+                .or_default()
+                .push(ReactionView { sender, emoji });
+        }
+        Ok(by_message)
+    }
+
+    /// The previously stored messages for `peer_id`, oldest first. Quoted-reply
+    /// snapshots and emoji reactions are loaded back with their messages.
+    ///
+    /// The reaction map is fetched *before* the connection lock is taken:
+    /// `reactions_for` takes the same shared lock, so calling it while this
+    /// method still holds the connection would deadlock.
+    pub fn messages_for(&self, peer_id: &str) -> Result<Vec<UIMessage>, StoreError> {
+        let reactions = self.reactions_for(peer_id)?;
+        let conn = self.conn()?;
+        let mut stmt = conn.prepare(
+            "SELECT id, text, outgoing, timestamp, status, quote_json
              FROM messages WHERE peer_id = ?1
              ORDER BY timestamp, id",
         )?;
         let rows = stmt.query_map(params![peer_id], |row| {
+            let quote_json: Option<String> = row.get(5)?;
+            let quote = match quote_json {
+                Some(json) => serde_json::from_str(&json).unwrap_or(None),
+                None => None,
+            };
             Ok(UIMessage {
                 id: row.get(0)?,
                 text: row.get(1)?,
                 outgoing: row.get(2)?,
                 timestamp: row.get::<_, i64>(3)? as u64,
                 status: row.get(4)?,
+                quote,
+                reactions: Vec::new(), // hydrated below
             })
         })?;
         let mut messages = Vec::new();
         for row in rows {
             messages.push(row?);
+        }
+        // Attach every stored reaction to its message in thread order.
+        for message in &mut messages {
+            if let Some(reacts) = reactions.get(&message.id) {
+                message.reactions = reacts.clone();
+            }
         }
         Ok(messages)
     }
@@ -409,23 +545,29 @@ impl ChatStore {
 
     /// Insert or update a contact. `COALESCE` on update keeps existing
     /// display name, username and avatar when a partial update only carries a
-    /// new `last_seen` (presence) or only a new name.
+    /// new `last_seen` (presence) or only a new name. The `curve25519_key`
+    /// and `verified` flags follow the same keep-existing-when-null rule.
     pub fn upsert_contact(&self, contact: &ContactRow) -> Result<(), StoreError> {
         let conn = self.conn()?;
         conn.execute(
-            "INSERT INTO contacts (peer_id, display_name, username, avatar_url, last_seen)
-             VALUES (?1, ?2, ?3, ?4, ?5)
+            "INSERT INTO contacts
+                 (peer_id, display_name, username, avatar_url, last_seen, curve25519_key, verified)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
              ON CONFLICT(peer_id) DO UPDATE SET
-                 display_name = COALESCE(excluded.display_name, contacts.display_name),
-                 username     = COALESCE(excluded.username, contacts.username),
-                 avatar_url   = COALESCE(excluded.avatar_url, contacts.avatar_url),
-                 last_seen    = COALESCE(excluded.last_seen, contacts.last_seen)",
+                 display_name   = COALESCE(excluded.display_name, contacts.display_name),
+                 username       = COALESCE(excluded.username, contacts.username),
+                 avatar_url     = COALESCE(excluded.avatar_url, contacts.avatar_url),
+                 last_seen      = COALESCE(excluded.last_seen, contacts.last_seen),
+                 curve25519_key = COALESCE(excluded.curve25519_key, contacts.curve25519_key),
+                 verified       = excluded.verified",
             params![
                 contact.peer_id,
                 contact.display_name,
                 contact.username,
                 contact.avatar_url,
-                contact.last_seen
+                contact.last_seen,
+                contact.curve25519_key,
+                contact.verified as i64
             ],
         )?;
         Ok(())
@@ -435,7 +577,8 @@ impl ChatStore {
     pub fn contacts(&self) -> Result<Vec<ContactRow>, StoreError> {
         let conn = self.conn()?;
         let mut stmt = conn.prepare(
-            "SELECT peer_id, display_name, username, avatar_url, last_seen
+            "SELECT peer_id, display_name, username, avatar_url, last_seen,
+                    curve25519_key, verified
              FROM contacts ORDER BY peer_id",
         )?;
         let rows = stmt.query_map([], |row| {
@@ -445,6 +588,8 @@ impl ChatStore {
                 username: row.get(2)?,
                 avatar_url: row.get(3)?,
                 last_seen: row.get(4)?,
+                curve25519_key: row.get(5)?,
+                verified: row.get::<_, i64>(6)? != 0,
             })
         })?;
         let mut contacts = Vec::new();
@@ -458,7 +603,8 @@ impl ChatStore {
     pub fn get_contact(&self, peer_id: &str) -> Result<Option<ContactRow>, StoreError> {
         let conn = self.conn()?;
         conn.query_row(
-            "SELECT peer_id, display_name, username, avatar_url, last_seen
+            "SELECT peer_id, display_name, username, avatar_url, last_seen,
+                    curve25519_key, verified
              FROM contacts WHERE peer_id = ?1",
             params![peer_id],
             |row| {
@@ -468,6 +614,8 @@ impl ChatStore {
                     username: row.get(2)?,
                     avatar_url: row.get(3)?,
                     last_seen: row.get(4)?,
+                    curve25519_key: row.get(5)?,
+                    verified: row.get::<_, i64>(6)? != 0,
                 })
             },
         )
@@ -547,6 +695,8 @@ mod tests {
             outgoing,
             timestamp: 0,
             status: status.to_string(),
+            quote: None,
+            reactions: Vec::new(),
         }
     }
 
@@ -664,6 +814,79 @@ mod tests {
             .expect("store message");
         store.delete_message("m-1").expect("delete message");
         assert!(store.messages_for("peer-1").expect("load").is_empty());
+    }
+
+    #[test]
+    fn reactions_roundtrip_and_state_toggle() {
+        let store = ChatStore::open_in_memory(TEST_KEY).expect("open in-memory store");
+        store
+            .set_reaction_state("peer-1", "m-1", "alice", "👍", true)
+            .expect("add reaction");
+        store
+            .set_reaction_state("peer-1", "m-1", "bob", "🔥", true)
+            .expect("add second reaction");
+
+        let reactions = store.reactions_for("peer-1").expect("load reactions");
+        assert_eq!(reactions["m-1"].len(), 2);
+        assert_eq!(reactions["m-1"][0].emoji, "👍");
+        assert_eq!(reactions["m-1"][1].emoji, "🔥");
+
+        // Turning the state off removes the row.
+        store
+            .set_reaction_state("peer-1", "m-1", "alice", "👍", false)
+            .expect("remove reaction");
+        let reactions = store.reactions_for("peer-1").expect("load reactions");
+        assert_eq!(reactions["m-1"].len(), 1);
+        assert_eq!(reactions["m-1"][0].sender, "bob");
+    }
+
+    #[test]
+    fn messages_for_loads_quotes_and_reactions() {
+        let store = ChatStore::open_in_memory(TEST_KEY).expect("open in-memory store");
+        let mut message = sample_message("m-1", "my reply", false, "delivered");
+        message.quote = Some(e2ee_core::Quote::new(
+            "m-0",
+            "original text",
+            "bob",
+            Some("Bob".to_string()),
+        ));
+        store
+            .upsert_message("peer-1", &message, None)
+            .expect("store quoted message");
+        store
+            .set_reaction_state("peer-1", "m-1", "bob", "👍", true)
+            .expect("store reaction");
+
+        let loaded = store.messages_for("peer-1").expect("load messages");
+        assert_eq!(loaded.len(), 1);
+        let quote = loaded[0].quote.as_ref().expect("quote must load");
+        assert_eq!(quote.message_id, "m-0");
+        assert_eq!(quote.text, "original text");
+        assert_eq!(quote.sender_name.as_deref(), Some("Bob"));
+        assert_eq!(loaded[0].reactions.len(), 1);
+        assert_eq!(loaded[0].reactions[0].emoji, "👍");
+    }
+
+    #[test]
+    fn delete_message_removes_attached_reactions() {
+        let store = ChatStore::open_in_memory(TEST_KEY).expect("open in-memory store");
+        store
+            .upsert_message(
+                "peer-1",
+                &sample_message("m-1", "hello", false, "delivered"),
+                None,
+            )
+            .expect("store message");
+        store
+            .set_reaction_state("peer-1", "m-1", "bob", "🔥", true)
+            .expect("store reaction");
+
+        store.delete_message("m-1").expect("delete message");
+        let reactions = store.reactions_for("peer-1").expect("load reactions");
+        assert!(
+            !reactions.contains_key("m-1"),
+            "reactions must be removed with their message"
+        );
     }
 
     #[test]
@@ -801,6 +1024,8 @@ mod tests {
                 username: None,
                 avatar_url: None,
                 last_seen: Some(1_700_000_000),
+                curve25519_key: None,
+                verified: false,
             })
             .expect("upsert contact");
 
@@ -825,6 +1050,8 @@ mod tests {
                 username: None,
                 avatar_url: None,
                 last_seen: None,
+                curve25519_key: None,
+                verified: false,
             })
             .expect("upsert with a name");
         // A presence update only carries a new last_seen; the name must stay.
@@ -835,12 +1062,54 @@ mod tests {
                 username: None,
                 avatar_url: None,
                 last_seen: Some(123),
+                curve25519_key: None,
+                verified: false,
             })
             .expect("upsert last_seen");
 
         let contact = store.get_contact("peer-1").expect("get contact").unwrap();
         assert_eq!(contact.display_name.as_deref(), Some("Alice"));
         assert_eq!(contact.last_seen, Some(123));
+    }
+
+    #[test]
+    fn contact_curve_key_and_verified_flag_roundtrip() {
+        let store = ChatStore::open_in_memory(TEST_KEY).expect("open in-memory store");
+        store
+            .upsert_contact(&ContactRow {
+                peer_id: "peer-1".into(),
+                display_name: None,
+                username: None,
+                avatar_url: None,
+                last_seen: None,
+                curve25519_key: Some("AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=".into()),
+                verified: false,
+            })
+            .expect("upsert with key");
+
+        let contact = store.get_contact("peer-1").expect("get contact").unwrap();
+        assert!(contact.curve25519_key.is_some());
+        assert!(!contact.verified);
+
+        // Flip the verified flag through a fresh upsert.
+        store
+            .upsert_contact(&ContactRow {
+                peer_id: "peer-1".into(),
+                display_name: None,
+                username: None,
+                avatar_url: None,
+                last_seen: None,
+                curve25519_key: None, // keep-existing: must not wipe the key
+                verified: true,
+            })
+            .expect("mark verified");
+
+        let contact = store.get_contact("peer-1").expect("get contact").unwrap();
+        assert!(contact.verified, "verified flag must persist");
+        assert!(
+            contact.curve25519_key.is_some(),
+            "a None key update must keep the stored key"
+        );
     }
 
     #[test]
@@ -853,6 +1122,8 @@ mod tests {
                 username: None,
                 avatar_url: None,
                 last_seen: None,
+                curve25519_key: None,
+                verified: false,
             })
             .expect("upsert contact");
         store.delete_contact("peer-1").expect("delete contact");
@@ -916,6 +1187,8 @@ mod tests {
                 username: None,
                 avatar_url: None,
                 last_seen: None,
+                curve25519_key: None,
+                verified: false,
             })
             .expect("store a contact");
 
@@ -990,6 +1263,8 @@ mod tests {
                     username: None,
                     avatar_url: None,
                     last_seen: None,
+                    curve25519_key: None,
+                    verified: false,
                 })
                 .expect("store contact");
             store.set_setting("theme", "dark").expect("store setting");

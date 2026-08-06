@@ -500,6 +500,41 @@ impl RelayClient {
         text: &str,
         client_id: &str,
     ) -> Result<(), RelayError> {
+        self.send_group_payload(group_id, text.as_bytes(), true, client_id, None)
+    }
+
+    /// Megolm-encrypt an emoji reaction and fan it out to every group member.
+    /// Reactions are not chat messages: they are not recorded as optimistic
+    /// outgoing messages and do not carry an ack mapping (best-effort, like
+    /// typing indicators).
+    pub(crate) fn send_group_reaction(
+        &self,
+        group_id: &str,
+        message_id: &str,
+        emoji: &str,
+        active: bool,
+    ) -> Result<(), RelayError> {
+        let payload = e2ee_core::ChatPayload::Reaction(e2ee_core::ReactionPayload::new(
+            message_id, emoji, active,
+        ));
+        let bytes = serde_json::to_vec(&payload)?;
+        self.send_group_payload(group_id, &bytes, false, "", None)
+    }
+
+    /// Megolm-encrypt a serialized plaintext payload and fan it out to every
+    /// member. When `record` is set the payload is treated as an ordinary
+    /// outgoing chat message (optimistic insertion, ack mapping, rollback on
+    /// send failure); otherwise it is a best-effort control signal (reaction,
+    /// typing) that is never recorded in the thread. `quote` is attached to
+    /// the recorded message when it was a quoted reply.
+    pub(crate) fn send_group_payload(
+        &self,
+        group_id: &str,
+        plaintext: &[u8],
+        record: bool,
+        client_id: &str,
+        quote: Option<e2ee_core::Quote>,
+    ) -> Result<(), RelayError> {
         let my_peer_id = self.my_peer_id()?;
         // Encrypt with our own outbound Megolm session. Every member owns one
         // in the multi-sender model (created on first group-key receipt or
@@ -514,7 +549,7 @@ impl RelayClient {
                 .outbound
                 .as_mut()
                 .ok_or_else(|| RelayError::NoOutboundGroup(group_id.to_string()))?;
-            outbound.encrypt(text)
+            outbound.encrypt(plaintext)
         };
         // The ratchet advanced, so persist the outbound session.
         self.save_group_sessions()?;
@@ -536,8 +571,18 @@ impl RelayClient {
         };
 
         let seq = self.next_seq();
-        let msg = self.record_outgoing(group_id, text, client_id)?;
-        self.record_pending_ack(seq, &msg.id)?;
+        let recorded = if record {
+            let msg = self.record_outgoing(
+                group_id,
+                &String::from_utf8_lossy(plaintext),
+                client_id,
+                quote,
+            )?;
+            self.record_pending_ack(seq, &msg.id)?;
+            Some(msg)
+        } else {
+            None
+        };
 
         let mut envelope = relay_envelope;
         envelope.seq = seq;
@@ -546,26 +591,30 @@ impl RelayClient {
             envelope,
         }) {
             let _ = mutex_guard(&self.inner.pending_acks)?.remove(&seq);
-            if let Ok(mut messages) = write_guard(&self.inner.messages) {
-                if let Some(msgs) = messages.get_mut(group_id) {
-                    msgs.retain(|m| m.id != msg.id);
+            if let Some(msg) = &recorded {
+                if let Ok(mut messages) = write_guard(&self.inner.messages) {
+                    if let Some(msgs) = messages.get_mut(group_id) {
+                        msgs.retain(|m| m.id != msg.id);
+                    }
                 }
-            }
-            if let Ok(store) = self.store_guard() {
-                if let Some(store) = store.as_ref() {
-                    let _ = store.delete_message(&msg.id);
+                if let Ok(store) = self.store_guard() {
+                    if let Some(store) = store.as_ref() {
+                        let _ = store.delete_message(&msg.id);
+                    }
                 }
             }
             return Err(err);
         }
 
-        let _ = self.inner.app.emit(
-            "chat-message",
-            ChatMessageEvent {
-                peer_id: group_id.to_string(),
-                message: msg,
-            },
-        );
+        if let Some(msg) = recorded {
+            let _ = self.inner.app.emit(
+                "chat-message",
+                ChatMessageEvent {
+                    peer_id: group_id.to_string(),
+                    message: msg,
+                },
+            );
+        }
         Ok(())
     }
 
@@ -628,9 +677,27 @@ impl RelayClient {
             Some(bytes) => bytes,
             None => return Ok(None),
         };
-        let text = String::from_utf8_lossy(&plaintext).to_string();
-        // No end-to-end read receipts for group messages in the MVP model.
-        Ok(Some(self.record_incoming(group_id, text)?))
+        // Group payloads use the same tagged envelope as 1:1 messages: an
+        // emoji reaction is applied to the target message, anything else is a
+        // (possibly quoting) text message. Legacy raw text parses as plain
+        // text too.
+        match e2ee_core::parse_plaintext(&plaintext) {
+            e2ee_core::ParsedPayload::Reaction(reaction) => {
+                // No end-to-end read receipts for group messages in the MVP
+                // model; reactions work exactly like their 1:1 counterparts.
+                self.handle_reaction(
+                    group_id,
+                    &reaction.message_id,
+                    &wire.sender_peer_id,
+                    &reaction.emoji,
+                    reaction.active,
+                )?;
+                Ok(None)
+            }
+            e2ee_core::ParsedPayload::Text(text) => {
+                Ok(Some(self.record_incoming(group_id, text.text, text.quote)?))
+            }
+        }
     }
 
     /// Decrypt a Megolm ciphertext with the inbound session built from that

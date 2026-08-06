@@ -425,6 +425,8 @@ mod tests {
                     outgoing: true,
                     timestamp: 0,
                     status: "sent".into(),
+                    quote: None,
+                    reactions: Vec::new(),
                 },
                 UIMessage {
                     id: "delivered-1".into(),
@@ -432,6 +434,8 @@ mod tests {
                     outgoing: true,
                     timestamp: 0,
                     status: "delivered".into(),
+                    quote: None,
+                    reactions: Vec::new(),
                 },
             ],
         );
@@ -444,6 +448,8 @@ mod tests {
                 outgoing: true,
                 timestamp: 0,
                 status: "delivered".into(),
+                quote: None,
+                reactions: Vec::new(),
             }],
         );
 
@@ -466,6 +472,8 @@ mod tests {
                     outgoing: false,
                     timestamp: 0,
                     status: "delivered".into(),
+                    quote: None,
+                    reactions: Vec::new(),
                 },
                 UIMessage {
                     id: "read-1".into(),
@@ -473,6 +481,8 @@ mod tests {
                     outgoing: true,
                     timestamp: 0,
                     status: "read".into(),
+                    quote: None,
+                    reactions: Vec::new(),
                 },
             ],
         );
@@ -494,6 +504,8 @@ mod tests {
                 outgoing: true,
                 timestamp: 0,
                 status: "delivered".into(),
+                quote: None,
+                reactions: Vec::new(),
             }],
         );
 

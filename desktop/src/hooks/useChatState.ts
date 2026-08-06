@@ -14,6 +14,7 @@ import type {
   Message,
   MessageStatus,
   PresenceInfo,
+  QuoteInfo,
 } from "../types";
 import {
   acceptFriendRequest as relayAcceptFriendRequest,
@@ -29,6 +30,7 @@ import {
   onFriendRequest,
   onFriendRequestDeclined,
   onGroupRemoved,
+  onMessageReaction,
   onMessageStatus,
   onPresence,
   onReconnecting,
@@ -41,6 +43,7 @@ import {
   removeContact as relayRemoveContact,
   sendFriendRequest as relaySendFriendRequest,
   sendMessage as relaySendMessage,
+  sendReaction as relaySendReaction,
   sendTyping as relaySendTyping,
   setDisplayName as persistDisplayName,
   transferOwnership as relayTransferOwnership,
@@ -125,6 +128,8 @@ export interface ChatStateApi {
   /** Outgoing pending friend requests: peer IDs we asked, unanswered. */
   friendRequestsOutgoing: string[];
   myDisplayName: string | null;
+  /** Our own peer ID (fingerprint), seeded from the chat-state snapshot. */
+  myPeerId: string | null;
   /** Our own avatar path ("/media/{hash}") from the persisted chat-state
    *  snapshot; null when unset. Reliable without a live relay round-trip. */
   myAvatarUrl: string | null;
@@ -145,7 +150,15 @@ export interface ChatStateApi {
   unread: Record<string, number>;
   connect: () => Promise<void>;
   refresh: () => Promise<void>;
-  sendMessage: (peerId: string, text: string) => Promise<void>;
+  sendMessage: (peerId: string, text: string, quote?: QuoteInfo | null) => Promise<void>;
+  /** React or un-react to a message. `active` is the caller-computed absolute
+   *  state (true = react, false = remove my reaction). */
+  reactToMessage: (
+    peerId: string,
+    messageId: string,
+    emoji: string,
+    active: boolean
+  ) => void;
   sendTyping: (peerId: string, isTyping: boolean) => void;
   saveDisplayName: (name: string) => Promise<void>;
   removeContact: (peerId: string) => Promise<void>;
@@ -188,6 +201,7 @@ export function useChatState({
     []
   );
   const [myDisplayName, setMyDisplayName] = useState<string | null>(null);
+  const [myPeerId, setMyPeerId] = useState<string | null>(null);
   const [myAvatarUrl, setMyAvatarUrl] = useState<string | null>(null);
   const [messages, setMessages] = useState<Record<string, Message[]>>({});
   const [groups, setGroups] = useState<GroupInfo[]>([]);
@@ -250,6 +264,7 @@ export function useChatState({
       setGroups(state.groups);
       setConnected(state.connected);
       setMyDisplayName(state.my_display_name);
+      setMyPeerId(state.my_peer_id);
       setMyAvatarUrl(state.my_avatar_url);
       setPresence(state.presence);
       setFriendRequestsIncoming(state.friend_requests_incoming);
@@ -396,6 +411,32 @@ export function useChatState({
           );
         })
       );
+      // Reactions arrive as absolute state signals (active true/false), so
+      // the message map is updated idempotently — a redelivered envelope can
+      // never flip a pill the wrong way.
+      const reactionUnlisten = await register(() =>
+        onMessageReaction(({ peer_id, message_id, sender, emoji, active }) => {
+          if (disposed) return;
+          setMessages((prev) => {
+            const list = prev[peer_id];
+            if (!list) return prev;
+            const target = list.find((m) => m.id === message_id);
+            if (!target) return prev;
+            const reactions = active
+              ? [
+                  ...(target.reactions ?? []).filter((r) => r.sender !== sender),
+                  { sender, emoji },
+                ]
+              : (target.reactions ?? []).filter((r) => r.sender !== sender);
+            return {
+              ...prev,
+              [peer_id]: list.map((m) =>
+                m.id === message_id ? { ...m, reactions } : m
+              ),
+            };
+          });
+        })
+      );
       const contactUpdatedUnlisten = await register(() =>
         onContactUpdated(({ peer_id, display_name, avatar_url }) => {
           if (disposed) return;
@@ -540,6 +581,7 @@ export function useChatState({
         !reconnectingUnlisten ||
         !messageStatusUnlisten ||
         !typingUnlisten ||
+        !reactionUnlisten ||
         !contactUpdatedUnlisten ||
         !presenceUnlisten ||
         !groupRemovedUnlisten ||
@@ -568,39 +610,82 @@ export function useChatState({
     };
   }, [connect, refresh, loadFriendRequests]);
 
-  const sendMessage = useCallback(async (peerId: string, text: string) => {
-    const clientId = crypto.randomUUID();
-    // Optimistic insertion; the backend echoes the same client id in the
-    // `chat-message` event, which the dedup logic above ignores. The status
-    // flips to "delivered" on the relay ack and "read" on a read receipt.
-    setMessages((prev) => ({
-      ...prev,
-      [peerId]: [
-        ...(prev[peerId] ?? []),
-        { id: clientId, text, outgoing: true, timestamp: Date.now(), status: "sent" },
-      ],
-    }));
-    try {
-      await relaySendMessage(peerId, text, clientId);
-    } catch (err) {
+  const sendMessage = useCallback(
+    async (peerId: string, text: string, quote?: QuoteInfo | null) => {
+      const clientId = crypto.randomUUID();
+      // Optimistic insertion; the backend echoes the same client id in the
+      // `chat-message` event, which the dedup logic above ignores. The status
+      // flips to "delivered" on the relay ack and "read" on a read receipt.
       setMessages((prev) => ({
         ...prev,
-        [peerId]: (prev[peerId] ?? []).filter(
-          (m) => m.id !== clientId
-        ),
+        [peerId]: [
+          ...(prev[peerId] ?? []),
+          {
+            id: clientId,
+            text,
+            outgoing: true,
+            timestamp: Date.now(),
+            status: "sent",
+            quote: quote ?? undefined,
+          },
+        ],
       }));
-      // The relay only routes messages between accepted contacts. A
-      // `not_contacts` rejection means the peer is not (or no longer) a
-      // friend: surface a clear translated toast instead of a raw relay code.
-      // The `contact-removed` push (when the relationship really ended) then
-      // drops the peer from the list, so the open chat is not yanked away here.
-      if (relayErrorCode(err) === "not_contacts") {
-        toast(t("contacts.not_in_contacts"), "error");
-      } else {
-        setConnectionError(String(err));
+      try {
+        await relaySendMessage(peerId, text, clientId, quote);
+      } catch (err) {
+        setMessages((prev) => ({
+          ...prev,
+          [peerId]: (prev[peerId] ?? []).filter(
+            (m) => m.id !== clientId
+          ),
+        }));
+        // The relay only routes messages between accepted contacts. A
+        // `not_contacts` rejection means the peer is not (or no longer) a
+        // friend: surface a clear translated toast instead of a raw relay code.
+        // The `contact-removed` push (when the relationship really ended) then
+        // drops the peer from the list, so the open chat is not yanked away here.
+        if (relayErrorCode(err) === "not_contacts") {
+          toast(t("contacts.not_in_contacts"), "error");
+        } else {
+          setConnectionError(String(err));
+        }
       }
-    }
-  }, [toast, t]);
+    },
+    [toast, t]
+  );
+
+  /** React to a message (or un-react, per the caller-computed `active` state).
+   *  The optimistic in-memory update mirrors what the peer applies on their
+   *  side; the reaction envelope does not echo back to the sender, so no
+   *  dedup against a `message-reaction` event is needed here. */
+  const reactToMessage = useCallback(
+    (peerId: string, messageId: string, emoji: string, active: boolean) => {
+      if (!myPeerId) return;
+      setMessages((prev) => {
+        const list = prev[peerId];
+        if (!list) return prev;
+        const target = list.find((m) => m.id === messageId);
+        if (!target) return prev;
+        const reactions = active
+          ? [
+              ...(target.reactions ?? []).filter((r) => r.sender !== myPeerId),
+              { sender: myPeerId, emoji },
+            ]
+          : (target.reactions ?? []).filter((r) => r.sender !== myPeerId);
+        return {
+          ...prev,
+          [peerId]: list.map((m) =>
+            m.id === messageId ? { ...m, reactions } : m
+          ),
+        };
+      });
+      void relaySendReaction(peerId, messageId, emoji, active).catch(() => {
+        // Best-effort like receipts: a transient failure only skips the
+        // remote pill for now; the local one stays consistent with the UI.
+      });
+    },
+    [myPeerId]
+  );
 
   const sendTyping = useCallback((peerId: string, isTyping: boolean) => {
     // Best-effort: without an established session (or while disconnected)
@@ -798,6 +883,7 @@ export function useChatState({
     friendRequestsIncoming,
     friendRequestsOutgoing,
     myDisplayName,
+    myPeerId,
     myAvatarUrl,
     messages,
     groups,
@@ -814,6 +900,7 @@ export function useChatState({
     connect,
     refresh,
     sendMessage,
+    reactToMessage,
     sendTyping,
     saveDisplayName,
     removeContact,

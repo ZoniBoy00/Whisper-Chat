@@ -237,6 +237,7 @@ impl RelayClient {
                     profile.display_name.as_deref(),
                     profile.username.as_deref(),
                     profile.avatar_url.as_deref(),
+                    profile.curve25519_key.as_deref(),
                 )?;
             }
         }
@@ -304,16 +305,17 @@ impl RelayClient {
         peer_id: &str,
         name: &str,
     ) -> Result<(), RelayError> {
-        self.remember_contact_profile(peer_id, Some(name), None, None)
+        self.remember_contact_profile(peer_id, Some(name), None, None, None)
     }
 
     /// Store a contact's public profile data (display name, username, avatar
-    /// path) that we learned from a lookup, persist it and notify the UI.
+    /// path, identity key) that we learned from a lookup, persist it and
+    /// notify the UI.
     ///
     /// Partial updates are COALESCE'd by the store, so a `None` field leaves
     /// the already-stored value intact and only the provided fields change.
     /// This is the single write path behind both pre-key lookups (name) and
-    /// profile lookups (name + avatar), so every surface that reads
+    /// profile lookups (name + avatar + key), so every surface that reads
     /// `get_chat_state` / `contact-updated` stays in agreement.
     pub(crate) fn remember_contact_profile(
         &self,
@@ -321,6 +323,7 @@ impl RelayClient {
         display_name: Option<&str>,
         username: Option<&str>,
         avatar_url: Option<&str>,
+        curve25519_key: Option<&str>,
     ) -> Result<(), RelayError> {
         self.ensure_store_open()?;
         self.store_guard()?
@@ -332,6 +335,8 @@ impl RelayClient {
                 username: username.map(str::to_string),
                 avatar_url: avatar_url.map(str::to_string),
                 last_seen: None,
+                curve25519_key: curve25519_key.map(str::to_string),
+                verified: false,
             })?;
         {
             let mut profiles = write_guard(&self.inner.profiles)?;

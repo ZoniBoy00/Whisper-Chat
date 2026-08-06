@@ -32,10 +32,16 @@ mod relay_groups;
 mod relay_presence;
 #[path = "relay_profiles.rs"]
 mod relay_profiles;
+#[path = "relay_reactions.rs"]
+mod relay_reactions;
 #[path = "relay_settings.rs"]
 mod relay_settings;
+#[path = "relay_verify.rs"]
+mod relay_verify;
 
 use relay_groups::{GroupInfoState, GroupKeyPayload};
+
+pub use relay_verify::SafetyNumberInfo;
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::PathBuf;
@@ -51,8 +57,9 @@ use tokio::sync::{mpsc, oneshot};
 use tokio_tungstenite::tungstenite::Message as WsMessage;
 
 use e2ee_core::{
-    ChatSession, Envelope, EnvelopeContent, Handshake, Identity, InboundGroup, Message,
-    OutboundGroup, PreKeyBundle, ReceiptKind,
+    parse_plaintext, ChatPayload, ChatSession, Envelope, EnvelopeContent, Handshake, Identity,
+    InboundGroup, Message, OutboundGroup, ParsedPayload, PreKeyBundle, Quote, ReactionPayload,
+    ReceiptKind, TextPayload,
 };
 use vodozemac::olm::OlmMessage;
 
@@ -208,6 +215,10 @@ pub enum RelayError {
     /// A chat-store operation was attempted before the store was opened.
     #[error("chat store is not open")]
     StoreNotOpen,
+    /// The peer's public identity key is not known yet (needed for safety
+    /// numbers). Learned from a pre-key bundle, handshake or profile.
+    #[error("peer identity key unknown; start a chat with them first")]
+    PeerKeyUnknown,
 }
 
 /// Messages the CLIENT sends to the relay (matches `server/src/relay.rs`).
@@ -562,6 +573,37 @@ pub struct UIMessage {
     /// Delivery state shown by the UI: "sent" until the relay acks the
     /// envelope, then "delivered". Incoming messages are always "delivered".
     pub status: String,
+    /// The quoted reply context, when this message replies to another one.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub quote: Option<Quote>,
+    /// Emoji reactions attached to this message, oldest first.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub reactions: Vec<ReactionView>,
+}
+
+/// One emoji reaction attached to a message by a peer.
+#[derive(Debug, Clone, Serialize)]
+pub struct ReactionView {
+    /// Peer ID of the reacting peer.
+    pub sender: String,
+    /// The reaction emoji.
+    pub emoji: String,
+}
+
+/// Payload of the `message-reaction` event emitted when a reaction is applied.
+/// The UI uses it to toggle the pill under the affected bubble.
+#[derive(Debug, Clone, Serialize)]
+pub struct ReactionEvent {
+    /// Conversation key: peer ID for 1:1 chats, group ID for groups.
+    pub peer_id: String,
+    /// The id of the reacted-to message.
+    pub message_id: String,
+    /// Peer ID of the reacting peer.
+    pub sender: String,
+    /// The reaction emoji.
+    pub emoji: String,
+    /// Whether the reaction was added (`true`) or removed (`false`).
+    pub active: bool,
 }
 
 /// Payload of the `chat-message` event emitted for new plaintext.
@@ -1364,10 +1406,12 @@ impl RelayClient {
         let my_peer_id = self.my_peer_id()?;
 
         // Learn the peer's public display name so the UI can show it in the
-        // contact list and chat header.
+        // contact list and chat header. The identity key from the bundle is
+        // remembered too, so safety numbers work offline.
         if let Some(name) = display_name {
             self.remember_contact_name(peer_id, &name)?;
         }
+        self.remember_peer_key(peer_id, bundle.identity_key)?;
 
         // Build the outbound session and encrypt the very first message; the
         // first ciphertext is always a pre-key message.
@@ -1398,7 +1442,7 @@ impl RelayClient {
         self.send_wire(&wire, seq)?;
 
         self.ensure_contact(peer_id)?;
-        let msg = self.record_outgoing(peer_id, FIRST_MESSAGE_TEXT, "")?;
+        let msg = self.record_outgoing(peer_id, FIRST_MESSAGE_TEXT, "", None)?;
         self.record_pending_ack(seq, &msg.id)?;
         let _ = self.inner.app.emit(
             "chat-message",
@@ -1414,12 +1458,16 @@ impl RelayClient {
     ///
     /// When `peer_id` is a group (an entry in the groups map), the message is
     /// instead Megolm-encrypted and fanned out to every member via
-    /// `send_group_message`.
+    /// `send_group_message`. A non-empty `quote` turns the message into a
+    /// quoted reply: the text and quote snapshot travel as an encrypted
+    /// [`ChatPayload::Text`] envelope so older clients keep working (their
+    /// plain messages stay raw text).
     pub async fn send_message(
         &self,
         peer_id: &str,
         text: &str,
         client_id: &str,
+        quote: Option<Quote>,
     ) -> Result<(), RelayError> {
         // Group messages are encrypted with the group's Megolm session and
         // routed through the relay's group fan-out rather than a 1:1 ratchet.
@@ -1430,7 +1478,15 @@ impl RelayClient {
         // sendable without any user action.
         if read_guard(&self.inner.groups)?.contains_key(peer_id) {
             self.ensure_outbound_session(peer_id).await?;
-            return self.send_group_message(peer_id, text, client_id);
+            return match quote {
+                Some(quote) => {
+                    let payload =
+                        ChatPayload::Text(TextPayload::with_quote(text.to_string(), quote.clone()));
+                    let bytes = serde_json::to_vec(&payload)?;
+                    self.send_group_payload(peer_id, &bytes, true, client_id, Some(quote))
+                }
+                None => self.send_group_message(peer_id, text, client_id),
+            };
         }
 
         let my_peer_id = self.my_peer_id()?;
@@ -1440,7 +1496,14 @@ impl RelayClient {
                 .get_mut(peer_id)
                 .ok_or_else(|| RelayError::NoSession(peer_id.to_string()))?;
             let session_id = session.session_id();
-            let olm = session.encrypt(text)?;
+            let plaintext: Vec<u8> = match &quote {
+                Some(quote) => serde_json::to_vec(&ChatPayload::Text(TextPayload::with_quote(
+                    text.to_string(),
+                    quote.clone(),
+                )))?,
+                None => text.as_bytes().to_vec(),
+            };
+            let olm = session.encrypt(&plaintext)?;
             (olm, session_id)
         };
 
@@ -1458,7 +1521,7 @@ impl RelayClient {
         // envelope immediately and the inbound loop may process that ack while
         // this command is still returning.
         let seq = self.next_seq();
-        let msg = self.record_outgoing(peer_id, text, client_id)?;
+        let msg = self.record_outgoing(peer_id, text, client_id, quote)?;
         self.record_pending_ack(seq, &msg.id)?;
 
         if let Err(err) = self.send_wire(&wire, seq) {
@@ -1876,9 +1939,23 @@ impl RelayClient {
                 let inbound =
                     ChatSession::create_inbound(identity, their_key, &handshake.pre_key_message)?;
                 mutex_guard(&self.inner.sessions)?.insert(sender.clone(), inbound.session);
-                let text = String::from_utf8_lossy(&inbound.plaintext).to_string();
                 self.save_sessions()?;
-                Ok(Some((sender.clone(), self.record_incoming(&sender, text)?)))
+                match parse_plaintext(&inbound.plaintext) {
+                    ParsedPayload::Text(text) => Ok(Some((
+                        sender.clone(),
+                        self.record_incoming(&sender, text.text, text.quote)?,
+                    ))),
+                    ParsedPayload::Reaction(reaction) => {
+                        self.handle_reaction(
+                            &sender,
+                            &reaction.message_id,
+                            &sender,
+                            &reaction.emoji,
+                            reaction.active,
+                        )?;
+                        Ok(None)
+                    }
+                }
             }
             EnvelopeContent::Message(message) => {
                 let plaintext = {
@@ -1916,18 +1993,39 @@ impl RelayClient {
                     self.handle_receipt(&sender, kind)?;
                     return Ok(None);
                 }
-                let text = String::from_utf8_lossy(&plaintext).to_string();
+                // Anything else is an ordinary chat payload: a text message
+                // (possibly quoting an earlier one) or an emoji reaction. Both
+                // travel as encrypted JSON so the relay only ever sees
+                // ciphertext; legacy raw text parses as plain text too.
                 self.save_sessions()?;
-                // Acknowledging the message end-to-end: encrypt a read receipt
-                // with the same (now-advanced) session. Best-effort so a
-                // transient send failure never drops the plaintext message.
-                // When read receipts are disabled we do NOT emit one — but
-                // receipts the peer sends us are still shown (like WhatsApp:
-                // the toggle only stops us from sending).
-                if read_guard(&self.inner.settings)?.read_receipts {
-                    let _ = self.send_receipt(&sender, ReceiptKind::Read);
+                match parse_plaintext(&plaintext) {
+                    ParsedPayload::Text(text) => {
+                        // Acknowledging the message end-to-end: encrypt a read
+                        // receipt with the same (now-advanced) session.
+                        // Best-effort so a transient send failure never drops
+                        // the plaintext message. When read receipts are
+                        // disabled we do NOT emit one — but receipts the peer
+                        // sends us are still shown (like WhatsApp: the toggle
+                        // only stops us from sending).
+                        if read_guard(&self.inner.settings)?.read_receipts {
+                            let _ = self.send_receipt(&sender, ReceiptKind::Read);
+                        }
+                        Ok(Some((
+                            sender.clone(),
+                            self.record_incoming(&sender, text.text, text.quote)?,
+                        )))
+                    }
+                    ParsedPayload::Reaction(reaction) => {
+                        self.handle_reaction(
+                            &sender,
+                            &reaction.message_id,
+                            &sender,
+                            &reaction.emoji,
+                            reaction.active,
+                        )?;
+                        Ok(None)
+                    }
                 }
-                Ok(Some((sender.clone(), self.record_incoming(&sender, text)?)))
             }
             // A bundle is published, never delivered as a chat envelope.
             EnvelopeContent::PreKeyBundle(_) => Ok(None),
@@ -2261,7 +2359,12 @@ impl RelayClient {
     // ---------------------------------------------------------------------
 
     /// Record an inbound plaintext message and add the sender as a contact.
-    fn record_incoming(&self, peer_id: &str, text: String) -> Result<UIMessage, RelayError> {
+    fn record_incoming(
+        &self,
+        peer_id: &str,
+        text: String,
+        quote: Option<Quote>,
+    ) -> Result<UIMessage, RelayError> {
         let message = UIMessage {
             id: format!(
                 "in-{}",
@@ -2271,6 +2374,8 @@ impl RelayClient {
             outgoing: false,
             timestamp: now_millis(),
             status: "delivered".to_string(),
+            quote,
+            reactions: Vec::new(),
         };
         self.ensure_contact(peer_id)?;
         write_guard(&self.inner.messages)?
@@ -2291,6 +2396,7 @@ impl RelayClient {
         peer_id: &str,
         text: &str,
         client_id: &str,
+        quote: Option<Quote>,
     ) -> Result<UIMessage, RelayError> {
         let id = if client_id.is_empty() {
             format!(
@@ -2306,6 +2412,8 @@ impl RelayClient {
             outgoing: true,
             timestamp: now_millis(),
             status: "sent".to_string(),
+            quote,
+            reactions: Vec::new(),
         };
         write_guard(&self.inner.messages)?
             .entry(peer_id.to_string())
@@ -2404,6 +2512,8 @@ impl RelayClient {
                     username: None,
                     avatar_url: None,
                     last_seen: None,
+                    curve25519_key: None,
+                    verified: false,
                 })?;
             let client = self.clone();
             let peer = peer_id.to_string();
@@ -2941,6 +3051,8 @@ mod tests {
                 outgoing: true,
                 timestamp: 0,
                 status: "sent".into(),
+                quote: None,
+                reactions: Vec::new(),
             }],
         );
 
@@ -2961,6 +3073,8 @@ mod tests {
                 outgoing: true,
                 timestamp: 0,
                 status: "sent".into(),
+                quote: None,
+                reactions: Vec::new(),
             }],
         );
 
@@ -2982,6 +3096,8 @@ mod tests {
                 outgoing: true,
                 timestamp: 0,
                 status: "read".into(),
+                quote: None,
+                reactions: Vec::new(),
             }],
         );
 
@@ -3000,6 +3116,8 @@ mod tests {
                 outgoing: true,
                 timestamp: 0,
                 status: "delivered".into(),
+                quote: None,
+                reactions: Vec::new(),
             }],
         );
 
@@ -3058,5 +3176,70 @@ mod tests {
         };
         let json = serde_json::to_value(&ended).expect("serialize");
         assert_eq!(json["active"], false);
+    }
+
+    // ---------------------------------------------------------------------
+    // Reactions & quoted replies
+    // ---------------------------------------------------------------------
+
+    #[test]
+    fn reaction_event_serializes_for_the_ui() {
+        let event = ReactionEvent {
+            peer_id: "group-1".into(),
+            message_id: "m-7".into(),
+            sender: "alice".into(),
+            emoji: "👍".into(),
+            active: true,
+        };
+        let json = serde_json::to_value(&event).expect("serialize");
+        assert_eq!(json["peer_id"], "group-1");
+        assert_eq!(json["message_id"], "m-7");
+        assert_eq!(json["sender"], "alice");
+        assert_eq!(json["emoji"], "👍");
+        assert_eq!(json["active"], true);
+    }
+
+    #[test]
+    fn ui_message_serializes_quote_and_reactions_for_the_ui() {
+        let message = UIMessage {
+            id: "m-1".into(),
+            text: "my reply".into(),
+            outgoing: true,
+            timestamp: 0,
+            status: "sent".into(),
+            quote: Some(Quote::new(
+                "m-0",
+                "original",
+                "bob",
+                Some("Bob".to_string()),
+            )),
+            reactions: vec![ReactionView {
+                sender: "bob".into(),
+                emoji: "🔥".into(),
+            }],
+        };
+        let json = serde_json::to_value(&message).expect("serialize");
+        assert_eq!(json["quote"]["message_id"], "m-0");
+        assert_eq!(json["quote"]["sender_name"], "Bob");
+        assert_eq!(json["reactions"][0]["emoji"], "🔥");
+    }
+
+    #[test]
+    fn ui_message_without_quote_or_reactions_omits_the_keys() {
+        let message = UIMessage {
+            id: "m-1".into(),
+            text: "plain".into(),
+            outgoing: true,
+            timestamp: 0,
+            status: "sent".into(),
+            quote: None,
+            reactions: Vec::new(),
+        };
+        let json = serde_json::to_value(&message).expect("serialize");
+        assert!(json.get("quote").is_none(), "absent quote must be skipped");
+        assert!(
+            json.get("reactions").is_none(),
+            "empty reactions must be skipped"
+        );
     }
 }
