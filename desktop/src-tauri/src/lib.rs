@@ -715,7 +715,7 @@ fn show_main_window(app: &tauri::AppHandle) {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    tauri::Builder::default()
+    let builder = tauri::Builder::default()
         // Native desktop notifications (the HTML5 Notification API is not
         // reliable inside the Tauri webview, so the plugin talks to the OS
         // directly).
@@ -729,14 +729,6 @@ pub fn run() {
             tauri_plugin_autostart::MacosLauncher::LaunchAgent,
             None,
         ))
-        // Single instance: opening a `whisper://` link (or launching the app
-        // again) while it is already running forwards the URL to the first
-        // instance instead of spawning a second window.
-        .plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
-            if let Some(url) = args.iter().find(|arg| arg.starts_with("whisper://")) {
-                handle_deep_link(app, url.clone());
-            }
-        }))
         // Deep links: registers the `whisper://` scheme (Windows: HKCU
         // Software\Classes\whisper -> our exe "%1") so clicking an invite
         // link in a browser opens Whisper with the invite pre-loaded.
@@ -861,7 +853,26 @@ pub fn run() {
             export_identity,
             import_identity,
             set_autostart
-        ])
+        ]);
+
+    // Single-instance only for the primary app instance: opening a
+    // `whisper://` link (or launching the app again) while it is already
+    // running forwards the URL to the first instance instead of spawning a
+    // second window. The second dev instance (`WHISPER_IDENTITY_FILE` set by
+    // `tauri:dev:second`) must be able to run SIDE BY SIDE for two-window
+    // E2EE tests — the single-instance mutex is keyed by the app identifier,
+    // so it would otherwise silently swallow the second window.
+    let builder = if std::env::var("WHISPER_IDENTITY_FILE").is_err() {
+        builder.plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
+            if let Some(url) = args.iter().find(|arg| arg.starts_with("whisper://")) {
+                handle_deep_link(app, url.clone());
+            }
+        }))
+    } else {
+        builder
+    };
+
+    builder
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
