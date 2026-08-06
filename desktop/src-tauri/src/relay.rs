@@ -418,6 +418,10 @@ enum ServerMessage {
     /// reply).
     #[serde(rename = "group_member_added")]
     GroupMemberAdded { group_id: String, peer_id: String },
+    /// A group member came online; the other members re-share their Megolm
+    /// session keys so a member added while offline finally gets the group.
+    #[serde(rename = "group_member_online")]
+    GroupMemberOnline { group_id: String, peer_id: String },
     /// Confirmation that the caller left a group (`leave_group` reply).
     #[serde(rename = "group_member_left")]
     GroupMemberLeft { group_id: String, peer_id: String },
@@ -1875,6 +1879,9 @@ impl RelayClient {
             } => self.handle_group_created(group_id, name, members),
             ServerMessage::GroupMemberAdded { group_id, peer_id } => {
                 self.handle_group_member_added(&group_id, &peer_id)
+            }
+            ServerMessage::GroupMemberOnline { group_id, peer_id } => {
+                self.handle_group_member_online(&group_id, &peer_id)
             }
             ServerMessage::GroupMemberLeft { group_id, peer_id } => {
                 self.handle_group_member_left(&group_id, &peer_id)

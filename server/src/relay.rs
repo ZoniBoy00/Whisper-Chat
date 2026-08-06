@@ -342,6 +342,12 @@ pub(crate) enum ServerMessage {
     /// reply).
     #[serde(rename = "group_member_added")]
     GroupMemberAdded { group_id: String, peer_id: String },
+    /// A peer came online while being a group member. Fanned out to the OTHER
+    /// members so they can (re-)share their Megolm session keys — a member
+    /// added while offline (no published pre-keys yet) would otherwise never
+    /// receive the key and the group would stay invisible to them.
+    #[serde(rename = "group_member_online")]
+    GroupMemberOnline { group_id: String, peer_id: String },
     /// Confirmation that the caller left a group (`leave_group` reply).
     #[serde(rename = "group_member_left")]
     GroupMemberLeft { group_id: String, peer_id: String },
@@ -668,6 +674,13 @@ impl Relay {
         // 2b) Announce the peer is online to everyone watching them. Any peer
         //     that reconnects mid-watch sees a fresh `online: true` push.
         self.broadcast_presence(&peer_id, true).await;
+
+        // 2c) Tell the other members of every group this peer belongs to that
+        //     the peer is online. They respond by (re-)sharing their Megolm
+        //     session keys — healing a member who was added while offline
+        //     (without published pre-keys), so the group shows up for them the
+        //     moment they connect.
+        self.notify_group_members_online(&peer_id).await;
 
         // 3) Push any ciphertext blobs persisted while the peer was offline.
         //    Rows are left in the DB until a fetch_since drains them, so the
@@ -1183,6 +1196,31 @@ impl Relay {
             None => false,
         }
     }
+
+    /// Fan a `group_member_online` push to every OTHER member of every group
+    /// `peer_id` belongs to. The recipients re-share their Megolm session keys,
+    /// so a member that was added while offline (without published pre-keys)
+    /// finally receives the keys and the group appears in their chat list.
+    pub(crate) async fn notify_group_members_online(&self, peer_id: &str) {
+        let groups = self.inner.store.list_groups_for_member(peer_id);
+        for group_id in &groups {
+            let members = self.inner.store.list_group_members(group_id);
+            for member in &members {
+                if member == peer_id {
+                    continue;
+                }
+                let _ = self
+                    .send(
+                        member,
+                        ServerMessage::GroupMemberOnline {
+                            group_id: group_id.clone(),
+                            peer_id: peer_id.to_string(),
+                        },
+                    )
+                    .await;
+            }
+        }
+    }
 }
 
 impl Default for Relay {
@@ -1261,8 +1299,45 @@ pub(crate) mod test_utils {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::relay::test_utils::env;
+    use crate::relay::test_utils::{env, make_contacts, online_peer, read_reply};
     use crate::store::{ENVELOPE_TTL_SECS, MAX_OFFLINE_BLOBS};
+
+    #[tokio::test]
+    async fn peer_online_fans_group_member_online_to_other_members() {
+        let store = Store::open_in_memory().unwrap();
+        let relay = Relay::with_limiter(store, 100.0, 0.0);
+        let alice = Identity::new();
+        let bob = Identity::new();
+        let mut alice_rx = online_peer(&relay, &alice).await;
+        make_contacts(&relay, &alice.peer_id(), &bob.peer_id());
+
+        relay
+            .create_group(&alice.peer_id(), "127.0.0.1", "Squad")
+            .await;
+        let group_id = read_reply(&mut alice_rx)["group_id"]
+            .as_str()
+            .expect("group_id must be set")
+            .to_string();
+
+        // Bob is added while OFFLINE (never registered an online channel), the
+        // exact case the heal exists for: the add-time key share cannot reach
+        // him because his pre-keys are not published yet.
+        relay
+            .add_group_member(&alice.peer_id(), "127.0.0.1", &group_id, &bob.peer_id())
+            .await;
+        let reply = read_reply(&mut alice_rx);
+        assert_eq!(reply["type"].as_str(), Some("group_member_added"));
+
+        // Bob comes online; the relay must push `group_member_online` to the
+        // other member (alice) so she re-shares her Megolm session key.
+        let _bob_rx = online_peer(&relay, &bob).await;
+        relay.notify_group_members_online(&bob.peer_id()).await;
+
+        let reply = read_reply(&mut alice_rx);
+        assert_eq!(reply["type"].as_str(), Some("group_member_online"));
+        assert_eq!(reply["group_id"].as_str(), Some(group_id.as_str()));
+        assert_eq!(reply["peer_id"].as_str(), Some(bob.peer_id().as_str()));
+    }
 
     #[tokio::test]
     async fn relay_fetch_since_returns_and_drains_stored_envelopes() {
