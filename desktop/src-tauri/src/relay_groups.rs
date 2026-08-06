@@ -1088,19 +1088,26 @@ impl RelayClient {
                 .ok_or_else(|| RelayError::NoOutboundGroup(group_id.to_string()))?;
             (session_key, group.members.clone())
         };
+        tracing::info!(group = %group_id, members = %members.len(), "re-sharing group key after restart");
         for member in &members {
             if member.peer_id == my_peer_id {
                 continue;
             }
             let result = async {
                 if !mutex_guard(&self.inner.sessions)?.contains_key(&member.peer_id) {
+                    tracing::info!(peer = %member.peer_id, "no 1:1 session — starting chat to share key");
                     self.start_chat(&member.peer_id).await?;
                 }
                 self.send_group_key(&member.peer_id, group_id, &session_key, group_name)
             }
             .await;
-            if let Err(err) = result {
-                tracing::warn!(peer = %member.peer_id, group = %group_id, error = %err, "failed to re-share group key");
+            match &result {
+                Ok(()) => {
+                    tracing::info!(peer = %member.peer_id, group = %group_id, "group key re-shared")
+                }
+                Err(err) => {
+                    tracing::warn!(peer = %member.peer_id, group = %group_id, error = %err, "failed to re-share group key")
+                }
             }
         }
         Ok(())
