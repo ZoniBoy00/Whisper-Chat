@@ -152,16 +152,20 @@ impl RelayClient {
     /// learns that we are typing. In a group the indicator travels as a
     /// Megolm-encrypted payload so the recipients know WHICH member types.
     pub async fn send_typing(&self, peer_id: &str, is_typing: bool) -> Result<(), RelayError> {
+        tracing::info!(peer = %peer_id, typing = %is_typing, "send_typing invoked");
         if !read_guard(&self.inner.settings)?.typing_indicator {
+            tracing::info!(peer = %peer_id, "typing indicator disabled in settings");
             return Ok(());
         }
         if read_guard(&self.inner.groups)?.contains_key(peer_id) {
+            tracing::info!(group = %peer_id, "group typing path");
             // Group typing rides the Megolm outbound session, which may not
             // exist yet if no message has been sent to the group. Establish it
             // (build the session + share the key) so the indicator goes out.
             self.ensure_outbound_session(peer_id).await?;
             return self.send_group_typing(peer_id, is_typing);
         }
+        tracing::info!(peer = %peer_id, "1:1 typing path");
         let kind = if is_typing {
             ReceiptKind::Typing
         } else {
