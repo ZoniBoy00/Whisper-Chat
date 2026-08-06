@@ -12,6 +12,8 @@ import {
 } from "lucide-react";
 import { Logo } from "./Logo";
 import { useI18n } from "../i18n/I18nContext";
+import { useToast } from "../hooks/useToast";
+import { importIdentity } from "../lib/relay";
 import { cx } from "../lib/format";
 
 interface OnboardingProps {
@@ -40,10 +42,11 @@ function TrustPoint({ icon, label }: { icon: ReactNode; label: string }) {
 
 export function Onboarding({ onCreated }: OnboardingProps) {
   const { t, language, setLanguage } = useI18n();
+  const toast = useToast().toast;
   const [name, setName] = useState("");
   const [creating, setCreating] = useState(false);
+  const [restoring, setRestoring] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [restoreHint, setRestoreHint] = useState(false);
 
   const createIdentity = async () => {
     setCreating(true);
@@ -57,6 +60,29 @@ export function Onboarding({ onCreated }: OnboardingProps) {
       setError(String(err));
     } finally {
       setCreating(false);
+    }
+  };
+
+  /** Restore a previously backed-up identity file: open the native picker,
+   *  import over the (missing) local identity, then reload so the app boots
+   *  into the restored profile. */
+  const handleRestore = async () => {
+    setRestoring(true);
+    setError(null);
+    try {
+      await importIdentity();
+      toast(t("toast.identity_imported"), "success");
+      toast(t("toast.identity_import_restart"), "info");
+      window.setTimeout(() => window.location.reload(), 1500);
+    } catch (err) {
+      const message = String(err).replace(/^Error:\s*/, "");
+      // A user-cancelled picker is not an error worth shouting about.
+      if (!message.toLowerCase().includes("cancel")) {
+        toast(message, "error");
+      }
+      setError(message);
+    } finally {
+      setRestoring(false);
     }
   };
 
@@ -156,18 +182,21 @@ export function Onboarding({ onCreated }: OnboardingProps) {
 
               <button
                 type="button"
-                onClick={() => setRestoreHint((hint) => !hint)}
-                className="inline-flex items-center justify-center gap-2 rounded-xl border border-wp-line/10 bg-wp-panel px-6 py-3.5 text-sm font-semibold text-wp-text transition hover:bg-wp-panel-2"
+                onClick={() => void handleRestore()}
+                disabled={restoring}
+                className="inline-flex items-center justify-center gap-2 rounded-xl border border-wp-line/10 bg-wp-panel px-6 py-3.5 text-sm font-semibold text-wp-text transition hover:bg-wp-panel-2 disabled:cursor-not-allowed disabled:opacity-60"
               >
-                <FileKey className="h-4 w-4" />
+                {restoring ? (
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                ) : (
+                  <FileKey className="h-4 w-4" />
+                )}
                 {t("onboarding.restore_identity")}
               </button>
 
-              {restoreHint ? (
-                <p className="mx-auto max-w-sm animate-pop-in text-xs leading-relaxed text-wp-faint">
-                  {t("onboarding.restore_identity_hint")}
-                </p>
-              ) : null}
+              <p className="mx-auto max-w-sm text-xs leading-relaxed text-wp-faint">
+                {t("onboarding.restore_identity_hint")}
+              </p>
             </div>
 
             {error ? (
