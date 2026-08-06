@@ -37,20 +37,26 @@ export function ReactionPicker({ x, y, onPick, onClose }: ReactionPickerProps) {
     setPos({ x: clampedX, y: clampedY });
   }, [x, y]);
 
-  // Dismiss on outside pointer press or Escape.
+  // Dismiss on outside pointer press, scroll, resize or Escape.
   useEffect(() => {
     const handlePointerDown = (event: PointerEvent) => {
       if (ref.current && !ref.current.contains(event.target as Node)) {
         onClose();
       }
     };
+    const handleScroll = () => onClose();
+    const handleResize = () => onClose();
     const handleKeyDown = (event: KeyboardEvent) => {
       if (event.key === "Escape") onClose();
     };
     document.addEventListener("pointerdown", handlePointerDown);
+    window.addEventListener("scroll", handleScroll, true);
+    window.addEventListener("resize", handleResize);
     window.addEventListener("keydown", handleKeyDown);
     return () => {
       document.removeEventListener("pointerdown", handlePointerDown);
+      window.removeEventListener("scroll", handleScroll, true);
+      window.removeEventListener("resize", handleResize);
       window.removeEventListener("keydown", handleKeyDown);
     };
   }, [onClose]);

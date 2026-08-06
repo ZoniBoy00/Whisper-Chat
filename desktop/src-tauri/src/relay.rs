@@ -2216,6 +2216,7 @@ impl RelayClient {
             autostart,
             stored_group_outbound,
             stored_group_inbound,
+            stored_group_meta,
         ) = {
             let store = self.store_guard()?;
             let store = store.as_ref().ok_or(RelayError::StoreNotOpen)?;
@@ -2242,6 +2243,7 @@ impl RelayClient {
                 store.get_setting("autostart")?,
                 store.load_group_outbound()?,
                 store.load_group_inbound()?,
+                store.load_group_meta()?,
             )
         };
 
@@ -2258,18 +2260,24 @@ impl RelayClient {
         // Restore Megolm group sessions: outbound for groups this identity
         // created, inbound for groups it joined via a shared session key. The
         // group name is stored alongside each pickle so the chat list can
-        // render groups right after startup.
+        // render groups right after startup. Display metadata (name, avatar)
+        // comes back from `group_meta` so the group photo survives restarts.
+        let group_meta = stored_group_meta;
         {
             let mut groups = write_guard(&self.inner.groups)?;
             for (group_id, (name, pickle)) in stored_group_outbound {
                 if let Ok(outbound) = OutboundGroup::from_json(&pickle) {
+                    let (meta_name, meta_avatar) = group_meta
+                        .get(&group_id)
+                        .cloned()
+                        .unwrap_or((name.clone(), None));
                     groups.insert(
                         group_id,
                         GroupInfoState {
-                            name,
+                            name: meta_name,
                             members: Vec::new(),
                             my_role: Some("owner".to_string()),
-                            avatar_url: None,
+                            avatar_url: meta_avatar,
                             outbound: Some(outbound),
                         },
                     );
@@ -2285,11 +2293,15 @@ impl RelayClient {
                         .entry(group_id.clone())
                         .or_default()
                         .insert(sender, session);
+                    let (meta_name, meta_avatar) = group_meta
+                        .get(&group_id)
+                        .cloned()
+                        .unwrap_or((name.clone(), None));
                     groups.entry(group_id).or_insert(GroupInfoState {
-                        name,
+                        name: meta_name,
                         members: Vec::new(),
                         my_role: None,
-                        avatar_url: None,
+                        avatar_url: meta_avatar,
                         outbound: None,
                     });
                 }

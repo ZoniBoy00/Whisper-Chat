@@ -206,6 +206,11 @@ impl ChatStore {
             CREATE TABLE IF NOT EXISTS settings (
                 key   TEXT PRIMARY KEY,
                 value TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS group_meta (
+                group_id    TEXT PRIMARY KEY,
+                name        TEXT NOT NULL,
+                avatar_hash TEXT
             );",
         )?;
 
@@ -341,6 +346,45 @@ impl ChatStore {
             groups.insert(key, rest);
         }
         Ok(groups)
+    }
+
+    /// Persist a group's public metadata (name, avatar path) so it survives a
+    /// restart. The Megolm pickles carry the session; this row carries the
+    /// display data the chat list needs immediately after startup.
+    pub fn set_group_meta(
+        &self,
+        group_id: &str,
+        name: &str,
+        avatar_url: Option<&str>,
+    ) -> Result<(), StoreError> {
+        let conn = self.conn()?;
+        conn.execute(
+            "INSERT INTO group_meta (group_id, name, avatar_hash)
+             VALUES (?1, ?2, ?3)
+             ON CONFLICT(group_id) DO UPDATE SET
+                 name = excluded.name,
+                 avatar_hash = excluded.avatar_hash",
+            params![group_id, name, avatar_url],
+        )?;
+        Ok(())
+    }
+
+    /// Every persisted group's display metadata: group_id -> (name, avatar).
+    pub fn load_group_meta(&self) -> Result<HashMap<String, (String, Option<String>)>, StoreError> {
+        let conn = self.conn()?;
+        let mut stmt = conn.prepare("SELECT group_id, name, avatar_hash FROM group_meta")?;
+        let rows = stmt.query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                (row.get::<_, String>(1)?, row.get::<_, Option<String>>(2)?),
+            ))
+        })?;
+        let mut meta = HashMap::new();
+        for row in rows {
+            let (group_id, rest) = row?;
+            meta.insert(group_id, rest);
+        }
+        Ok(meta)
     }
 
     /// Insert or update one message row. The `id` is the primary key, so
