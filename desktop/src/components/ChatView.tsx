@@ -1,4 +1,11 @@
-import { Fragment, useEffect, useMemo, useRef, useState } from "react";
+import {
+  Fragment,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import {
   ChevronDown,
   ChevronUp,
@@ -74,6 +81,89 @@ interface MessageMenuState {
   x: number;
   y: number;
   message: Message;
+}
+
+/** Horizontal emoji picker shown when "Add reaction" is chosen from the
+ *  message context menu. Rendered at the click point (clamped to the
+ *  viewport), dismissed by an outside press or Escape. */
+function ReactionPicker({
+  x,
+  y,
+  message,
+  myPeerId,
+  onReact,
+  onClose,
+}: {
+  x: number;
+  y: number;
+  message: Message;
+  myPeerId: string | null;
+  onReact: (messageId: string, emoji: string, active: boolean) => void;
+  onClose: () => void;
+}) {
+  const { t } = useI18n();
+  const ref = useRef<HTMLDivElement>(null);
+  const [pos, setPos] = useState({ x, y });
+
+  // The picker is measured hidden at (x, y), then snapped above the click
+  // point and clamped so it never overflows the window edges.
+  useLayoutEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    const rect = el.getBoundingClientRect();
+    const clampedX = Math.max(8, Math.min(x, window.innerWidth - rect.width - 8));
+    const clampedY = Math.max(
+      8,
+      Math.min(y - rect.height - 8, window.innerHeight - rect.height - 8)
+    );
+    setPos({ x: clampedX, y: clampedY });
+  }, [x, y]);
+
+  // Dismiss on outside pointer press or Escape.
+  useEffect(() => {
+    const handlePointerDown = (event: PointerEvent) => {
+      if (ref.current && !ref.current.contains(event.target as Node)) {
+        onClose();
+      }
+    };
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") onClose();
+    };
+    document.addEventListener("pointerdown", handlePointerDown);
+    window.addEventListener("keydown", handleKeyDown);
+    return () => {
+      document.removeEventListener("pointerdown", handlePointerDown);
+      window.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [onClose]);
+
+  return (
+    <div
+      ref={ref}
+      role="menu"
+      aria-label={t("chat.react_to_message")}
+      style={{ left: pos.x, top: pos.y, visibility: "visible" }}
+      className="fixed z-50 flex animate-menu-in items-center gap-0.5 rounded-full border border-wp-line/10 bg-wp-panel-2 p-1.5 shadow-2xl shadow-black/50"
+    >
+      {REACTION_EMOJIS.map((emoji) => (
+        <button
+          key={emoji}
+          type="button"
+          role="menuitem"
+          onClick={() => {
+            const mine = (message.reactions ?? []).find(
+              (r) => r.sender === myPeerId
+            );
+            onReact(message.id, emoji, !(mine?.emoji === emoji));
+            onClose();
+          }}
+          className="rounded-full px-1 py-0.5 text-xl leading-none transition hover:bg-wp-panel-3 active:scale-90"
+        >
+          {emoji}
+        </button>
+      ))}
+    </div>
+  );
 }
 
 /** One match of the in-chat search: which message and where in its text. */
@@ -586,31 +676,13 @@ export function ChatView({
       ) : null}
 
       {emojiPicker ? (
-        <ContextMenu
+        <ReactionPicker
           x={emojiPicker.x}
           y={emojiPicker.y}
-          label={t("chat.react_to_message")}
+          message={emojiPicker.message}
+          myPeerId={myPeerId}
+          onReact={onReact}
           onClose={() => setEmojiPicker(null)}
-          items={REACTION_EMOJIS.map((emoji) => ({
-            id: `react-${emoji}`,
-            label: emoji,
-            icon: (
-              <span className="text-base leading-none" aria-hidden="true">
-                {emoji}
-              </span>
-            ),
-            onSelect: () => {
-              const mine = (emojiPicker.message.reactions ?? []).find(
-                (r) => r.sender === myPeerId
-              );
-              onReact(
-                emojiPicker.message.id,
-                emoji,
-                !(mine?.emoji === emoji)
-              );
-              setEmojiPicker(null);
-            },
-          }))}
         />
       ) : null}
 

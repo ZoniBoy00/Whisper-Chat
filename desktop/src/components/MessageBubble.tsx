@@ -156,13 +156,13 @@ export function MessageBubble({
       {onReact || reactions.length > 0 ? (
         <div
           className={cx(
-            "relative mt-0.5 flex max-w-[68%] flex-wrap items-center gap-1",
+            "relative z-20 mt-1 flex max-w-[68%] flex-wrap items-center gap-1",
             outgoing ? "justify-end" : "justify-start"
           )}
         >
           {pickerOpen ? (
             <div
-              className="absolute bottom-full left-1/2 z-30 mb-1.5 flex -translate-x-1/2 items-center gap-0.5 rounded-full bg-wp-panel-2 p-1.5 shadow-xl shadow-black/40 ring-1 ring-wp-line/10"
+              className="absolute bottom-full left-1/2 z-50 mb-1.5 flex -translate-x-1/2 items-center gap-0.5 rounded-full bg-wp-panel-2 p-1.5 shadow-2xl shadow-black/50 ring-1 ring-wp-line/10"
               role="menu"
               aria-label={t("chat.react_to_message")}
             >
