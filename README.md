@@ -26,14 +26,19 @@ sender and the recipient can read them.
   roles, multi-sender (every member sends with their own Megolm session),
   ownership transfer, signed username aliases and avatars (WhatsApp/Signal-style
   group UI).
+- **Group invites & join links** — invite a contact (they accept/decline in
+  the sidebar) or share a `whisper://join` link; anyone with the link can join
+  (WhatsApp-style). Group name and photo travel inside the link.
 - **Read receipts, typing & presence** — blue double ticks when a message is
-  read, live "typing…" indicators and Online / Last seen status (WhatsApp-style).
+  read, live "typing…" indicators with the writer's name in groups
+  ("ZoniBoy typing…", "3 members typing…") and Online / Last seen status.
 - **Emoji reactions & quoted replies** — react to any message (end-to-end
   encrypted state signals), reply to a message with the quoted bubble rendered
   in the composer (Signal-style). Works in 1:1 chats and groups.
 - **Safety numbers & invite links** — Signal-style 60-digit verification
   fingerprint with QR code and a local "verified" flag; share your identity as
-  a `whisper://invite` link and paste it to add a contact.
+  a `whisper://invite` link (opens a profile popup with one-click add) and
+  paste/click links to add contacts or join groups.
 - **Username & profile system** — register a unique signed username (Ed25519
   binding), set a display name and avatar, search by username or UID.
 - **Friend system (anti-spam)** — contacts are established via signed friend
@@ -67,7 +72,8 @@ sender and the recipient can read them.
 - **In-chat message search, day separators & context menus** — find any
   message, grouped history by day, and right-click actions on messages.
 - **Auto-reconnect** — the client reconnects to the relay automatically and
-  surfaces connection state in the UI.
+  surfaces connection state in the UI. Avatars self-heal: a client opened
+  before the relay was up loads every image once the connection is established.
 - **Cross-platform future** — Tauri desktop today, Flutter mobile coming (one
   shared Rust crypto core).
 - **Hardened release builds** — `lto="fat"`, `panic="abort"`, `strip=true`
@@ -229,7 +235,7 @@ cargo fmt --check
 
 ## Testing & TDD
 
-- **311 unit tests** across the workspace (e2ee-core 75, whisper-desktop 96,
+- **316 unit tests** across the workspace (e2ee-core 80, whisper-desktop 96,
   whisper-relay 140)
 - **92 smoke tests** covering live routing, offline delivery, SQLite
   persistence, `fetch_since` sync, rate limiting and signed-hello spoofing
@@ -252,10 +258,14 @@ Licensed under the **MIT License**. Cryptography is provided by
 **MVP (phases 0–5):** workspace + CI, crypto core, relay, desktop shell, E2EE
 1:1 integration, polished UI/UX.
 
-**After MVP (phases 6–9):** disappearing messages, encrypted media + calls,
-mobile (Flutter), external audit + post-quantum (X25519Kyber768). Groups
-(owner/admin roles, multi-sender, ownership transfer), presence and privacy
-controls are already in; **connection toasts** are coming.
+**Beyond MVP (done):** groups (owner/admin roles, multi-sender, ownership
+transfer, invites + join links), emoji reactions, quoted replies, safety
+numbers + QR, invite/join deep links, i18n (EN/FI), notifications, presence
+and privacy controls.
+
+**Next up:** relay deployment to a real VPS (two-machine E2EE test),
+disappearing messages, message editing + delete-for-everyone, media/calls,
+mobile (Flutter), external audit + post-quantum (X25519Kyber768).
 
 See [docs/ROADMAP.md](docs/ROADMAP.md) for the full technical roadmap.
 
