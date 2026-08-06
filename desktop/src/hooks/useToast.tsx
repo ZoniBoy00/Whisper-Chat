@@ -24,6 +24,10 @@ interface ToastContextValue {
   toast: (message: string, type?: ToastType) => void;
   /** Remove a toast immediately (used by the close button). */
   dismiss: (id: number) => void;
+  /** The live queue, for rendering an in-dialog toast stack (dialogs live in
+   *  the browser top layer, above every fixed element, so a dialog that wants
+   *  toasts on top of itself renders its own viewport). */
+  toasts: ToastItem[];
 }
 
 const ToastContext = createContext<ToastContextValue | null>(null);
@@ -65,7 +69,10 @@ export function ToastProvider({ children }: { children: ReactNode }) {
     [dismiss]
   );
 
-  const value = useMemo<ToastContextValue>(() => ({ toast, dismiss }), [toast, dismiss]);
+  const value = useMemo<ToastContextValue>(
+    () => ({ toast, dismiss, toasts }),
+    [toast, dismiss, toasts]
+  );
 
   return (
     <ToastContext.Provider value={value}>

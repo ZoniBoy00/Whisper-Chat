@@ -2,6 +2,8 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { Settings, X } from "lucide-react";
 import type { Theme } from "../types";
 import { useI18n } from "../i18n/I18nContext";
+import { useToast } from "../hooks/useToast";
+import { ToastViewport } from "./Toast";
 import { AboutTab } from "./settings/AboutTab";
 import { GeneralTab } from "./settings/GeneralTab";
 import { LogsTab } from "./settings/LogsTab";
@@ -107,6 +109,7 @@ export function SettingsDialog({
   onClearHistory,
 }: SettingsDialogProps) {
   const { t } = useI18n();
+  const { toasts, dismiss } = useToast();
   const dialogRef = useRef<HTMLDialogElement>(null);
   // Incremented on every open; remounts the tab subtree so each tab re-seeds
   // its form from the latest settings (and resets validation/save flashes).
@@ -220,6 +223,10 @@ export function SettingsDialog({
           )}
         </SettingsTabs>
       </div>
+      {/* The dialog lives in the browser top layer, above every fixed
+          element — render the toast stack inside it so feedback from
+          settings actions stays visible. */}
+      <ToastViewport toasts={toasts} onDismiss={dismiss} />
     </dialog>
   );
 }

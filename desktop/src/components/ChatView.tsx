@@ -336,15 +336,7 @@ export function ChatView({
                 </p>
               ) : null}
             </div>
-            {isGroup ? (
-              <p className="mt-0.5 inline-flex items-center gap-1.5 text-sm font-medium text-wp-dim">
-                <Users className="h-3.5 w-3.5 text-wp-faint" aria-hidden="true" />
-                {conversation.memberCount
-                  ? `${t("common.members_count", { n: conversation.memberCount })} · `
-                  : ""}
-                {t("common.end_to_end_encrypted")}
-              </p>
-            ) : typingWriters.length > 0 ? (
+            {typingWriters.length > 0 ? (
               <p
                 aria-live="polite"
                 className="mt-0.5 inline-flex items-center gap-1.5 text-sm font-semibold text-wp-read"
@@ -366,6 +358,14 @@ export function ChatView({
                   <span className="typing-dot" />
                   <span className="typing-dot" />
                 </span>
+              </p>
+            ) : isGroup ? (
+              <p className="mt-0.5 inline-flex items-center gap-1.5 text-sm font-medium text-wp-dim">
+                <Users className="h-3.5 w-3.5 text-wp-faint" aria-hidden="true" />
+                {conversation.memberCount
+                  ? `${t("common.members_count", { n: conversation.memberCount })} · `
+                  : ""}
+                {t("common.end_to_end_encrypted")}
               </p>
             ) : presence ? (
               presence.online ? (
