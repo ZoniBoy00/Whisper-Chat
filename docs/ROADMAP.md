@@ -5,7 +5,7 @@
 > general-purpose chat — a WhatsApp/Signal/Telegram replacement without
 > backdoors or scanning mechanisms.
 >
-> **Date:** 2026-08-06 (updated: group read receipts, rename, system messages, daily logs + local time, autobackup, restart-proof sessions, CSP, CI hardening)
+> **Date:** 2026-08-06 (updated: disappearing messages + countdown, message editing, delete for everyone, group read receipts, rename, system messages, daily logs + local time, autobackup, restart-proof sessions, CSP, CI hardening)
 > **Status:** Phases 0–6.10 done — full local MVP; relay deployment to a real VPS is the next milestone
 > **Origin:** App specification + Gemini cross-check + Byte evaluation
 > **Working title (before branding):** Operation Ghost
@@ -274,9 +274,9 @@ impact and effort. Pull items into the phase table when they get scheduled.
 | ✅ Done | **Quoted replies** | tagged plaintext payload, composer reply bar, quoted bubble rendering |
 | ✅ Done | **Invite links + join links** | `whisper://invite` (profile preview popup) + `whisper://join` (group links with secret token, name + avatar in the link, join dialog) |
 | ✅ Done | **Safety number verification** | 60-digit + short tag + QR code + local verified flag (no server trust) |
-| 🔥 High | **Disappearing messages** | per-chat timer (off/5s/30s/1m/1h/1d), auto-delete both ends + server TTL |
-| 💪 Medium | **Message editing** | edit within a window; E2EE edit envelope |
-| 💪 Medium | **Delete for everyone** | E2EE delete receipt; the server drops queued copies |
+| ✅ Done | **Disappearing messages** | per-chat timer (off/5s/30s/1m/1h/1d), E2EE TTL, auto-delete both ends + live countdown |
+| ✅ Done | **Message editing** | E2EE edit envelope; composer edit bar; "(edited)" marker |
+| ✅ Done | **Delete for everyone** | E2EE delete envelope; local copy + recipients purge |
 | 💪 Medium | **Voice messages** | opus/WebM chunks over the encrypted media channel |
 | 💪 Medium | **Mute conversations** | per-chat notification mute (15m/1h/8h/forever) |
 | 💪 Medium | **Archived chats** | fold old conversations out of the list (unarchive on new message) |
@@ -297,6 +297,7 @@ impact and effort. Pull items into the phase table when they get scheduled.
 ## 13. Status & Next Steps (TODO)
 
 **✅ Done (2026-08-06):**
+- [x] Phase 6.9 follow-up: message editing + delete-for-everyone — `EditPayload`/`DeletePayload` E2EE control envelopes (Double Ratchet 1:1 + Megolm groups), `edited` flag + store migration, context-menu "Edit" with a composer edit bar, "(edited)" marker, own-message guard (`MessageNotFound`), `chat-message-edited`/`chat-message-deleted` events
 - [x] Phase 6.5: disappearing messages — per-chat timer (Off/5s/30s/1m/1h/1d) in the chat header, `expires_in_seconds` carried inside the encrypted `TextPayload` (the relay stays zero-knowledge), `messages.expires_at` + migration, 1s background purge loop, `chat-message-deleted` event, live countdown on both the sender's and the recipient's bubbles, `chat_settings` table persisting timers
 - [x] Group read receipts: Megolm `ReadPayload` read-by sets, `mark_read` fires only when messages are actually visible on screen (never on receipt), `readByCount` in the UI
 - [x] Group rename (`rename_group` wire) + WhatsApp-style "X joined/left the group" system messages + live member counts via `group-updated`
@@ -331,14 +332,13 @@ impact and effort. Pull items into the phase table when they get scheduled.
 - [x] Relay ops: structured logging (`RUST_LOG`-controllable, peer-ID level only) + graceful shutdown on Ctrl+C/SIGTERM
 - [x] Robustness fixes: FIFO→keyed request resolution (get_group_info), error-code→queue routing (stale groups evicted), legacy avatar sync, contact-only group cleanup
 
-**Test counts (2026-08-06):** 324 unit tests — e2ee-core 84, whisper-relay 141,
+**Test counts (2026-08-06):** 326 unit tests — e2ee-core 86, whisper-relay 141,
 whisper-desktop 99; smoke suite all green (reactions/replies/typing travel
 inside existing encrypted envelopes; invites/join links/avatar pushes added
 relay handlers with their own tests).
 
 **⏳ Next up:**
 - [ ] Deploy the relay to Hetzner (systemd unit ready) → real two-machine E2EE test
-- [ ] Phase 6.9 follow-up: message editing + delete-for-everyone (E2EE edit/delete receipts)
 - [ ] Production hardening: binary integrity check (devtools already disabled in release; no console)
 - [ ] At-rest encryption: build the Windows client with the SQLCipher codec (NASM + Perl toolchain) so the local history DB is encrypted — currently plain SQLite on stock Windows-MSVC builds (documented honestly in README)
 - [ ] Megolm key rotation in groups (periodic re-share) so a key leaked later cannot decrypt past group history (backward secrecy)
