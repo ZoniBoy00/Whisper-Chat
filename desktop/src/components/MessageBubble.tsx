@@ -34,7 +34,7 @@ function ExpiryTimer({ expiresAt, label }: { expiresAt: number; label: string })
   if (remaining <= 0) return null;
   return (
     <span
-      className="inline-flex items-center gap-0.5 text-[10px] font-medium tabular-nums text-wp-faint"
+      className="inline-flex items-center gap-0.5 text-xs font-semibold tabular-nums text-wp-faint"
       title={label}
       role="img"
       aria-label={label}
