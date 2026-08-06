@@ -20,10 +20,12 @@ interface InvitePreviewDialogProps {
   myPeerId: string;
 }
 
-/** Extract the target peer ID from a whisper:// deep link. */
+/** Extract the target peer ID from a whisper:// deep link. Accepts both the
+ *  `whisper://invite?peer=..` form and the browser-normalized
+ *  `whisper://invite/?peer=..` form. */
 function extractPeerIdFromLink(url: string): string | null {
   const match = url.match(
-    /^whisper:\/\/(?:invite|verify)\?[^]*\bpeer=([0-9a-f]{24})\b/i
+    /^whisper:\/\/(?:invite|verify)\/?\?[^]*\bpeer=([0-9a-f]{24})\b/i
   );
   return match ? match[1] : null;
 }

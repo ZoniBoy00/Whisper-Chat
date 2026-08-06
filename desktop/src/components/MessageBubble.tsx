@@ -1,4 +1,10 @@
-import { useState, type MouseEvent, type ReactNode } from "react";
+import {
+  useLayoutEffect,
+  useRef,
+  useState,
+  type MouseEvent,
+  type ReactNode,
+} from "react";
 import { Check, CheckCheck, SmilePlus } from "lucide-react";
 import type { Message } from "../types";
 import { cx, findMatches, formatTime, shortPeerId } from "../lib/format";
@@ -88,8 +94,41 @@ export function MessageBubble({
 }: MessageBubbleProps) {
   const { t } = useI18n();
   const { outgoing } = message;
-  // The inline reaction picker opens on the quick-reaction button click.
+  // The inline reaction picker opens on the quick-reaction button click. It is
+  // positioned fixed (viewport coordinates from the bubble's rect) so the chat
+  // list's overflow can never clip it.
+  const bubbleRef = useRef<HTMLDivElement>(null);
+  const pickerRef = useRef<HTMLDivElement>(null);
   const [pickerOpen, setPickerOpen] = useState(false);
+  const [pickerPos, setPickerPos] = useState<{ x: number; y: number } | null>(null);
+  const [pickerClamped, setPickerClamped] = useState<{ x: number; y: number } | null>(null);
+
+  const togglePicker = () => {
+    setPickerOpen((open) => {
+      const next = !open;
+      if (next && bubbleRef.current) {
+        const rect = bubbleRef.current.getBoundingClientRect();
+        setPickerPos({
+          x: rect.left + rect.width / 2,
+          y: rect.top,
+        });
+      }
+      return next;
+    });
+  };
+
+  // Measure the picker once and clamp it to the viewport so it never gets cut
+  // off by the window edge or the chat list's overflow.
+  useLayoutEffect(() => {
+    if (!pickerOpen || !pickerPos) return;
+    const el = pickerRef.current;
+    if (!el) return;
+    const rect = el.getBoundingClientRect();
+    setPickerClamped({
+      x: Math.max(8, Math.min(pickerPos.x - rect.width / 2, window.innerWidth - rect.width - 8)),
+      y: Math.max(8, Math.min(pickerPos.y - rect.height - 8, window.innerHeight - rect.height - 8)),
+    });
+  }, [pickerOpen, pickerPos]);
   // Read receipts: "sent" = single gray tick, "delivered" = double gray tick,
   // "read" = double blue tick.
   const read = outgoing && message.status === "read";
@@ -107,6 +146,7 @@ export function MessageBubble({
       )}
     >
       <div
+        ref={bubbleRef}
         className={cx(
           "max-w-[68%] rounded-2xl px-4 py-2.5 shadow-sm shadow-black/20",
           outgoing
@@ -160,9 +200,11 @@ export function MessageBubble({
             outgoing ? "justify-end" : "justify-start"
           )}
         >
-          {pickerOpen ? (
+          {pickerOpen && pickerClamped ? (
             <div
-              className="absolute bottom-full left-1/2 z-50 mb-1.5 flex -translate-x-1/2 items-center gap-0.5 rounded-full bg-wp-panel-2 p-1.5 shadow-2xl shadow-black/50 ring-1 ring-wp-line/10"
+              ref={pickerRef}
+              style={{ left: pickerClamped.x, top: pickerClamped.y }}
+              className="fixed z-50 flex items-center gap-0.5 rounded-full bg-wp-panel-2 p-1.5 shadow-2xl shadow-black/50 ring-1 ring-wp-line/10"
               role="menu"
               aria-label={t("chat.react_to_message")}
             >
@@ -185,7 +227,7 @@ export function MessageBubble({
           {onReact ? (
             <button
               type="button"
-              onClick={() => setPickerOpen((open) => !open)}
+              onClick={togglePicker}
               title={t("chat.add_reaction")}
               aria-label={t("chat.add_reaction")}
               aria-expanded={pickerOpen}
