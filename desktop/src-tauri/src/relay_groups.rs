@@ -770,11 +770,9 @@ impl RelayClient {
                 Ok(None)
             }
             e2ee_core::ParsedPayload::Text(text) => {
-                // Acknowledge end-to-end: tell the sender we read their group
-                // message. Best-effort like 1:1 receipts.
-                if let Some(message_id) = &text.message_id {
-                    let _ = self.send_group_read_receipt(group_id, message_id);
-                }
+                // No read receipt here: the UI sends it (via mark_read) once
+                // the message is actually visible on screen — never merely on
+                // receipt, so "read" matches what the user has opened.
                 Ok(Some(self.record_incoming(
                     group_id,
                     text.text,
