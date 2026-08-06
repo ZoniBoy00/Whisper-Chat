@@ -65,7 +65,9 @@ jobs:
     runs-on: ubuntu-latest
     # rustsec/audit-check creates a check-run; grant it write access so the
     # status check is actually created (otherwise it falls back to stdout).
+    # contents:read must stay, otherwise checkout in THIS job loses access.
     permissions:
+      contents: read
       checks: write
       issues: write
     steps:
