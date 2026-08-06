@@ -108,55 +108,13 @@ export function MessageBubble({
     >
       <div
         className={cx(
-          "relative max-w-[68%] rounded-2xl px-4 py-2.5 shadow-sm shadow-black/20",
+          "max-w-[68%] rounded-2xl px-4 py-2.5 shadow-sm shadow-black/20",
           outgoing
             ? "rounded-br-md bg-gradient-to-br from-wp-bubble-out-2 to-wp-bubble-out"
             : "rounded-bl-md bg-wp-bubble-in"
         )}
         onContextMenu={onContextMenu}
       >
-        {/* Quick-reaction button: always visible so reactions are discoverable. */}
-        {onReact ? (
-          <button
-            type="button"
-            onClick={() => setPickerOpen((open) => !open)}
-            title={t("chat.add_reaction")}
-            aria-label={t("chat.add_reaction")}
-            aria-expanded={pickerOpen}
-            className={cx(
-              "absolute -top-3 z-10 inline-flex h-6 w-6 items-center justify-center rounded-full bg-wp-panel-2 text-wp-dim shadow-md shadow-black/30 ring-1 ring-wp-line/10 transition hover:text-wp-accent active:scale-90",
-              outgoing ? "-left-3" : "-right-3"
-            )}
-          >
-            <SmilePlus className="h-3.5 w-3.5" aria-hidden="true" />
-          </button>
-        ) : null}
-        {/* Inline emoji picker (a child of the bubble, so hover stays true). */}
-        {pickerOpen ? (
-          <div
-            className={cx(
-              "absolute -top-11 z-20 flex items-center gap-0.5 rounded-full bg-wp-panel-2 p-1.5 shadow-xl shadow-black/40 ring-1 ring-wp-line/10",
-              outgoing ? "-left-3" : "-right-3"
-            )}
-            role="menu"
-            aria-label={t("chat.react_to_message")}
-          >
-            {REACTION_EMOJIS.map((emoji) => (
-              <button
-                key={emoji}
-                type="button"
-                role="menuitem"
-                onClick={() => {
-                  onReact?.(message, emoji);
-                  setPickerOpen(false);
-                }}
-                className="rounded-full px-0.5 py-0.5 text-lg leading-none transition hover:bg-wp-panel-3 active:scale-90"
-              >
-                {emoji}
-              </button>
-            ))}
-          </div>
-        ) : null}
         {message.quote ? (
           <div className="mb-2 rounded-lg border-l-2 border-wp-accent/60 bg-black/15 px-3 py-1.5">
             <p className="truncate text-xs font-semibold text-wp-accent">
@@ -193,13 +151,52 @@ export function MessageBubble({
           </span>
         </div>
       </div>
-      {reactions.length > 0 ? (
+      {/* Reaction row: quick-react button + pills, UNDER the bubble so nothing
+          gets clipped by the chat list or the window edge. */}
+      {onReact || reactions.length > 0 ? (
         <div
           className={cx(
-            "mt-0.5 flex max-w-[68%] flex-wrap gap-1",
+            "relative mt-0.5 flex max-w-[68%] flex-wrap items-center gap-1",
             outgoing ? "justify-end" : "justify-start"
           )}
         >
+          {pickerOpen ? (
+            <div
+              className="absolute bottom-full left-1/2 z-30 mb-1.5 flex -translate-x-1/2 items-center gap-0.5 rounded-full bg-wp-panel-2 p-1.5 shadow-xl shadow-black/40 ring-1 ring-wp-line/10"
+              role="menu"
+              aria-label={t("chat.react_to_message")}
+            >
+              {REACTION_EMOJIS.map((emoji) => (
+                <button
+                  key={emoji}
+                  type="button"
+                  role="menuitem"
+                  onClick={() => {
+                    onReact?.(message, emoji);
+                    setPickerOpen(false);
+                  }}
+                  className="rounded-full px-0.5 py-0.5 text-lg leading-none transition hover:bg-wp-panel-3 active:scale-90"
+                >
+                  {emoji}
+                </button>
+              ))}
+            </div>
+          ) : null}
+          {onReact ? (
+            <button
+              type="button"
+              onClick={() => setPickerOpen((open) => !open)}
+              title={t("chat.add_reaction")}
+              aria-label={t("chat.add_reaction")}
+              aria-expanded={pickerOpen}
+              className={cx(
+                "inline-flex h-6 w-6 items-center justify-center rounded-full bg-wp-panel-2 text-wp-dim shadow-sm shadow-black/20 ring-1 ring-wp-line/10 transition hover:text-wp-accent active:scale-90",
+                pickerOpen && "text-wp-accent ring-wp-accent/40"
+              )}
+            >
+              <SmilePlus className="h-3.5 w-3.5" aria-hidden="true" />
+            </button>
+          ) : null}
           {reactions.map(({ emoji, count, mine }) => (
             <button
               key={emoji}
