@@ -130,6 +130,8 @@ export const translations = {
     "chat.actions_for_message": "Actions for message from {name}",
     "chat.copy_text": "Copy Text",
     "chat.delete_for_me": "Delete for me",
+    "chat.edit": "Edit",
+    "chat.delete_for_everyone": "Delete for everyone",
     "chat.reply": "Reply",
     "chat.add_reaction": "Add reaction",
     "chat.react_to_message": "React to message",
@@ -158,6 +160,7 @@ export const translations = {
     "bubble.sent": "Sent",
     "bubble.react": "React",
     "bubble.disappearing": "Disappearing message",
+    "bubble.edited": "edited",
 
     // ---- Safety number ---------------------------------------------------
     "safety.title": "Safety number",
@@ -195,6 +198,8 @@ export const translations = {
     "composer.enter_for_newline": "Enter for a new line · Ctrl+Enter to send",
     "composer.replying_to": "Replying to {name}",
     "composer.cancel_reply": "Cancel reply",
+    "composer.editing_message": "Editing message",
+    "composer.cancel_edit": "Cancel edit",
     "composer.yourself": "You",
     "composer.unknown_sender": "Unknown sender",
 
@@ -599,6 +604,8 @@ export const translations = {
     "chat.actions_for_message": "Viestin toiminnot: {name}",
     "chat.copy_text": "Kopioi teksti",
     "chat.delete_for_me": "Poista minulta",
+    "chat.edit": "Muokkaa",
+    "chat.delete_for_everyone": "Poista kaikilta",
     "chat.date_today": "Tänään",
     "chat.date_yesterday": "Eilen",
     "chat.new_messages": "Uusia viestejä",
@@ -627,6 +634,7 @@ export const translations = {
     "bubble.sent": "Lähetetty",
     "bubble.react": "Reagoi",
     "bubble.disappearing": "Katoava viesti",
+    "bubble.edited": "muokattu",
 
     // ---- Safety number ---------------------------------------------------
     "safety.title": "Varmistusnumero",
@@ -663,6 +671,8 @@ export const translations = {
     "composer.message_aria": "Viesti",
     "composer.replying_to": "Vastataan: {name}",
     "composer.cancel_reply": "Peruuta vastaus",
+    "composer.editing_message": "Muokataan viestiä",
+    "composer.cancel_edit": "Peruuta muokkaus",
     "composer.yourself": "Sinä",
     "composer.unknown_sender": "Tuntematon lähettäjä",
     "composer.enter_for_newline": "Enter rivinvaihtoon · Ctrl+Enter lähettää",

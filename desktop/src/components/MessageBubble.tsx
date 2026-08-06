@@ -231,6 +231,11 @@ export function MessageBubble({
               label={t("bubble.disappearing")}
             />
           ) : null}
+          {message.edited ? (
+            <span className="text-xs font-medium text-wp-faint">
+              {t("bubble.edited")}
+            </span>
+          ) : null}
           <span className="text-sm font-medium tabular-nums">
             {formatTime(message.timestamp)}
           </span>

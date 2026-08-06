@@ -519,6 +519,40 @@ export function onMessageDeleted(
   );
 }
 
+/** Payload of the `chat-message-edited` event (a message's text was replaced
+ *  on every device). */
+export interface ChatMessageEditedEvent {
+  peer_id: string;
+  message_id: string;
+  text: string;
+}
+
+/** Subscribe to message edits. Returns an unlisten function. */
+export function onMessageEdited(
+  handler: (event: ChatMessageEditedEvent) => void
+): Promise<UnlistenFn> {
+  return listen<ChatMessageEditedEvent>("chat-message-edited", (event) =>
+    handler(event.payload)
+  );
+}
+
+/** Edit one of our own messages: replace its text on every device. */
+export function editMessageCommand(
+  peerId: string,
+  messageId: string,
+  newText: string
+): Promise<void> {
+  return invoke("edit_message", { peerId, messageId, newText });
+}
+
+/** Delete one of our own messages on every device. */
+export function deleteForEveryoneCommand(
+  peerId: string,
+  messageId: string
+): Promise<void> {
+  return invoke("delete_for_everyone", { peerId, messageId });
+}
+
 /** Set (or clear, with 0) the disappearing-message timer for a chat. */
 export function setChatExpirationCommand(
   peerId: string,

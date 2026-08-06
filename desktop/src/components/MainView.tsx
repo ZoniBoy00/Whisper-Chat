@@ -491,6 +491,22 @@ export function MainView({ peerId, onReset }: MainViewProps) {
     [chat.activePeerId, chat.deleteMessage]
   );
 
+  /** "Edit" from the message context menu: replace the text on every device. */
+  const handleEditMessage = useCallback(
+    (messageId: string, newText: string) => {
+      if (chat.activePeerId) void chat.editMessage(chat.activePeerId, messageId, newText);
+    },
+    [chat.activePeerId, chat.editMessage]
+  );
+
+  /** "Delete for everyone" from the message context menu. */
+  const handleDeleteForEveryone = useCallback(
+    (messageId: string) => {
+      if (chat.activePeerId) void chat.deleteForEveryone(chat.activePeerId, messageId);
+    },
+    [chat.activePeerId, chat.deleteForEveryone]
+  );
+
   // ---- Group chat wiring --------------------------------------------------
 
   /** Create a group with the given name and members, then resync so the chat
@@ -756,6 +772,8 @@ export function MainView({ peerId, onReset }: MainViewProps) {
           active?.isGroup ? () => setGroupInfoGroupId(active.peerId) : undefined
         }
         onDeleteMessage={handleDeleteMessage}
+        onEditMessage={handleEditMessage}
+        onDeleteForEveryone={handleDeleteForEveryone}
         onReact={(messageId, emoji, activeState) =>
           chat.reactToMessage(
             chat.activePeerId ?? "",

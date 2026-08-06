@@ -26,6 +26,8 @@
 
 #[path = "relay_contacts.rs"]
 mod relay_contacts;
+#[path = "relay_edits.rs"]
+mod relay_edits;
 #[path = "relay_group_invites.rs"]
 mod relay_group_invites;
 #[path = "relay_groups.rs"]
@@ -59,9 +61,9 @@ use tokio::sync::{mpsc, oneshot};
 use tokio_tungstenite::tungstenite::Message as WsMessage;
 
 use e2ee_core::{
-    parse_plaintext, ChatPayload, ChatSession, Envelope, EnvelopeContent, Handshake, Identity,
-    InboundGroup, Message, OutboundGroup, ParsedPayload, PreKeyBundle, Quote, ReactionPayload,
-    ReceiptKind, TextPayload,
+    parse_plaintext, ChatPayload, ChatSession, DeletePayload, EditPayload, Envelope,
+    EnvelopeContent, Handshake, Identity, InboundGroup, Message, OutboundGroup, ParsedPayload,
+    PreKeyBundle, Quote, ReactionPayload, ReceiptKind, TextPayload,
 };
 use vodozemac::olm::OlmMessage;
 
@@ -136,6 +138,10 @@ pub enum RelayError {
     /// No ratchet session exists with the given peer.
     #[error("no session with peer {0}")]
     NoSession(String),
+    /// A message edit/delete targeted a message we do not own (or that does
+    /// not exist in the given thread).
+    #[error("message {1} not found in thread {0}")]
+    MessageNotFound(String, String),
     /// The peer ID equals our own identity.
     #[error("refusing to chat with yourself")]
     InvalidPeer(String),
@@ -667,6 +673,10 @@ pub struct UIMessage {
     /// both ends; `None` for regular messages that persist forever.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub expires_at: Option<u64>,
+    /// Whether the message text was edited after sending; the UI renders a
+    /// small "edited" marker next to the timestamp.
+    #[serde(default)]
+    pub edited: bool,
 }
 
 /// One emoji reaction attached to a message by a peer.
@@ -718,6 +728,15 @@ pub struct ChatMessageEvent {
 pub struct ChatMessageDeletedEvent {
     pub peer_id: String,
     pub message_ids: Vec<String>,
+}
+
+/// Payload of the `chat-message-edited` event emitted when a message's text is
+/// replaced (incoming edit, or the sender's own optimistic apply).
+#[derive(Debug, Clone, Serialize)]
+pub struct ChatMessageEditedEvent {
+    pub peer_id: String,
+    pub message_id: String,
+    pub text: String,
 }
 
 /// Payload of the `relay-status` event emitted on connect/disconnect.
@@ -2240,6 +2259,14 @@ impl RelayClient {
                         )?;
                         Ok(None)
                     }
+                    ParsedPayload::Edit(edit) => {
+                        self.handle_edit(&sender, &edit.message_id, &edit.text)?;
+                        Ok(None)
+                    }
+                    ParsedPayload::Delete(delete) => {
+                        self.handle_delete(&sender, &delete.message_id)?;
+                        Ok(None)
+                    }
                     ParsedPayload::Typing(_) => Ok(None),
                     ParsedPayload::Read(_) => Ok(None),
                 }
@@ -2310,6 +2337,14 @@ impl RelayClient {
                             &reaction.emoji,
                             reaction.active,
                         )?;
+                        Ok(None)
+                    }
+                    ParsedPayload::Edit(edit) => {
+                        self.handle_edit(&sender, &edit.message_id, &edit.text)?;
+                        Ok(None)
+                    }
+                    ParsedPayload::Delete(delete) => {
+                        self.handle_delete(&sender, &delete.message_id)?;
                         Ok(None)
                     }
                     // A group-style typing payload in a 1:1 session is
@@ -2717,6 +2752,7 @@ impl RelayClient {
             system: None,
             read_by: Vec::new(),
             expires_at,
+            edited: false,
         };
         self.ensure_contact(peer_id)?;
         write_guard(&self.inner.messages)?
@@ -2781,6 +2817,7 @@ impl RelayClient {
             system: None,
             read_by: Vec::new(),
             expires_at,
+            edited: false,
         };
         write_guard(&self.inner.messages)?
             .entry(peer_id.to_string())
@@ -3461,6 +3498,7 @@ mod tests {
                 system: None,
                 read_by: Vec::new(),
                 expires_at: None,
+                edited: false,
             }],
         );
 
@@ -3486,6 +3524,7 @@ mod tests {
                 system: None,
                 read_by: Vec::new(),
                 expires_at: None,
+                edited: false,
             }],
         );
 
@@ -3512,6 +3551,7 @@ mod tests {
                 system: None,
                 read_by: Vec::new(),
                 expires_at: None,
+                edited: false,
             }],
         );
 
@@ -3535,6 +3575,7 @@ mod tests {
                 system: None,
                 read_by: Vec::new(),
                 expires_at: None,
+                edited: false,
             }],
         );
 
@@ -3637,6 +3678,7 @@ mod tests {
             system: None,
             read_by: Vec::new(),
             expires_at: None,
+            edited: false,
         };
         let json = serde_json::to_value(&message).expect("serialize");
         assert_eq!(json["quote"]["message_id"], "m-0");
@@ -3657,6 +3699,7 @@ mod tests {
             system: None,
             read_by: Vec::new(),
             expires_at: None,
+            edited: false,
         };
         let json = serde_json::to_value(&message).expect("serialize");
         assert!(json.get("quote").is_none(), "absent quote must be skipped");

@@ -24,6 +24,9 @@ export interface Message {
   /** Epoch milliseconds at which this disappearing message auto-deletes on
    *  both ends; undefined for regular messages that persist forever. */
   expires_at?: number;
+  /** Whether the message text was edited after sending; the UI renders a
+   *  small "edited" marker next to the timestamp. */
+  edited?: boolean;
 }
 
 /** The quoted message a reply refers to (snapshot sent inside the encrypted
