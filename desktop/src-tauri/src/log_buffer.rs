@@ -191,10 +191,13 @@ pub fn init_tracing(buffer: &LogBuffer, log_dir: Option<PathBuf>) {
         .with(capture_layer);
     if let Some(dir) = log_dir {
         if let Ok(file) = open_daily_log(&dir) {
-            // Same format as stderr so a pasted file matches the Logs tab.
+            // Same format as stderr so a pasted file matches the Logs tab, but
+            // WITHOUT ANSI colours — the escape codes would make the file
+            // unreadable in a plain text editor / GitHub issue.
             let file_layer = tracing_subscriber::fmt::layer()
                 .with_writer(file)
                 .with_target(true)
+                .with_ansi(false)
                 .with_filter(LevelFilter::INFO);
             let _ = registry.with(file_layer).try_init();
             return;
