@@ -211,6 +211,19 @@ export function importIdentity(): Promise<string> {
   return invoke("import_identity");
 }
 
+/** Export EVERYTHING — identity + the encrypted local database (history,
+ *  sessions, contacts, settings) — as one JSON backup file. Resolves with
+ *  the destination path. */
+export function exportEverything(): Promise<string> {
+  return invoke("export_everything");
+}
+
+/** Import a Whisper backup from `exportEverything`. The frontend must reload
+ *  the webview afterwards for the restored profile to take effect. */
+export function importEverything(): Promise<string> {
+  return invoke("import_everything");
+}
+
 /** Drop the cached identity so the next connect reloads it from disk. */
 export function reloadIdentity(): Promise<void> {
   return invoke("reload_identity");

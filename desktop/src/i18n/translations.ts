@@ -369,6 +369,8 @@ export const translations = {
     "general.identity_backup_hint":
       "Back up your identity file so you can restore your Whisper ID and keys on another device or after a reinstall.",
     "general.backup_identity": "Backup identity",
+    "general.backup_everything": "Backup everything",
+    "general.restore_everything": "Restore everything",
     "general.restore_identity": "Restore identity",
     "general.restore_identity_warn":
       "Restoring replaces your current identity and requires an app restart.",
@@ -445,6 +447,9 @@ export const translations = {
     "toast.history_cleared": "Chat history cleared",
     "toast.identity_exported": "Identity backed up",
     "toast.identity_imported": "Identity restored",
+    "toast.backup_exported": "Full backup saved",
+    "toast.backup_imported": "Backup restored",
+    "toast.backup_import_restart": "Restarting to apply…",
     "toast.identity_import_restart":
       "Restarting to apply your restored identity\u2026",
     "toast.autostart_enabled": "Will open Whisper at startup",
@@ -809,6 +814,8 @@ export const translations = {
     "general.identity_backup_hint":
       "Varmuuskopioi henkilöllisyystiedostosi, jotta voit palauttaa Whisper-ID:n ja avaimesi toiselle laitteelle tai uudelleenasennuksen jälkeen.",
     "general.backup_identity": "Varmuuskopioi henkilöllisyys",
+    "general.backup_everything": "Varmuuskopioi kaikki",
+    "general.restore_everything": "Palauta kaikki",
     "general.restore_identity": "Palauta henkilöllisyys",
     "general.restore_identity_warn":
       "Palautus korvaa nykyisen henkilöllisyytesi ja edellyttää sovelluksen uudelleenkäynnistystä.",
@@ -886,6 +893,9 @@ export const translations = {
     "toast.history_cleared": "Keskusteluhistoria tyhjennetty",
     "toast.identity_exported": "Henkilöllisyys varmuuskopioitu",
     "toast.identity_imported": "Henkilöllisyys palautettu",
+    "toast.backup_exported": "Täysi varmuuskopio tallennettu",
+    "toast.backup_imported": "Varmuuskopio palautettu",
+    "toast.backup_import_restart": "Käynnistetään uudelleen…",
     "toast.identity_import_restart":
       "Käynnistetään uudelleen palautetun henkilöllisyyden käyttöönottamiseksi…",
     "toast.autostart_enabled": "Whisper avautuu kirjautumisen yhteydessä",

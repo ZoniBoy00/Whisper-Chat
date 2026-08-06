@@ -101,6 +101,9 @@ interface GeneralTabProps {
   /** Back up / restore the identity file through a native file dialog. */
   onExportIdentity: () => Promise<void>;
   onImportIdentity: () => Promise<void>;
+  /** Export/import the whole profile (identity + encrypted database). */
+  onExportEverything: () => Promise<void>;
+  onImportEverything: () => Promise<void>;
 }
 
 /** Message font scale options; labels are translated through `t`. */
@@ -134,6 +137,8 @@ export function GeneralTab({
   onMessageFontScaleChange,
   onExportIdentity,
   onImportIdentity,
+  onExportEverything,
+  onImportEverything,
 }: GeneralTabProps) {
   const { t, language, setLanguage } = useI18n();
   const { toast } = useToast();
@@ -777,6 +782,22 @@ export function GeneralTab({
             >
               <Upload className="h-3.5 w-3.5" aria-hidden="true" />
               {t("general.restore_identity")}
+            </button>
+            <button
+              type="button"
+              onClick={() => void onExportEverything()}
+              className="inline-flex items-center gap-2 rounded-xl bg-wp-panel-2 px-4 py-2.5 text-xs font-semibold text-wp-text transition hover:bg-wp-panel-3"
+            >
+              <Download className="h-3.5 w-3.5" aria-hidden="true" />
+              {t("general.backup_everything")}
+            </button>
+            <button
+              type="button"
+              onClick={() => void onImportEverything()}
+              className="inline-flex items-center gap-2 rounded-xl bg-wp-panel-2 px-4 py-2.5 text-xs font-semibold text-wp-text transition hover:bg-wp-panel-3"
+            >
+              <Upload className="h-3.5 w-3.5" aria-hidden="true" />
+              {t("general.restore_everything")}
             </button>
           </div>
         </div>
