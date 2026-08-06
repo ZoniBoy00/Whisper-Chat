@@ -261,6 +261,10 @@ export function useChatState({
   // it to decide whether an incoming message counts as unread.
   const activePeerIdRef = useRef<string | null>(null);
   activePeerIdRef.current = activePeerId;
+  // Group roster names for the group-removed toast (the lists are purged
+  // before the toast text is built, so a ref keeps the name readable).
+  const groupsRef = useRef<GroupInfo[]>([]);
+  groupsRef.current = groups;
 
   /** Switch the active conversation; opening one clears its unread badge. */
   const setActivePeerId = useCallback<Dispatch<SetStateAction<string | null>>>(
@@ -599,6 +603,9 @@ export function useChatState({
           // and close the conversation if it was open. This is an online-only
           // push in the MVP — an offline member learns about the removal on
           // its next connect, when the relay stops listing it as a member.
+          // Grab the group name BEFORE the lists are purged, so the toast can
+          // say which group removed us.
+          const groupName = groupsRef.current.find((g) => g.group_id === group_id)?.name;
           setContacts((prev) => prev.filter((c) => c.peer_id !== group_id));
           setGroups((prev) => prev.filter((g) => g.group_id !== group_id));
           setMessages((prev) => {
@@ -614,7 +621,10 @@ export function useChatState({
             return next;
           });
           setActivePeerId((prev) => (prev === group_id ? null : prev));
-          toast(t("toast.group_removed"), "error");
+          toast(
+            t("toast.group_removed", { name: groupName ?? shortPeerId(group_id, 16) }),
+            "error"
+          );
         })
       );
       const friendRequestUnlisten = await register(() =>

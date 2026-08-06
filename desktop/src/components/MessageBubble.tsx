@@ -225,9 +225,9 @@ export function MessageBubble({
               aria-label={read ? t("bubble.read") : delivered ? t("bubble.delivered") : t("bubble.sent")}
             />
           ) : null}
-          {message.expiresAt ? (
+          {message.expires_at ? (
             <ExpiryTimer
-              expiresAt={message.expiresAt}
+              expiresAt={message.expires_at}
               label={t("bubble.disappearing")}
             />
           ) : null}
