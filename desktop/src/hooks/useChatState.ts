@@ -748,6 +748,9 @@ export function useChatState({
       // Optimistic insertion; the backend echoes the same client id in the
       // `chat-message` event, which the dedup logic above ignores. The status
       // flips to "delivered" on the relay ack and "read" on a read receipt.
+      // The disappearing-message deadline is mirrored here so the sender's own
+      // bubble shows the countdown immediately (the echo is deduped away).
+      const expireSeconds = chatExpirations[peerId] ?? 0;
       setMessages((prev) => ({
         ...prev,
         [peerId]: [
@@ -759,6 +762,8 @@ export function useChatState({
             timestamp: Date.now(),
             status: "sent",
             quote: quote ?? undefined,
+            expires_at:
+              expireSeconds > 0 ? Date.now() + expireSeconds * 1000 : undefined,
           },
         ],
       }));
@@ -783,7 +788,7 @@ export function useChatState({
         }
       }
     },
-    [toast, t]
+    [toast, t, chatExpirations]
   );
 
   /** React to a message (or un-react, per the caller-computed `active` state).
