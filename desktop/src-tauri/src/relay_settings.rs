@@ -197,11 +197,7 @@ impl RelayClient {
     /// actually opened: a 1:1 Double Ratchet receipt, or a Megolm group read
     /// receipt for the newest visible message. Called by the UI when incoming
     /// messages become visible on screen — never automatically on receipt.
-    pub fn mark_read(
-        &self,
-        peer_id: &str,
-        message_id: Option<String>,
-    ) -> Result<(), RelayError> {
+    pub fn mark_read(&self, peer_id: &str, message_id: Option<String>) -> Result<(), RelayError> {
         if !read_guard(&self.inner.settings)?.read_receipts {
             return Ok(());
         }

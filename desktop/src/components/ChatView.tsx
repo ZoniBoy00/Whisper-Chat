@@ -277,6 +277,28 @@ export function ChatView({
     ? searchMatches[currentMatch] ?? null
     : null;
 
+  // Mark the conversation read end-to-end once its incoming messages are
+  // actually visible on screen (not merely received). Fires once per newest
+  // incoming message / per conversation open. Must live with the other hooks,
+  // BEFORE the early `if (!conversation)` return.
+  const lastMarkedReadRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!conversation) return;
+    const latestIncoming = [...conversation.messages]
+      .reverse()
+      .find((m) => !m.outgoing);
+    if (!latestIncoming) return;
+    const key = conversation.isGroup
+      ? `g:${latestIncoming.id}`
+      : `1:${conversation.peerId}`;
+    if (lastMarkedReadRef.current === key) return;
+    lastMarkedReadRef.current = key;
+    onMarkRead(
+      conversation.peerId,
+      conversation.isGroup ? latestIncoming.id : null
+    );
+  }, [conversation, onMarkRead]);
+
   if (!conversation) {
     return (
       <main className="flex min-w-0 flex-1 flex-col items-center justify-center gap-4 bg-wp-bg px-8">
@@ -303,24 +325,6 @@ export function ChatView({
     ? mediaUrl(relayUrl, conversation.avatarUrl)
     : null;
   const headerClick = isGroup ? onOpenGroupInfo : onOpenProfile;
-
-  // Mark the conversation read end-to-end once its incoming messages are
-  // actually visible on screen (not merely received). Fires once per newest
-  // incoming message / per conversation open.
-  const lastMarkedReadRef = useRef<string | null>(null);
-  useEffect(() => {
-    if (!conversation) return;
-    const latestIncoming = [...conversation.messages]
-      .reverse()
-      .find((m) => !m.outgoing);
-    if (!latestIncoming) return;
-    const key = isGroup
-      ? `g:${latestIncoming.id}`
-      : `1:${conversation.peerId}`;
-    if (lastMarkedReadRef.current === key) return;
-    lastMarkedReadRef.current = key;
-    onMarkRead(conversation.peerId, isGroup ? latestIncoming.id : null);
-  }, [conversation, isGroup, onMarkRead]);
 
   return (
     <main className="flex min-w-0 flex-1 flex-col bg-wp-bg">
