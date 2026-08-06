@@ -156,8 +156,8 @@ export function ProfileDialog({
         close();
       }}
     >
-      <div className="w-[min(92vw,22rem)] rounded-2xl bg-wp-panel-2">
-        <div className="relative flex flex-col items-center px-5 pb-5 pt-7">
+      <div className="flex max-h-[inherit] w-[min(92vw,22rem)] flex-col overflow-hidden rounded-2xl bg-wp-panel-2">
+        <div className="relative flex shrink-0 flex-col items-center px-5 pb-4 pt-7">
           <button
             type="button"
             onClick={close}
@@ -202,7 +202,7 @@ export function ProfileDialog({
 
         {/* Lower section scrolls so short windows never clip the action
             buttons; the header (avatar, name, presence) stays fixed. */}
-        <div className="max-h-[60vh] space-y-4 overflow-y-auto border-t border-wp-line/10 px-5 py-5">
+        <div className="min-h-0 flex-1 space-y-4 overflow-y-auto border-t border-wp-line/10 px-5 py-5">
           {/* Whisper ID + copy */}
           <div>
             <p className="text-xs font-medium text-wp-dim">{t("common.whisper_id")}</p>
