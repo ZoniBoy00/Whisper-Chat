@@ -1,5 +1,5 @@
 import { useRef, useState, type MouseEvent, type ReactNode } from "react";
-import { Check, CheckCheck, SmilePlus } from "lucide-react";
+import { Check, CheckCheck, SmilePlus, Timer } from "lucide-react";
 import type { Message } from "../types";
 import { cx, findMatches, formatTime, shortPeerId } from "../lib/format";
 import { useI18n } from "../i18n/I18nContext";
@@ -183,6 +183,14 @@ export function MessageBubble({
               strokeWidth={2.4}
               role="img"
               aria-label={read ? t("bubble.read") : delivered ? t("bubble.delivered") : t("bubble.sent")}
+            />
+          ) : null}
+          {message.expiresAt ? (
+            <Timer
+              className="h-3.5 w-3.5"
+              strokeWidth={2.2}
+              role="img"
+              aria-label={t("bubble.disappearing")}
             />
           ) : null}
           <span className="text-xs font-medium tabular-nums">

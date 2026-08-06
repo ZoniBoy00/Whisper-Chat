@@ -71,6 +71,9 @@ pub(crate) struct GroupSend {
     pub quote: Option<e2ee_core::Quote>,
     pub message_id: Option<String>,
     pub display_text: Option<String>,
+    /// Disappearing-message deadline (epoch millis) for the optimistic record;
+    /// `None` for persistent messages.
+    pub expires_at: Option<u64>,
 }
 
 impl RelayClient {
@@ -551,6 +554,7 @@ impl RelayClient {
                 quote: None,
                 message_id: None,
                 display_text: None,
+                expires_at: None,
             },
         )
     }
@@ -575,6 +579,7 @@ impl RelayClient {
                 quote: None,
                 message_id: None,
                 display_text: None,
+                expires_at: None,
             },
         )
     }
@@ -633,12 +638,20 @@ impl RelayClient {
                 .display_text
                 .unwrap_or_else(|| String::from_utf8_lossy(plaintext).into_owned());
             let msg = match options.message_id {
-                Some(id) => {
-                    self.record_outgoing_with_id(group_id, id, &shown_text, options.quote)?
-                }
-                None => {
-                    self.record_outgoing(group_id, &shown_text, &options.client_id, options.quote)?
-                }
+                Some(id) => self.record_outgoing_with_id(
+                    group_id,
+                    id,
+                    &shown_text,
+                    options.quote,
+                    options.expires_at,
+                )?,
+                None => self.record_outgoing(
+                    group_id,
+                    &shown_text,
+                    &options.client_id,
+                    options.quote,
+                    options.expires_at,
+                )?,
             };
             self.record_pending_ack(seq, &msg.id)?;
             Some(msg)
@@ -796,6 +809,7 @@ impl RelayClient {
                     text.text,
                     text.quote,
                     text.message_id,
+                    text.expires_in_seconds,
                 )?))
             }
         }
@@ -819,6 +833,7 @@ impl RelayClient {
                 quote: None,
                 message_id: None,
                 display_text: None,
+                expires_at: None,
             },
         )
     }
@@ -1284,6 +1299,7 @@ impl RelayClient {
                 peer_id: peer_id.to_string(),
             }),
             read_by: Vec::new(),
+            expires_at: None,
         };
         write_guard(&self.inner.messages)?
             .entry(group_id.to_string())

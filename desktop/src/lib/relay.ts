@@ -503,6 +503,30 @@ export function onTyping(
   return listen<TypingEvent>("typing", (event) => handler(event.payload));
 }
 
+/** Payload of the `chat-message-deleted` event (disappearing messages that
+ *  expired and were purged by the backend). */
+export interface ChatMessageDeletedEvent {
+  peer_id: string;
+  message_ids: string[];
+}
+
+/** Subscribe to disappearing-message expirations. Returns an unlisten fn. */
+export function onMessageDeleted(
+  handler: (event: ChatMessageDeletedEvent) => void
+): Promise<UnlistenFn> {
+  return listen<ChatMessageDeletedEvent>("chat-message-deleted", (event) =>
+    handler(event.payload)
+  );
+}
+
+/** Set (or clear, with 0) the disappearing-message timer for a chat. */
+export function setChatExpirationCommand(
+  peerId: string,
+  seconds: number
+): Promise<void> {
+  return invoke("set_chat_expiration", { peerId, seconds });
+}
+
 /** Payload of the `message-read-by` event (a member read our group message). */
 export interface MessageReadByEvent {
   group_id: string;

@@ -141,6 +141,14 @@ export const translations = {
     "chat.search_placeholder": "Search in chat",
     "chat.search_aria": "Search messages",
     "chat.search_no_results": "No matches found",
+    "chat.expiry_toggle": "Disappearing messages: {label}",
+    "chat.expiry_title": "Disappearing messages",
+    "chat.expiry_off": "Off",
+    "chat.expiry_5s": "5 seconds",
+    "chat.expiry_30s": "30 seconds",
+    "chat.expiry_1m": "1 minute",
+    "chat.expiry_1h": "1 hour",
+    "chat.expiry_1d": "1 day",
     "chat.search_prev_aria": "Previous match",
     "chat.search_next_aria": "Next match",
 
@@ -149,6 +157,7 @@ export const translations = {
     "bubble.delivered": "Delivered",
     "bubble.sent": "Sent",
     "bubble.react": "React",
+    "bubble.disappearing": "Disappearing message",
 
     // ---- Safety number ---------------------------------------------------
     "safety.title": "Safety number",
@@ -598,6 +607,14 @@ export const translations = {
     "chat.search_placeholder": "Hae keskustelusta",
     "chat.search_aria": "Hae viestejä",
     "chat.search_no_results": "Ei osumia",
+    "chat.expiry_toggle": "Katoavat viestit: {label}",
+    "chat.expiry_title": "Katoavat viestit",
+    "chat.expiry_off": "Pois",
+    "chat.expiry_5s": "5 sekuntia",
+    "chat.expiry_30s": "30 sekuntia",
+    "chat.expiry_1m": "1 minuutti",
+    "chat.expiry_1h": "1 tunti",
+    "chat.expiry_1d": "1 päivä",
     "chat.search_prev_aria": "Edellinen osuma",
     "chat.search_next_aria": "Seuraava osuma",
     "chat.reply": "Vastaa",
@@ -609,6 +626,7 @@ export const translations = {
     "bubble.delivered": "Toimitettu",
     "bubble.sent": "Lähetetty",
     "bubble.react": "Reagoi",
+    "bubble.disappearing": "Katoava viesti",
 
     // ---- Safety number ---------------------------------------------------
     "safety.title": "Varmistusnumero",

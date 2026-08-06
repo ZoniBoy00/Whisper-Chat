@@ -519,6 +519,7 @@ mod tests {
                 display_name: Some("Alice Prime".into()),
             }],
             friend_requests_outgoing: vec!["bob".into()],
+            chat_expirations: HashMap::new(),
         };
         let json = serde_json::to_value(state).expect("serialize");
         assert_eq!(json["friend_requests_incoming"][0]["peer_id"], "alice");

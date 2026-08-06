@@ -486,6 +486,7 @@ mod tests {
                     reactions: Vec::new(),
                     system: None,
                     read_by: Vec::new(),
+                    expires_at: None,
                 },
                 UIMessage {
                     id: "delivered-1".into(),
@@ -497,6 +498,7 @@ mod tests {
                     reactions: Vec::new(),
                     system: None,
                     read_by: Vec::new(),
+                    expires_at: None,
                 },
             ],
         );
@@ -513,6 +515,7 @@ mod tests {
                 reactions: Vec::new(),
                 system: None,
                 read_by: Vec::new(),
+                expires_at: None,
             }],
         );
 
@@ -539,6 +542,7 @@ mod tests {
                     reactions: Vec::new(),
                     system: None,
                     read_by: Vec::new(),
+                    expires_at: None,
                 },
                 UIMessage {
                     id: "read-1".into(),
@@ -550,6 +554,7 @@ mod tests {
                     reactions: Vec::new(),
                     system: None,
                     read_by: Vec::new(),
+                    expires_at: None,
                 },
             ],
         );
@@ -575,6 +580,7 @@ mod tests {
                 reactions: Vec::new(),
                 system: None,
                 read_by: Vec::new(),
+                expires_at: None,
             }],
         );
 
