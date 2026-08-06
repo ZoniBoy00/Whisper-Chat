@@ -343,6 +343,8 @@ relay handlers with their own tests).
 - [ ] Public repo (open source) once remote testing is solid
 
 **✅ Done (2026-08-06):**
+- [x] Contact rehydration: new `list_contacts` wire command — the client fetches its accepted contacts from the relay on every connect and merges them into memory + store, so a database reset/restore/fresh install never loses the contact list again (relay is the source of truth for friendships)
+- [x] CI `concurrency` group (per-branch, cancel-in-progress) so fast pushes do not queue stale runs
 - [x] At-rest encryption: Windows client now builds with `bundled-sqlcipher-vendored-openssl` — the local history DB is SQLCipher-encrypted with an identity-derived key (statically linked; users need no extra installs). Build requires NASM + Perl on PATH (MSYS2). Breaking change: pre-existing plain-SQLite databases cannot be opened (keyed DBs only)
 - [x] Megolm key rotation: group outbound sessions rotate to a fresh key every 200 messages; the new key is queued on the outbox BEFORE the triggering message so recipients swap inbounds in time; backward secrecy (a leaked key cannot decrypt post-rotation messages)
 - [x] Phase 6.9 follow-up: message editing + delete-for-everyone — `EditPayload`/`DeletePayload` E2EE control envelopes (Double Ratchet 1:1 + Megolm groups), `edited` flag + store migration, context-menu "Edit" with a composer edit bar, "(edited)" marker, own-message guard (`MessageNotFound`), `chat-message-edited`/`chat-message-deleted` events

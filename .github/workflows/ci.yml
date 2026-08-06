@@ -13,6 +13,12 @@ on:
 permissions:
   contents: read
 
+# Fast pushes during active development queue a run per commit; cancel the
+# in-flight one so the runner pool is not wasted on stale code.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   test:
     name: Test
