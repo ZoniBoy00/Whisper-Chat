@@ -297,6 +297,15 @@ export function sendTyping(peerId: string, isTyping: boolean): Promise<void> {
   return invoke("send_typing", { peerId, isTyping });
 }
 
+/** Mark a conversation as read end-to-end once its messages are visible on
+ *  screen: a 1:1 receipt, or a group read receipt for `messageId`. */
+export function sendReadReceipt(
+  peerId: string,
+  messageId?: string | null
+): Promise<void> {
+  return invoke("send_read_receipt", { peerId, messageId });
+}
+
 /** Fetch a peer's current presence (online status + last-seen timestamp). */
 export function getPresence(peerId: string): Promise<PresenceInfo> {
   return invoke("get_presence", { peerId });

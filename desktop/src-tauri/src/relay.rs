@@ -2215,16 +2215,10 @@ impl RelayClient {
                 self.save_sessions()?;
                 match parse_plaintext(&plaintext) {
                     ParsedPayload::Text(text) => {
-                        // Acknowledging the message end-to-end: encrypt a read
-                        // receipt with the same (now-advanced) session.
-                        // Best-effort so a transient send failure never drops
-                        // the plaintext message. When read receipts are
-                        // disabled we do NOT emit one — but receipts the peer
-                        // sends us are still shown (like WhatsApp: the toggle
-                        // only stops us from sending).
-                        if read_guard(&self.inner.settings)?.read_receipts {
-                            let _ = self.send_receipt(&sender, ReceiptKind::Read);
-                        }
+                        // No automatic read receipt here: it is sent by the UI
+                        // once the message is actually visible on screen (see
+                        // `mark_read`), so we never report "read" for messages
+                        // the user has not opened yet.
                         Ok(Some((
                             sender.clone(),
                             self.record_incoming(&sender, text.text, text.quote, text.message_id)?,

@@ -803,6 +803,20 @@ async fn set_display_name(state: State<'_, RelayClient>, name: String) -> Result
     state.set_display_name(&name).map_err(|e| e.to_string())
 }
 
+/// Send an end-to-end read receipt for a conversation that is visible on
+/// screen: a 1:1 receipt, or a group read receipt for `message_id` (the
+/// newest visible incoming message in a group).
+#[tauri::command]
+async fn send_read_receipt(
+    state: State<'_, RelayClient>,
+    peer_id: String,
+    message_id: Option<String>,
+) -> Result<(), String> {
+    state
+        .mark_read(&peer_id, message_id)
+        .map_err(|e| e.to_string())
+}
+
 /// Send an end-to-end typing indicator to a peer (encrypted in the session).
 #[tauri::command]
 async fn send_typing(
@@ -1176,6 +1190,7 @@ pub fn run() {
             clear_chat_history,
             set_display_name,
             send_typing,
+            send_read_receipt,
             get_presence,
             register_profile,
             search_users,
