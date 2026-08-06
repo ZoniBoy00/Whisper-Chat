@@ -55,6 +55,25 @@ const MAX_VISIBLE_TOASTS = 5;
 export function ToastProvider({ children }: { children: ReactNode }) {
   const [toasts, setToasts] = useState<ToastItem[]>([]);
   const nextId = useRef(1);
+  // Native <dialog> elements live in the browser top layer, above every fixed
+  // element. Open dialogs render their OWN toast viewport (so feedback stays
+  // visible on top of them); while any dialog is open the global viewport is
+  // hidden, otherwise every toast would render twice (once on top, once
+  // underneath the dialog).
+  const [dialogOpen, setDialogOpen] = useState(false);
+
+  useEffect(() => {
+    const hasOpenDialog = () => document.querySelector("dialog[open]") !== null;
+    setDialogOpen(hasOpenDialog());
+    const observer = new MutationObserver(() => setDialogOpen(hasOpenDialog()));
+    observer.observe(document.body, {
+      childList: true,
+      subtree: true,
+      attributes: true,
+      attributeFilter: ["open"],
+    });
+    return () => observer.disconnect();
+  }, []);
 
   const dismiss = useCallback((id: number) => {
     setToasts((prev) => prev.filter((item) => item.id !== id));
@@ -77,7 +96,7 @@ export function ToastProvider({ children }: { children: ReactNode }) {
   return (
     <ToastContext.Provider value={value}>
       {children}
-      <ToastViewport toasts={toasts} onDismiss={dismiss} />
+      {dialogOpen ? null : <ToastViewport toasts={toasts} onDismiss={dismiss} />}
     </ToastContext.Provider>
   );
 }
