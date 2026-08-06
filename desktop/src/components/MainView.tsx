@@ -4,11 +4,13 @@ import {
   clearChatHistory,
   createGroup,
   demoteMember,
+  exportEverything,
   exportIdentity,
   getGroupInfo,
   getGroupJoinLink,
   getPendingDeepLink,
   getSettings,
+  importEverything,
   importIdentity,
   onDeepLink,
   promoteMember,
@@ -396,6 +398,32 @@ export function MainView({ peerId, onReset }: MainViewProps) {
       toast(t("toast.identity_imported"), "success");
       toast(t("toast.identity_import_restart"), "info");
       // Give the toasts a moment to render before the reload clears them.
+      window.setTimeout(() => window.location.reload(), 1500);
+    } catch (err) {
+      const message = String(err).replace(/^Error:\s*/, "");
+      toast(message, "error");
+    }
+  }, [toast, t]);
+
+  /** Export the whole profile (identity + encrypted database) as one backup
+   *  file, so a new machine can restore everything. */
+  const handleExportEverything = useCallback(async () => {
+    try {
+      await exportEverything();
+      toast(t("toast.backup_exported"), "success");
+    } catch (err) {
+      const message = String(err).replace(/^Error:\s*/, "");
+      toast(message, "error");
+    }
+  }, [toast, t]);
+
+  /** Import a full-profile backup (identity + database). The client state is
+   *  reset by the backend; reload the webview so the restored profile loads. */
+  const handleImportEverything = useCallback(async () => {
+    try {
+      await importEverything();
+      toast(t("toast.backup_imported"), "success");
+      toast(t("toast.backup_import_restart"), "info");
       window.setTimeout(() => window.location.reload(), 1500);
     } catch (err) {
       const message = String(err).replace(/^Error:\s*/, "");
@@ -829,6 +857,8 @@ export function MainView({ peerId, onReset }: MainViewProps) {
         onMessageFontScaleChange={handleMessageFontScaleChange}
         onExportIdentity={handleExportIdentity}
         onImportIdentity={handleImportIdentity}
+        onExportEverything={handleExportEverything}
+        onImportEverything={handleImportEverything}
         onClearHistory={handleClearHistory}
       />
     </div>

@@ -539,6 +539,111 @@ async fn import_identity(app: tauri::AppHandle) -> Result<String, String> {
     Ok(target.display().to_string())
 }
 
+/// Export EVERYTHING — identity + the encrypted local database (history,
+/// sessions, contacts, settings) — as a single JSON backup file. Copy this to
+/// a new machine to move the whole Whisper profile. Resolves with the
+/// destination path on success.
+#[tauri::command]
+async fn export_everything(app: tauri::AppHandle) -> Result<String, String> {
+    use base64::Engine;
+    use tauri_plugin_dialog::DialogExt;
+
+    let identity_file = identity_path(&app)?;
+    if !identity_file.exists() {
+        return Err("no local identity to back up".to_string());
+    }
+    let identity_json = fs::read_to_string(&identity_file).map_err(|e| e.to_string())?;
+    let identity = e2ee_core::Identity::from_json(&identity_json).map_err(|e| e.to_string())?;
+
+    // The chat database is named after the peer ID; embed it base64 so the
+    // backup is a single portable file.
+    let db_path = relay::resolve_store_path(&app, &identity.peer_id());
+    let database_b64 = if db_path.exists() {
+        let bytes = fs::read(&db_path).map_err(|e| e.to_string())?;
+        base64::engine::general_purpose::STANDARD.encode(bytes)
+    } else {
+        String::new()
+    };
+
+    let package = serde_json::json!({
+        "kind": "whisper-backup",
+        "version": 1,
+        "identity": identity_json,
+        "database_b64": database_b64,
+    });
+
+    let target = app
+        .dialog()
+        .file()
+        .add_filter("Whisper backup", &["json"])
+        .set_file_name("whisper-backup.json")
+        .blocking_save_file()
+        .ok_or_else(|| "backup export cancelled".to_string())?;
+    let target = target.into_path().map_err(|e| e.to_string())?;
+    let pretty = serde_json::to_string_pretty(&package).map_err(|e| e.to_string())?;
+    fs::write(&target, pretty).map_err(|e| e.to_string())?;
+    Ok(target.display().to_string())
+}
+
+/// Import a Whisper backup created by `export_everything`: restores the
+/// identity file AND the encrypted local database. The in-memory client state
+/// is reset first so the database file is not locked; the frontend must then
+/// reload the webview for the restored profile to take effect.
+#[tauri::command]
+async fn import_everything(
+    app: tauri::AppHandle,
+    state: State<'_, RelayClient>,
+) -> Result<String, String> {
+    use base64::Engine;
+    use tauri_plugin_dialog::DialogExt;
+
+    let picked = app
+        .dialog()
+        .file()
+        .add_filter("Whisper backup", &["json"])
+        .blocking_pick_file()
+        .ok_or_else(|| "backup import cancelled".to_string())?;
+    let source = picked.into_path().map_err(|e| e.to_string())?;
+    let text = fs::read_to_string(&source).map_err(|e| e.to_string())?;
+    let package: serde_json::Value = serde_json::from_str(&text).map_err(|e| e.to_string())?;
+
+    if package.get("kind").and_then(|k| k.as_str()) != Some("whisper-backup") {
+        return Err("not a Whisper backup file".to_string());
+    }
+    let identity_json = package
+        .get("identity")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| "backup is missing the identity".to_string())?
+        .to_string();
+    // Validate before touching anything on disk.
+    let identity =
+        e2ee_core::Identity::from_json(&identity_json).map_err(|e| e.to_string())?;
+
+    // Reset the client: closes the store (releasing the database file) and
+    // wipes in-memory state so the restored files take effect cleanly.
+    state.reset().map_err(|e| e.to_string())?;
+
+    let identity_file = identity_path(&app)?;
+    if let Some(dir) = identity_file.parent() {
+        fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+    }
+    fs::write(&identity_file, &identity_json).map_err(|e| e.to_string())?;
+
+    let database_b64 = package.get("database_b64").and_then(|v| v.as_str()).unwrap_or("");
+    if !database_b64.is_empty() {
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode(database_b64)
+            .map_err(|e| e.to_string())?;
+        let db_path = relay::resolve_store_path(&app, &identity.peer_id());
+        if let Some(dir) = db_path.parent() {
+            fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+        }
+        fs::write(&db_path, bytes).map_err(|e| e.to_string())?;
+    }
+
+    Ok(identity.peer_id())
+}
+
 /// Drop the cached identity so the next `connect` reloads it from disk. Called
 /// after a successful `import_identity`, before the webview reloads.
 #[tauri::command]
@@ -935,6 +1040,8 @@ pub fn run() {
             append_client_log,
             export_identity,
             import_identity,
+            export_everything,
+            import_everything,
             set_autostart
         ]);
 
