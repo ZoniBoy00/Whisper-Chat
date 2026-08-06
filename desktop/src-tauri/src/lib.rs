@@ -553,42 +553,46 @@ async fn export_identity(app: tauri::AppHandle) -> Result<String, String> {
     Ok(target.display().to_string())
 }
 
-/// Open a native pick dialog, validate the selected file as a Whisper identity
-/// and copy it over the persisted identity file. The frontend then drops the
-/// cached identity (`reload_identity`) and reloads the webview so the restored
-/// identity takes effect — a full app restart is not required.
+/// Open a native pick dialog, validate the selected file and restore it over
+/// the persisted identity. Two file shapes are accepted:
+///   - a bare Whisper identity JSON (only the identity is restored), or
+///   - a full `whisper-backup` package (identity AND the encrypted database —
+///     messages, contacts, sessions, settings — are restored, exactly like
+///     "Restore everything").
+/// The frontend then drops the cached identity (`reload_identity`) and reloads
+/// the webview so the restored identity takes effect — a full app restart is
+/// not required.
 #[tauri::command]
-async fn import_identity(app: tauri::AppHandle) -> Result<String, String> {
+async fn import_identity(
+    app: tauri::AppHandle,
+    state: State<'_, RelayClient>,
+) -> Result<String, String> {
     use tauri_plugin_dialog::DialogExt;
     let picked = app
         .dialog()
         .file()
-        .add_filter("Whisper identity", &["json"])
+        .add_filter("Whisper identity or backup", &["json"])
         .blocking_pick_file()
         .ok_or_else(|| "identity import cancelled".to_string())?;
     let source = picked.into_path().map_err(|e| e.to_string())?;
     let json = fs::read_to_string(&source).map_err(|e| e.to_string())?;
-    // Accept either a bare identity file OR a full "whisper-backup" package
-    // (kind + identity + database_b64): pull the identity object out of the
-    // package so restoring from a "Backup everything" file works too. The
-    // database half of the package is intentionally ignored here — restoring
-    // the whole profile is what `import_everything` is for.
-    let identity_json = match serde_json::from_str::<serde_json::Value>(&json) {
-        Ok(value) if value.get("kind").and_then(|k| k.as_str()) == Some("whisper-backup") => value
-            .get("identity")
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| "backup is missing the identity".to_string())?
-            .to_string(),
-        _ => json,
-    };
-    // Validate the JSON parses as a real identity before touching the file on
-    // disk, so a corrupt or foreign file can never brick the app.
-    e2ee_core::Identity::from_json(&identity_json).map_err(|e| e.to_string())?;
+
+    // A full backup package restores identity + database (contacts, messages,
+    // settings). A bare identity file restores only the identity.
+    if let Ok(package) = serde_json::from_str::<serde_json::Value>(&json) {
+        if package.get("kind").and_then(|k| k.as_str()) == Some("whisper-backup") {
+            return restore_package(&app, &state, package);
+        }
+    }
+
+    // Bare identity file: validate before touching the file on disk, so a
+    // corrupt or foreign file can never brick the app.
+    e2ee_core::Identity::from_json(&json).map_err(|e| e.to_string())?;
     let target = identity_path(&app)?;
     if let Some(dir) = target.parent() {
         fs::create_dir_all(dir).map_err(|e| e.to_string())?;
     }
-    fs::write(&target, identity_json).map_err(|e| e.to_string())?;
+    fs::write(&target, json).map_err(|e| e.to_string())?;
     Ok(target.display().to_string())
 }
 
@@ -750,7 +754,6 @@ async fn import_everything(
     app: tauri::AppHandle,
     state: State<'_, RelayClient>,
 ) -> Result<String, String> {
-    use base64::Engine;
     use tauri_plugin_dialog::DialogExt;
 
     let picked = app
@@ -766,6 +769,19 @@ async fn import_everything(
     if package.get("kind").and_then(|k| k.as_str()) != Some("whisper-backup") {
         return Err("not a Whisper backup file".to_string());
     }
+    restore_package(&app, &state, package)
+}
+
+/// Shared restore logic for a validated `whisper-backup` package: write the
+/// identity file and the encrypted database, after resetting the client so
+/// neither file is locked. Returns the restored peer ID.
+fn restore_package(
+    app: &tauri::AppHandle,
+    state: &RelayClient,
+    package: serde_json::Value,
+) -> Result<String, String> {
+    use base64::Engine;
+
     let identity_json = package
         .get("identity")
         .and_then(|v| v.as_str())
@@ -778,7 +794,7 @@ async fn import_everything(
     // wipes in-memory state so the restored files take effect cleanly.
     state.reset().map_err(|e| e.to_string())?;
 
-    let identity_file = identity_path(&app)?;
+    let identity_file = identity_path(app)?;
     if let Some(dir) = identity_file.parent() {
         fs::create_dir_all(dir).map_err(|e| e.to_string())?;
     }
@@ -792,7 +808,7 @@ async fn import_everything(
         let bytes = base64::engine::general_purpose::STANDARD
             .decode(database_b64)
             .map_err(|e| e.to_string())?;
-        let db_path = relay::resolve_store_path(&app, &identity.peer_id());
+        let db_path = relay::resolve_store_path(app, &identity.peer_id());
         if let Some(dir) = db_path.parent() {
             fs::create_dir_all(dir).map_err(|e| e.to_string())?;
         }

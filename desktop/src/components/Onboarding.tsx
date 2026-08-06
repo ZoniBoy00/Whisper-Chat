@@ -13,7 +13,7 @@ import {
 import { Logo } from "./Logo";
 import { useI18n } from "../i18n/I18nContext";
 import { useToast } from "../hooks/useToast";
-import { importIdentity } from "../lib/relay";
+import { importIdentity, reloadIdentity } from "../lib/relay";
 import { cx } from "../lib/format";
 
 interface OnboardingProps {
@@ -71,6 +71,8 @@ export function Onboarding({ onCreated }: OnboardingProps) {
     setError(null);
     try {
       await importIdentity();
+      // Drop the cached identity so the reload picks the restored one up.
+      await reloadIdentity().catch(() => {});
       toast(t("toast.identity_imported"), "success");
       toast(t("toast.identity_import_restart"), "info");
       window.setTimeout(() => window.location.reload(), 1500);
