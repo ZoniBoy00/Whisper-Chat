@@ -1248,6 +1248,7 @@ impl RelayClient {
             let _ = tx.send(Ok(()));
         }
         self.spawn_group_info_refresh(group_id);
+        self.emit_group_updated(group_id);
         Ok(())
     }
 

@@ -1,18 +1,9 @@
-import {
-  useEffect,
-  useLayoutEffect,
-  useRef,
-  useState,
-  type MouseEvent,
-  type ReactNode,
-} from "react";
+import { useRef, useState, type MouseEvent, type ReactNode } from "react";
 import { Check, CheckCheck, SmilePlus } from "lucide-react";
 import type { Message } from "../types";
 import { cx, findMatches, formatTime, shortPeerId } from "../lib/format";
 import { useI18n } from "../i18n/I18nContext";
-
-/** The emoji palette offered by the quick-reaction picker. */
-const REACTION_EMOJIS = ["👍", "❤️", "😂", "😮", "😢", "🙏", "🔥", "🎉"];
+import { ReactionPicker } from "./ReactionPicker";
 
 interface MessageBubbleProps {
   message: Message;
@@ -95,59 +86,24 @@ export function MessageBubble({
 }: MessageBubbleProps) {
   const { t } = useI18n();
   const { outgoing } = message;
-  // The inline reaction picker opens on the quick-reaction button click. It is
-  // positioned fixed (viewport coordinates from the bubble's rect) so the chat
-  // list's overflow can never clip it.
+  // The quick-react button opens the SHARED ReactionPicker (the same
+  // component the message context menu uses), anchored to this bubble.
   const bubbleRef = useRef<HTMLDivElement>(null);
-  const pickerRef = useRef<HTMLDivElement>(null);
-  const [pickerOpen, setPickerOpen] = useState(false);
   const [pickerPos, setPickerPos] = useState<{ x: number; y: number } | null>(null);
-  const [pickerClamped, setPickerClamped] = useState<{ x: number; y: number } | null>(null);
 
   const togglePicker = () => {
-    const next = !pickerOpen;
-    setPickerOpen(next);
-    if (next && bubbleRef.current) {
+    if (pickerPos) {
+      setPickerPos(null);
+      return;
+    }
+    if (bubbleRef.current) {
       const rect = bubbleRef.current.getBoundingClientRect();
       setPickerPos({
         x: rect.left + rect.width / 2,
         y: rect.top,
       });
-      setPickerClamped(null);
     }
   };
-
-  // Measure the picker once and clamp it to the viewport so it never gets cut
-  // off by the window edge or the chat list's overflow.
-  useLayoutEffect(() => {
-    if (!pickerOpen || !pickerPos) return;
-    const el = pickerRef.current;
-    if (!el) return;
-    const rect = el.getBoundingClientRect();
-    setPickerClamped({
-      x: Math.max(8, Math.min(pickerPos.x - rect.width / 2, window.innerWidth - rect.width - 8)),
-      y: Math.max(8, Math.min(pickerPos.y - rect.height - 8, window.innerHeight - rect.height - 8)),
-    });
-  }, [pickerOpen, pickerPos]);
-
-  // Dismiss the picker on any press outside it (or Escape).
-  useEffect(() => {
-    if (!pickerOpen) return;
-    const handlePointerDown = (event: PointerEvent) => {
-      if (pickerRef.current && !pickerRef.current.contains(event.target as Node)) {
-        setPickerOpen(false);
-      }
-    };
-    const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") setPickerOpen(false);
-    };
-    document.addEventListener("pointerdown", handlePointerDown);
-    window.addEventListener("keydown", handleKeyDown);
-    return () => {
-      document.removeEventListener("pointerdown", handlePointerDown);
-      window.removeEventListener("keydown", handleKeyDown);
-    };
-  }, [pickerOpen]);
   // Read receipts: "sent" = single gray tick, "delivered" = double gray tick,
   // "read" = double blue tick.
   const read = outgoing && message.status === "read";
@@ -219,33 +175,16 @@ export function MessageBubble({
             outgoing ? "justify-end" : "justify-start"
           )}
         >
-          {pickerOpen && pickerPos ? (
-            <div
-              ref={pickerRef}
-              style={{
-                left: (pickerClamped ?? pickerPos).x,
-                top: (pickerClamped ?? pickerPos).y,
-                visibility: pickerClamped ? "visible" : "hidden",
+          {pickerPos ? (
+            <ReactionPicker
+              x={pickerPos.x}
+              y={pickerPos.y}
+              onPick={(emoji) => {
+                onReact?.(message, emoji);
+                setPickerPos(null);
               }}
-              className="fixed z-50 flex items-center gap-0.5 rounded-full bg-wp-panel-2 p-1.5 shadow-2xl shadow-black/50 ring-1 ring-wp-line/10"
-              role="menu"
-              aria-label={t("chat.react_to_message")}
-            >
-              {REACTION_EMOJIS.map((emoji) => (
-                <button
-                  key={emoji}
-                  type="button"
-                  role="menuitem"
-                  onClick={() => {
-                    onReact?.(message, emoji);
-                    setPickerOpen(false);
-                  }}
-                  className="rounded-full px-0.5 py-0.5 text-lg leading-none transition hover:bg-wp-panel-3 active:scale-90"
-                >
-                  {emoji}
-                </button>
-              ))}
-            </div>
+              onClose={() => setPickerPos(null)}
+            />
           ) : null}
           {onReact ? (
             <button
@@ -253,10 +192,10 @@ export function MessageBubble({
               onClick={togglePicker}
               title={t("chat.add_reaction")}
               aria-label={t("chat.add_reaction")}
-              aria-expanded={pickerOpen}
+              aria-expanded={pickerPos !== null}
               className={cx(
                 "inline-flex h-6 w-6 items-center justify-center rounded-full bg-wp-panel-2 text-wp-dim shadow-sm shadow-black/20 ring-1 ring-wp-line/10 transition hover:text-wp-accent active:scale-90",
-                pickerOpen && "text-wp-accent ring-wp-accent/40"
+                pickerPos !== null && "text-wp-accent ring-wp-accent/40"
               )}
             >
               <SmilePlus className="h-3.5 w-3.5" aria-hidden="true" />
