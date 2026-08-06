@@ -732,6 +732,10 @@ impl RelayClient {
             Some(bytes) => bytes,
             None => return Ok(None),
         };
+        // The inbound Megolm ratchet advanced — persist it now, or a restart
+        // would restore the session to a stale index and every later group
+        // message (text, typing, reactions) would be rejected as out of order.
+        self.save_group_sessions()?;
         // Group payloads use the same tagged envelope as 1:1 messages: an
         // emoji reaction is applied to the target message, a typing indicator
         // is surfaced with the writer's identity, anything else is a (possibly
