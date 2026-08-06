@@ -428,14 +428,6 @@ export function ChatView({
                 aria-live="polite"
                 className="mt-0.5 inline-flex items-center gap-1.5 text-sm font-semibold text-wp-read"
               >
-                <span
-                  className="flex items-center gap-0.5"
-                  aria-hidden="true"
-                >
-                  <span className="typing-dot" />
-                  <span className="typing-dot" />
-                  <span className="typing-dot" />
-                </span>
                 {isGroup && typingWriters.length > 1
                   ? t("chat.typing_many", { n: typingWriters.length })
                   : isGroup
@@ -445,6 +437,14 @@ export function ChatView({
                           shortPeerId(typingWriters[0]),
                       })
                     : t("chat.typing")}
+                <span
+                  className="flex items-center gap-0.5"
+                  aria-hidden="true"
+                >
+                  <span className="typing-dot" />
+                  <span className="typing-dot" />
+                  <span className="typing-dot" />
+                </span>
               </p>
             ) : presence ? (
               presence.online ? (
