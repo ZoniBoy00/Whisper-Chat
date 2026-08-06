@@ -3,6 +3,7 @@ import {
   AtSign,
   CheckCircle2,
   Download,
+  FolderOpen,
   KeyRound,
   Languages,
   Link2,
@@ -22,7 +23,13 @@ import {
 import type { Theme } from "../../types";
 import { cx, mediaUrl } from "../../lib/format";
 import { copyText } from "../../lib/clipboard";
-import { getInviteLink } from "../../lib/relay";
+import {
+  getInviteLink,
+  getSettings,
+  pickAutobackupDir,
+  runAutobackupNow,
+  updateSettings,
+} from "../../lib/relay";
 import { useI18n } from "../../i18n/I18nContext";
 import { useToast } from "../../hooks/useToast";
 import type { TFunction } from "../../i18n/types";
@@ -158,6 +165,43 @@ export function GeneralTab({
   const [usernameErrorText, setUsernameErrorText] = useState<string | null>(null);
   const [avatarError, setAvatarError] = useState<string | null>(null);
   const [confirmingReset, setConfirmingReset] = useState(false);
+  // Automatic-backup state, hydrated from the persisted settings on mount.
+  const [autobackupEnabled, setAutobackupEnabled] = useState(false);
+  const [autobackupDir, setAutobackupDir] = useState<string | null>(null);
+
+  useEffect(() => {
+    getSettings()
+      .then((settings) => {
+        setAutobackupEnabled(settings.autobackup_enabled ?? false);
+        setAutobackupDir(settings.autobackup_dir ?? null);
+      })
+      .catch(() => {});
+  }, []);
+
+  /** Pick a cloud-synced folder as the automatic-backup destination. */
+  const handlePickBackupDir = async () => {
+    try {
+      const dir = await pickAutobackupDir();
+      setAutobackupDir(dir);
+      await updateSettings({ autobackup_dir: dir });
+      toast(t("toast.settings_saved"), "info");
+    } catch (err) {
+      const message = String(err).replace(/^Error:\s*/, "");
+      toast(message, "error");
+    }
+  };
+
+  /** Write a backup right now into the configured folder. */
+  const handleRunBackupNow = async () => {
+    try {
+      const path = await runAutobackupNow();
+      toast(t("toast.backup_exported"), "success");
+      void path;
+    } catch (err) {
+      const message = String(err).replace(/^Error:\s*/, "");
+      toast(message, "error");
+    }
+  };
   const [inviteCopied, setInviteCopied] = useState(false);
 
   /** Copy our whisper:// invite link to the clipboard (best-effort). */
@@ -798,6 +842,54 @@ export function GeneralTab({
             >
               <Upload className="h-3.5 w-3.5" aria-hidden="true" />
               {t("general.restore_everything")}
+            </button>
+          </div>
+        </div>
+      </section>
+
+      {/* Automatic backups — writes a full-profile backup into a cloud-synced
+          folder on a schedule (daily while the app is running). */}
+      <section aria-labelledby="settings-autobackup-title">
+        <SectionHeading
+          id="settings-autobackup-title"
+          icon={<Save className="h-3.5 w-3.5" />}
+          label={t("general.autobackup")}
+        />
+        <div className="space-y-4 rounded-xl border border-wp-line/10 bg-wp-panel-3 p-4">
+          <ToggleRow
+            id="setting-autobackup"
+            icon={<Save className="h-3.5 w-3.5" aria-hidden="true" />}
+            title={t("general.autobackup_title")}
+            description={t("general.autobackup_desc")}
+            checked={autobackupEnabled}
+            onChange={(value) => {
+              setAutobackupEnabled(value);
+              void updateSettings({ autobackup_enabled: value })
+                .then(() => toast(t("toast.settings_saved"), "info"))
+                .catch(() => {});
+            }}
+          />
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={() => void handlePickBackupDir()}
+              className="inline-flex min-w-0 flex-1 items-center gap-2 rounded-xl border border-wp-line/10 bg-wp-panel-2 px-3 py-2 text-left text-xs font-medium text-wp-dim transition hover:bg-wp-panel-3 hover:text-wp-text"
+            >
+              <FolderOpen className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+              <span className="truncate">
+                {autobackupDir || t("general.autobackup_pick_folder")}
+              </span>
+            </button>
+            <button
+              type="button"
+              onClick={() => void handleRunBackupNow()}
+              disabled={!autobackupEnabled || !autobackupDir}
+              title={t("general.autobackup_now")}
+              aria-label={t("general.autobackup_now")}
+              className="inline-flex shrink-0 items-center gap-1.5 rounded-xl bg-wp-accent px-3 py-2 text-xs font-semibold text-wp-accent-fg transition hover:bg-wp-accent-strong disabled:cursor-not-allowed disabled:opacity-40"
+            >
+              <Save className="h-3.5 w-3.5" aria-hidden="true" />
+              {t("general.autobackup_now")}
             </button>
           </div>
         </div>

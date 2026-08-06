@@ -302,6 +302,13 @@ export interface AppSettings {
   message_font_scale?: string;
   /** Whether the app registers itself to launch at system startup. */
   autostart?: boolean;
+  /** Whether automatic full-profile backups are enabled (written into
+   *  `autobackup_dir` on a schedule). */
+  autobackup_enabled?: boolean;
+  /** Directory for automatic backups — typically a cloud-synced folder. */
+  autobackup_dir?: string | null;
+  /** How many recent automatic backups to keep before pruning. */
+  autobackup_keep?: number;
 }
 
 /** One captured client log line, returned by the `get_client_logs` command. */

@@ -371,6 +371,12 @@ export const translations = {
     "general.backup_identity": "Backup identity",
     "general.backup_everything": "Backup everything",
     "general.restore_everything": "Restore everything",
+    "general.autobackup": "Automatic backups",
+    "general.autobackup_title": "Automatic backups",
+    "general.autobackup_desc":
+      "Write a full backup (identity + history) into a cloud-synced folder every day.",
+    "general.autobackup_pick_folder": "Choose backup folder…",
+    "general.autobackup_now": "Back up now",
     "general.restore_identity": "Restore identity",
     "general.restore_identity_warn":
       "Restoring replaces your current identity and requires an app restart.",
@@ -816,6 +822,12 @@ export const translations = {
     "general.backup_identity": "Varmuuskopioi henkilöllisyys",
     "general.backup_everything": "Varmuuskopioi kaikki",
     "general.restore_everything": "Palauta kaikki",
+    "general.autobackup": "Automaattiset varmuuskopiot",
+    "general.autobackup_title": "Automaattiset varmuuskopiot",
+    "general.autobackup_desc":
+      "Kirjoita täysi varmuuskopio (henkilöllisyys + historia) pilveen synkattuun kansioon päivittäin.",
+    "general.autobackup_pick_folder": "Valitse varmuuskopiokansio…",
+    "general.autobackup_now": "Varmuuskopioi nyt",
     "general.restore_identity": "Palauta henkilöllisyys",
     "general.restore_identity_warn":
       "Palautus korvaa nykyisen henkilöllisyytesi ja edellyttää sovelluksen uudelleenkäynnistystä.",

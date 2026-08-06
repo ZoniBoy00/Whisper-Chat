@@ -539,25 +539,20 @@ async fn import_identity(app: tauri::AppHandle) -> Result<String, String> {
     Ok(target.display().to_string())
 }
 
-/// Export EVERYTHING — identity + the encrypted local database (history,
-/// sessions, contacts, settings) — as a single JSON backup file. Copy this to
-/// a new machine to move the whole Whisper profile. Resolves with the
-/// destination path on success.
-#[tauri::command]
-async fn export_everything(app: tauri::AppHandle) -> Result<String, String> {
+/// Build the full-profile backup package (identity + encrypted database) as a
+/// JSON value. Shared by the manual "Backup everything" dialog and the
+/// automatic backup scheduler.
+fn build_backup_package(app: &tauri::AppHandle) -> Result<serde_json::Value, String> {
     use base64::Engine;
-    use tauri_plugin_dialog::DialogExt;
 
-    let identity_file = identity_path(&app)?;
+    let identity_file = identity_path(app)?;
     if !identity_file.exists() {
         return Err("no local identity to back up".to_string());
     }
     let identity_json = fs::read_to_string(&identity_file).map_err(|e| e.to_string())?;
     let identity = e2ee_core::Identity::from_json(&identity_json).map_err(|e| e.to_string())?;
 
-    // The chat database is named after the peer ID; embed it base64 so the
-    // backup is a single portable file.
-    let db_path = relay::resolve_store_path(&app, &identity.peer_id());
+    let db_path = relay::resolve_store_path(app, &identity.peer_id());
     let database_b64 = if db_path.exists() {
         let bytes = fs::read(&db_path).map_err(|e| e.to_string())?;
         base64::engine::general_purpose::STANDARD.encode(bytes)
@@ -565,12 +560,23 @@ async fn export_everything(app: tauri::AppHandle) -> Result<String, String> {
         String::new()
     };
 
-    let package = serde_json::json!({
+    Ok(serde_json::json!({
         "kind": "whisper-backup",
         "version": 1,
         "identity": identity_json,
         "database_b64": database_b64,
-    });
+    }))
+}
+
+/// Export EVERYTHING — identity + the encrypted local database (history,
+/// sessions, contacts, settings) — as a single JSON backup file. Copy this to
+/// a new machine to move the whole Whisper profile. Resolves with the
+/// destination path on success.
+#[tauri::command]
+async fn export_everything(app: tauri::AppHandle) -> Result<String, String> {
+    use tauri_plugin_dialog::DialogExt;
+
+    let package = build_backup_package(&app)?;
 
     let target = app
         .dialog()
@@ -582,6 +588,103 @@ async fn export_everything(app: tauri::AppHandle) -> Result<String, String> {
     let target = target.into_path().map_err(|e| e.to_string())?;
     let pretty = serde_json::to_string_pretty(&package).map_err(|e| e.to_string())?;
     fs::write(&target, pretty).map_err(|e| e.to_string())?;
+    Ok(target.display().to_string())
+}
+
+/// Open a native folder picker so the user can choose the automatic-backup
+/// destination (typically a cloud-synced folder). Resolves with the chosen
+/// path, or an error when cancelled.
+#[tauri::command]
+async fn pick_autobackup_dir(app: tauri::AppHandle) -> Result<String, String> {
+    use tauri_plugin_dialog::DialogExt;
+    let picked = app
+        .dialog()
+        .file()
+        .blocking_pick_folder()
+        .ok_or_else(|| "folder pick cancelled".to_string())?;
+    let path = picked.into_path().map_err(|e| e.to_string())?;
+    Ok(path.display().to_string())
+}
+
+/// Write a full-profile backup into `dir` as `whisper-backup-<date>.json`,
+/// pruning older backups beyond the configured keep count. Used by the
+/// scheduler; `run_autobackup_now` exposes it to the UI.
+fn write_autobackup(app: &tauri::AppHandle, dir: &str, keep: usize) -> Result<PathBuf, String> {
+    let dir = PathBuf::from(dir);
+    if !dir.is_dir() {
+        return Err("automatic backup folder does not exist".to_string());
+    }
+    let package = build_backup_package(app)?;
+    let pretty = serde_json::to_string_pretty(&package).map_err(|e| e.to_string())?;
+
+    let now = chrono_now_date();
+    let filename = format!("whisper-backup-{now}.json");
+    let target = dir.join(&filename);
+    fs::write(&target, pretty).map_err(|e| e.to_string())?;
+
+    // Prune old backups, keeping the newest `keep` (including the one just
+    // written).
+    if let Ok(entries) = fs::read_dir(&dir) {
+        let mut backups: Vec<(std::time::SystemTime, PathBuf)> = entries
+            .filter_map(|entry| entry.ok())
+            .filter(|entry| {
+                entry
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with("whisper-backup-")
+                    && entry.file_name().to_string_lossy().ends_with(".json")
+            })
+            .filter_map(|entry| {
+                let modified = entry.metadata().ok().and_then(|m| m.modified().ok())?;
+                Some((modified, entry.path()))
+            })
+            .collect();
+        backups.sort_by_key(|(modified, _)| std::cmp::Reverse(*modified));
+        for (_, path) in backups.into_iter().skip(keep) {
+            let _ = fs::remove_file(path);
+        }
+    }
+
+    Ok(target)
+}
+
+/// The current UTC date as `YYYY-MM-DD` (no external chrono dependency).
+fn chrono_now_date() -> String {
+    let secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let days = secs / 86_400;
+    // Days since 1970-01-01 → civil date (Howard Hinnant's algorithm).
+    let z = days as i64 + 719_468;
+    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146_096) / 365;
+    let y = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = if m <= 2 { y + 1 } else { y };
+    format!("{y:04}-{m:02}-{d:02}")
+}
+
+/// Run an automatic backup right now, using the persisted settings. Errors
+/// are returned so the UI can surface them from a manual "Back up now" click.
+#[tauri::command]
+async fn run_autobackup_now(app: tauri::AppHandle) -> Result<String, String> {
+    let dir = app
+        .state::<RelayClient>()
+        .get_settings()
+        .map_err(|e| e.to_string())?
+        .autobackup_dir
+        .ok_or_else(|| "no automatic backup folder configured".to_string())?;
+    let keep = app
+        .state::<RelayClient>()
+        .get_settings()
+        .map_err(|e| e.to_string())?
+        .autobackup_keep;
+    let target = write_autobackup(&app, &dir, keep)?;
     Ok(target.display().to_string())
 }
 
@@ -616,8 +719,7 @@ async fn import_everything(
         .ok_or_else(|| "backup is missing the identity".to_string())?
         .to_string();
     // Validate before touching anything on disk.
-    let identity =
-        e2ee_core::Identity::from_json(&identity_json).map_err(|e| e.to_string())?;
+    let identity = e2ee_core::Identity::from_json(&identity_json).map_err(|e| e.to_string())?;
 
     // Reset the client: closes the store (releasing the database file) and
     // wipes in-memory state so the restored files take effect cleanly.
@@ -629,7 +731,10 @@ async fn import_everything(
     }
     fs::write(&identity_file, &identity_json).map_err(|e| e.to_string())?;
 
-    let database_b64 = package.get("database_b64").and_then(|v| v.as_str()).unwrap_or("");
+    let database_b64 = package
+        .get("database_b64")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
     if !database_b64.is_empty() {
         let bytes = base64::engine::general_purpose::STANDARD
             .decode(database_b64)
@@ -980,6 +1085,42 @@ pub fn run() {
 
             setup_tray(app.handle())?;
 
+            // Automatic full-profile backups: if enabled, run one shortly
+            // after startup and then every 24h. Best-effort — a missing
+            // folder or a transient failure just logs and waits for the next
+            // tick, never crashes the app.
+            {
+                let handle = app.handle().clone();
+                tauri::async_runtime::spawn(async move {
+                    loop {
+                        let enabled = handle
+                            .state::<RelayClient>()
+                            .get_settings()
+                            .map(|s| s.autobackup_enabled)
+                            .unwrap_or(false);
+                        if enabled {
+                            let settings = handle
+                                .state::<RelayClient>()
+                                .get_settings()
+                                .unwrap_or_default();
+                            if let Some(dir) = &settings.autobackup_dir {
+                                match write_autobackup(&handle, dir, settings.autobackup_keep) {
+                                    Ok(path) => tracing::info!(
+                                        path = %path.display(),
+                                        "automatic backup written"
+                                    ),
+                                    Err(err) => tracing::warn!(
+                                        error = %err,
+                                        "automatic backup failed"
+                                    ),
+                                }
+                            }
+                        }
+                        tokio::time::sleep(std::time::Duration::from_secs(86_400)).await;
+                    }
+                });
+            }
+
             setup_splash_screen(app)?;
 
             Ok(())
@@ -1042,6 +1183,8 @@ pub fn run() {
             import_identity,
             export_everything,
             import_everything,
+            pick_autobackup_dir,
+            run_autobackup_now,
             set_autostart
         ]);
 

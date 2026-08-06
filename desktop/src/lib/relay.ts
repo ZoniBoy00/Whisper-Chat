@@ -124,6 +124,10 @@ export interface SettingsPatch {
   enter_to_send?: boolean;
   message_font_scale?: string;
   autostart?: boolean;
+  autobackup_enabled?: boolean;
+  /** `null` clears the backup folder; a string sets it. */
+  autobackup_dir?: string | null;
+  autobackup_keep?: number;
 }
 
 /** Persist a partial update of boolean preferences. */
@@ -222,6 +226,18 @@ export function exportEverything(): Promise<string> {
  *  the webview afterwards for the restored profile to take effect. */
 export function importEverything(): Promise<string> {
   return invoke("import_everything");
+}
+
+/** Open a native folder picker for the automatic-backup destination.
+ *  Resolves with the chosen path. */
+export function pickAutobackupDir(): Promise<string> {
+  return invoke("pick_autobackup_dir");
+}
+
+/** Run an automatic backup right now using the persisted settings. Resolves
+ *  with the written backup path. */
+export function runAutobackupNow(): Promise<string> {
+  return invoke("run_autobackup_now");
 }
 
 /** Drop the cached identity so the next connect reloads it from disk. */
