@@ -66,6 +66,12 @@
         "sidebarImage": "installer/sidebar.bmp",
         "installerHooks": "installer/installer.nsh",
         "languages": ["English", "Finnish"]
+      },
+      "wix": {
+        "language": ["en-US", "fi-FI"],
+        "bannerPath": "installer/msi-banner.bmp",
+        "dialogImagePath": "installer/msi-dialog.bmp",
+        "upgradeCode": "5113A257-DC79-4889-B2B9-3D669062DA91"
       }
     }
   }
