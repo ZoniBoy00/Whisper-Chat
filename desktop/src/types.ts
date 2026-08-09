@@ -323,6 +323,9 @@ export interface AppSettings {
   autobackup_dir?: string | null;
   /** How many recent automatic backups to keep before pruning. */
   autobackup_keep?: number;
+  /** Whether a backup password is configured (write-only: the password itself
+   *  is never sent to the UI — only this flag). */
+  autobackup_password_set?: boolean;
 }
 
 /** One captured client log line, returned by the `get_client_logs` command. */

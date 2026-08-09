@@ -9,10 +9,13 @@ use tauri_plugin_autostart::ManagerExt;
 use tauri_plugin_deep_link::DeepLinkExt;
 use tokio::sync::Notify;
 
+mod backup;
 mod log_buffer;
 mod relay;
 mod store;
 mod tray;
+
+use backup::{decrypt_package, encrypt_package, MIN_PASSWORD_LEN};
 
 use log_buffer::{init_tracing, LogBuffer, LogEntry};
 use relay::{
@@ -607,6 +610,7 @@ async fn export_identity(app: tauri::AppHandle) -> Result<String, String> {
 async fn import_identity(
     app: tauri::AppHandle,
     state: State<'_, RelayClient>,
+    password: Option<String>,
 ) -> Result<String, String> {
     use tauri_plugin_dialog::DialogExt;
     let picked = app
@@ -622,7 +626,11 @@ async fn import_identity(
     // settings). A bare identity file restores only the identity.
     if let Ok(package) = serde_json::from_str::<serde_json::Value>(&json) {
         if package.get("kind").and_then(|k| k.as_str()) == Some("whisper-backup") {
-            return restore_package(&app, &state, package);
+            let password = password.ok_or_else(|| {
+                "this file is an encrypted backup — enter its password to restore it".to_string()
+            })?;
+            let plaintext = decrypt_package(&package, &password).map_err(|e| e.to_string())?;
+            return restore_package(&app, &state, plaintext);
         }
     }
 
@@ -638,9 +646,14 @@ async fn import_identity(
 }
 
 /// Build the full-profile backup package (identity + encrypted database) as a
-/// JSON value. Shared by the manual "Backup everything" dialog and the
+/// JSON value. The plaintext body is sealed with AES-256-GCM under an
+/// Argon2id-derived key — the identity (private keys) never leaves the device
+/// in cleartext. Shared by the manual "Backup everything" dialog and the
 /// automatic backup scheduler.
-fn build_backup_package(app: &tauri::AppHandle) -> Result<serde_json::Value, String> {
+fn build_backup_package(
+    app: &tauri::AppHandle,
+    password: &str,
+) -> Result<serde_json::Value, String> {
     use base64::Engine;
 
     let identity_file = identity_path(app)?;
@@ -658,23 +671,61 @@ fn build_backup_package(app: &tauri::AppHandle) -> Result<serde_json::Value, Str
         String::new()
     };
 
-    Ok(serde_json::json!({
-        "kind": "whisper-backup",
-        "version": 1,
+    let body = serde_json::json!({
         "identity": identity_json,
         "database_b64": database_b64,
-    }))
+        "created_at": chrono_now_date(),
+    });
+    let body = serde_json::to_string(&body).map_err(|e| e.to_string())?;
+    encrypt_package(&body, password).map_err(|e| e.to_string())
 }
 
 /// Export EVERYTHING — identity + the encrypted local database (history,
-/// sessions, contacts, settings) — as a single JSON backup file. Copy this to
-/// a new machine to move the whole Whisper profile. Resolves with the
-/// destination path on success.
+/// sessions, contacts, settings) — as a single password-encrypted JSON backup
+/// file. Copy this to a new machine to move the whole Whisper profile.
+/// Resolves with the destination path on success.
+///
+/// The password is set ONCE and shared by every backup path: `Some(pw)`
+/// validates and persists it as the backup password (so it also seals
+/// automatic backups from then on); `None` reuses the stored backup password,
+/// so a manual export never asks again once one exists.
 #[tauri::command]
-async fn export_everything(app: tauri::AppHandle) -> Result<String, String> {
+async fn export_everything(
+    app: tauri::AppHandle,
+    password: Option<String>,
+) -> Result<String, String> {
     use tauri_plugin_dialog::DialogExt;
 
-    let package = build_backup_package(&app)?;
+    let client = app.state::<RelayClient>();
+    let password = match password {
+        Some(pw) => {
+            if pw.len() < MIN_PASSWORD_LEN {
+                return Err(format!(
+                    "backup password must be at least {MIN_PASSWORD_LEN} characters"
+                ));
+            }
+            // Persist as the shared backup password: the same one then seals
+            // automatic backups, so the user only ever enters it once.
+            let patch = SettingsPatch {
+                autobackup_password: Some(Some(pw.clone())),
+                ..SettingsPatch::default()
+            };
+            client.update_settings(&patch).map_err(|e| e.to_string())?;
+            pw
+        }
+        None => client
+            .get_settings()
+            .map_err(|e| e.to_string())?
+            .autobackup_password
+            .filter(|pw| !pw.is_empty())
+            .ok_or_else(|| {
+                "set a backup password first — the same password is used for \
+                 manual and automatic backups"
+                    .to_string()
+            })?,
+    };
+
+    let package = build_backup_package(&app, &password)?;
 
     let target = app
         .dialog()
@@ -706,13 +757,24 @@ async fn pick_autobackup_dir(app: tauri::AppHandle) -> Result<String, String> {
 
 /// Write a full-profile backup into `dir` as `whisper-backup-<date>.json`,
 /// pruning older backups beyond the configured keep count. Used by the
-/// scheduler; `run_autobackup_now` exposes it to the UI.
+/// scheduler; `run_autobackup_now` exposes it to the UI. Automatic backups
+/// are always password-encrypted: without a backup password in settings, no
+/// file is ever written (autobackup folders are typically cloud-synced).
 fn write_autobackup(app: &tauri::AppHandle, dir: &str, keep: usize) -> Result<PathBuf, String> {
     let dir = PathBuf::from(dir);
     if !dir.is_dir() {
         return Err("automatic backup folder does not exist".to_string());
     }
-    let package = build_backup_package(app)?;
+    let password = app
+        .state::<RelayClient>()
+        .get_settings()
+        .map_err(|e| e.to_string())?
+        .autobackup_password
+        .filter(|pw| !pw.is_empty())
+        .ok_or_else(|| {
+            "set a backup password in Settings before enabling automatic backups".to_string()
+        })?;
+    let package = build_backup_package(app, &password)?;
     let pretty = serde_json::to_string_pretty(&package).map_err(|e| e.to_string())?;
 
     let now = chrono_now_date();
@@ -787,13 +849,16 @@ async fn run_autobackup_now(app: tauri::AppHandle) -> Result<String, String> {
 }
 
 /// Import a Whisper backup created by `export_everything`: restores the
-/// identity file AND the encrypted local database. The in-memory client state
-/// is reset first so the database file is not locked; the frontend must then
-/// reload the webview for the restored profile to take effect.
+/// identity file AND the encrypted local database. The package is sealed, so
+/// the user's password is required; a wrong password fails cleanly without
+/// touching anything on disk. The in-memory client state is reset first so
+/// the database file is not locked; the frontend must then reload the webview
+/// for the restored profile to take effect.
 #[tauri::command]
 async fn import_everything(
     app: tauri::AppHandle,
     state: State<'_, RelayClient>,
+    password: String,
 ) -> Result<String, String> {
     use tauri_plugin_dialog::DialogExt;
 
@@ -810,12 +875,17 @@ async fn import_everything(
     if package.get("kind").and_then(|k| k.as_str()) != Some("whisper-backup") {
         return Err("not a Whisper backup file".to_string());
     }
-    restore_package(&app, &state, package)
+    // Decrypt before touching anything on disk; a wrong password resolves to
+    // a clean error and leaves the current profile untouched.
+    let plaintext = decrypt_package(&package, &password).map_err(|e| e.to_string())?;
+    restore_package(&app, &state, plaintext)
 }
 
 /// Shared restore logic for a validated `whisper-backup` package: write the
 /// identity file and the encrypted database, after resetting the client so
-/// neither file is locked. Returns the restored peer ID.
+/// neither file is locked. `package` must already be the DECRYPTED plaintext
+/// body (callers run `decrypt_package` first, so a wrong password never
+/// reaches this function). Returns the restored peer ID.
 fn restore_package(
     app: &tauri::AppHandle,
     state: &RelayClient,

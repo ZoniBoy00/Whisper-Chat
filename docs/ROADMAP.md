@@ -5,8 +5,8 @@
 > general-purpose chat — a WhatsApp/Signal/Telegram replacement without
 > backdoors or scanning mechanisms.
 >
-> **Date:** 2026-08-06 (updated: SQLCipher at-rest, Megolm key rotation, disappearing messages + countdown, message editing, delete for everyone, group read receipts, rename, system messages, daily logs + local time, autobackup, restart-proof sessions, CSP, CI hardening; backlog updated from Hermes review: media/voice/export priorities, E2EE PIN backup, device list before 6.11, WASM deferred; **E2EE backup encryption flagged 🔴 critical release blocker** after code review of `build_backup_package`)
-> **Status:** Phases 0–6.10 done — full local MVP. **Two release blockers:** (1) real two-machine E2EE test on Hetzner, (2) E2EE backup encryption — autobackup currently writes the identity key as plaintext into a (typically cloud-synced) folder
+> **Date:** 2026-08-09 (updated: **E2EE backup encryption DONE** — password-sealed backups with Argon2id → AES-256-GCM, passwordless autobackup blocked; **one release blocker left:** real two-machine E2EE test on Hetzner)
+> **Status:** Phases 0–6.10 done — full local MVP. **One release blocker left:** real two-machine E2EE test on Hetzner (E2EE backup encryption — the previous 🔴 blocker — fixed 2026-08-09)
 > **Origin:** App specification + Gemini cross-check + Byte evaluation
 > **Working title (before branding):** Operation Ghost
 
@@ -337,18 +337,24 @@ impact and effort. Pull items into the phase table when they get scheduled.
 - [x] Relay ops: structured logging (`RUST_LOG`-controllable, peer-ID level only) + graceful shutdown on Ctrl+C/SIGTERM
 - [x] Robustness fixes: FIFO→keyed request resolution (get_group_info), error-code→queue routing (stale groups evicted), legacy avatar sync, contact-only group cleanup
 
-**Test counts (2026-08-06):** 328 unit tests — e2ee-core 88, whisper-relay 141,
-whisper-desktop 99; smoke suite all green (reactions/replies/typing travel
-inside existing encrypted envelopes; invites/join links/avatar pushes added
-relay handlers with their own tests).
+**Test counts (2026-08-09):** 341 unit tests — e2ee-core 88, whisper-relay 141,
+whisper-desktop 112; smoke suite all green. The E2EE backup fix adds 11
+`backup.rs` crypto tests (roundtrip, wrong-password rejection, ciphertext /
+KDF-cost / metadata tamper detection — the KDF params, version and nonce are
+bound into the GCM **AAD** so weakening Argon2id costs in the file fails
+decryption, legacy-format rejection, distinct-ciphertext property) plus 2
+settings tests (password never serializes to the UI, patch set/clear).
+
+**✅ Done (2026-08-09):**
+- [x] 🔴 **E2EE backup encryption (release blocker — FIXED).** `build_backup_package` now seals the whole package (identity + encrypted DB + metadata) with **AES-256-GCM** under an **Argon2id**-derived key (19 MiB, t=2, p=1, fresh salt + nonce per backup) — the identity's private keys never leave the device in cleartext. The envelope's public metadata (kind, version, KDF params, nonce) is bound into the GCM **AAD**, so tampering with it — e.g. weakening the Argon2id costs to cheapen brute force — fails authentication; KDF costs are read from the file on restore (validated, `m_cost ≥ 8·p_cost`) so future cost bumps stay backward-compatible. **One password for everything**: `export_everything` takes `Option<String>` — an explicit password (min 8 chars) is validated AND persisted as the shared backup password, `None` reuses the stored one, so a manual "Backup everything" never asks again once a password exists; `import_everything` / `import_identity` require the backup password, a wrong password fails cleanly with **zero** disk changes; pre-v2 plaintext backups are **rejected** with a clear message. **Automatic backups are always password-encrypted**: a backup password is set once in Settings (write-only — `get_settings` never returns it, only `autobackup_password_set`), `write_autobackup` refuses to write without one, the scheduler logs the failure, and the UI blocks enabling autobackup (and "Back up now") until a password exists. All backup-password dialogs (export/import/set) live inside the General tab, so the `set` flag and the autobackup toggle refresh the moment a password is saved; password fields have a first-party Eye/EyeOff toggle and the WebView2 native reveal button is hidden via CSS (`::-ms-reveal`). New `backup.rs` module (pure crypto, no hand-rolled primitives — RustCrypto `aes-gcm` + `argon2`).
 
 **⏳ Next up:**
-- [ ] 🔴 **E2EE backup encryption (CRITICAL — release blocker).** `build_backup_package` (lib.rs:643) stores the identity pickle — the **private keys** — as plaintext JSON next to the base64 SQLCipher DB whose key is derived from that same pickle (`derive_db_key`). Key and lock in one file; anyone holding a backup file can decrypt the whole history and impersonate the user. Autobackup writes this to a cloud folder by default (Dropbox/OneDrive). Fix (confirmed missing in earlier reviews): Argon2id/scrypt from a user-chosen password → AES-256-GCM over the whole package; restore asks for the password (wrong = error, no data); block password-less autobackup to disk. Follow-up design: separate identity and data — password-protected vault (DB + sessions) + Signal-style recovery key, or derive the DB key from a password instead of the identity
 - [ ] Deploy the relay to Hetzner (systemd unit ready) → real two-machine E2EE test — blocks public release
 - [ ] Chat export (Signal-style plaintext/JSON) — small, high-trust, GDPR-friendly
 - [ ] Media: images & files (MEDIA-SYSTEM.md ready) → voice messages on the same channel
 - [ ] Production hardening: binary integrity check (devtools already disabled in release; no console)
 - [ ] Public repo (open source) once remote testing is solid
+- [ ] E2EE PIN backup (follow-up design): separate identity and data — password-protected vault (DB + sessions) + Signal-style recovery key, or derive the DB key from a password instead of the identity
 
 **✅ Done (2026-08-06):**
 - [x] Contact rehydration: new `list_contacts` wire command — the client fetches its accepted contacts from the relay on every connect and merges them into memory + store, so a database reset/restore/fresh install never loses the contact list again (relay is the source of truth for friendships)

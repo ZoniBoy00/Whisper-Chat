@@ -133,6 +133,9 @@ export interface SettingsPatch {
   /** `null` clears the backup folder; a string sets it. */
   autobackup_dir?: string | null;
   autobackup_keep?: number;
+  /** Sets the backup password; an empty string clears it. Write-only: the
+   *  password is never returned by `getSettings`. */
+  autobackup_password?: string;
 }
 
 /** Persist a partial update of boolean preferences. */
@@ -214,23 +217,28 @@ export function exportIdentity(): Promise<string> {
 }
 
 /** Open a native pick dialog, validate and import an identity file over the
- *  current one. The frontend must then call `reloadIdentity` and reload the
- *  webview for the restored identity to take effect. */
-export function importIdentity(): Promise<string> {
-  return invoke("import_identity");
+ *  current one. `password` is required when the picked file is a full
+ *  encrypted backup; it is ignored for a bare identity file. The frontend
+ *  must then call `reloadIdentity` and reload the webview for the restored
+ *  identity to take effect. */
+export function importIdentity(password?: string): Promise<string> {
+  return invoke("import_identity", { password: password ?? null });
 }
 
 /** Export EVERYTHING — identity + the encrypted local database (history,
- *  sessions, contacts, settings) — as one JSON backup file. Resolves with
- *  the destination path. */
-export function exportEverything(): Promise<string> {
-  return invoke("export_everything");
+ *  sessions, contacts, settings) — as one password-encrypted JSON backup
+ *  file (Argon2id → AES-256-GCM). When `password` is omitted the stored
+ *  backup password is reused, so the user only ever enters it once. Resolves
+ *  with the destination path. */
+export function exportEverything(password?: string): Promise<string> {
+  return invoke("export_everything", { password: password ?? null });
 }
 
-/** Import a Whisper backup from `exportEverything`. The frontend must reload
+/** Import a Whisper backup from `exportEverything`; `password` unlocks the
+ *  sealed package (a wrong password fails cleanly). The frontend must reload
  *  the webview afterwards for the restored profile to take effect. */
-export function importEverything(): Promise<string> {
-  return invoke("import_everything");
+export function importEverything(password: string): Promise<string> {
+  return invoke("import_everything", { password });
 }
 
 /** Open a native folder picker for the automatic-backup destination.

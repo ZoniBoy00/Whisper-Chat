@@ -1022,6 +1022,17 @@ pub struct Settings {
     /// How many recent backups to keep before pruning (default 7).
     #[serde(default = "default_autobackup_keep")]
     pub autobackup_keep: usize,
+    /// Password used to seal automatic full-profile backups (Argon2id →
+    /// AES-256-GCM). NEVER serialized to the UI layer — the password lives
+    /// only in the encrypted local store; the UI only sees
+    /// [`Settings::autobackup_password_set`].
+    #[serde(skip_serializing, default)]
+    pub autobackup_password: Option<String>,
+    /// Whether a backup password has been configured. Serialized to the UI so
+    /// Settings can show "set / change / remove" without ever exposing the
+    /// password itself.
+    #[serde(default)]
+    pub autobackup_password_set: bool,
 }
 
 /// Serde default for the opt-out boolean preferences above.
@@ -1048,6 +1059,8 @@ impl Default for Settings {
             autobackup_enabled: false,
             autobackup_dir: None,
             autobackup_keep: default_autobackup_keep(),
+            autobackup_password: None,
+            autobackup_password_set: false,
         }
     }
 }
@@ -1090,6 +1103,12 @@ pub struct SettingsPatch {
     pub autobackup_dir: Option<Option<String>>,
     #[serde(default)]
     pub autobackup_keep: Option<usize>,
+    /// `Some(Some(pw))` sets the backup password; `Some(Some(""))` clears it;
+    /// `None` (field missing or `null`) leaves it untouched. The password is
+    /// write-only — `get_settings` never returns it, only
+    /// `autobackup_password_set`.
+    #[serde(default)]
+    pub autobackup_password: Option<Option<String>>,
 }
 
 /// Thread-safe handle to the relay client, managed as Tauri state.
@@ -2469,6 +2488,7 @@ impl RelayClient {
             autobackup_enabled,
             autobackup_dir,
             autobackup_keep,
+            autobackup_password,
             stored_group_outbound,
             stored_group_inbound,
             stored_group_meta,
@@ -2500,6 +2520,7 @@ impl RelayClient {
                 store.get_setting("autobackup_enabled")?,
                 store.get_setting("autobackup_dir")?,
                 store.get_setting("autobackup_keep")?,
+                store.get_setting("autobackup_password")?,
                 store.load_group_outbound()?,
                 store.load_group_inbound()?,
                 store.load_group_meta()?,
@@ -2620,6 +2641,11 @@ impl RelayClient {
             .filter(|value| !value.is_empty())
             .and_then(|value| value.parse().ok())
             .unwrap_or(7);
+        settings.autobackup_password = autobackup_password.filter(|value| !value.is_empty());
+        settings.autobackup_password_set = settings
+            .autobackup_password
+            .as_deref()
+            .is_some_and(|pw| !pw.is_empty());
         *write_guard(&self.inner.settings)? = settings;
 
         let mut profiles = read_guard(&self.inner.profiles)?.clone();

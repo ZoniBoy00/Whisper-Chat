@@ -549,3 +549,11 @@ mark.chat-mark-active {
     transform: translateX(16px);
   }
 }
+
+/* Hide the native WebView2/Chromium password-reveal button in password
+   fields — Whisper ships its own Eye/EyeOff toggle, so showing both would
+   give every password box two eye icons. */
+input[type="password"]::-ms-reveal,
+input[type="password"]::-ms-clear {
+  display: none;
+}
