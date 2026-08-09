@@ -293,7 +293,7 @@ impact and effort. Pull items into the phase table when they get scheduled.
 | 🧠 Nice-to-have | **Message padding** | random-size padding to flatten traffic patterns (metadata) |
 | 🧠 Nice-to-have | **Web client (WASM)** | e2ee-core → wasm-bindgen; read-only companion or full client — **deliberately deferred**: browser crypto = JS-held keys = larger XSS surface; the Tauri desktop is the differentiator |
 | 🧠 Nice-to-have | **Testnet mode** | a shared demo relay for trying the app without self-hosting |
-| 🔒 Security | **E2EE PIN backup (phase 2)** | Beyond the release-blocking fix (§13 Next up): split identity and data — password-protected "vault" (DB + sessions) + separate Signal-style recovery key for the identity; or derive the DB key from a password/PIN instead of the identity so a leaked identity alone opens nothing |
+| 🔒 Security | **E2EE PIN backup (phase 2)** | Beyond the shipped E2EE backup encryption (§13 Next up): split identity and data — password-protected "vault" (DB + sessions) + separate Signal-style recovery key for the identity; or derive the DB key from a password/PIN instead of the identity so a leaked identity alone opens nothing |
 | 🧠 Nice-to-have | **Multi-account / profile switcher** | one install, several identities (power-user feature) |
 | 🧠 Nice-to-have | **Email / recovery-key onboarding** | "save your recovery key" flow for users who find a bare key confusing — keeps the no-phone-number/no-account selling point (no email accounts, no extra metadata) |
 
@@ -354,7 +354,7 @@ settings tests (password never serializes to the UI, patch set/clear).
 - [ ] Media: images & files (MEDIA-SYSTEM.md ready) → voice messages on the same channel
 - [ ] Production hardening: binary integrity check (devtools already disabled in release; no console)
 - [ ] Public repo (open source) once remote testing is solid
-- [ ] E2EE PIN backup (follow-up design): separate identity and data — password-protected vault (DB + sessions) + Signal-style recovery key, or derive the DB key from a password instead of the identity
+- [ ] E2EE PIN backup (phase 2 — follow-up to the shipped backup encryption): separate identity and data — password-protected vault (DB + sessions) + Signal-style recovery key, or derive the DB key from a password/PIN instead of the identity so a leaked identity alone opens nothing
 
 **✅ Done (2026-08-06):**
 - [x] Contact rehydration: new `list_contacts` wire command — the client fetches its accepted contacts from the relay on every connect and merges them into memory + store, so a database reset/restore/fresh install never loses the contact list again (relay is the source of truth for friendships)
