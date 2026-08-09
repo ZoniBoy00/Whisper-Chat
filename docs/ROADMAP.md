@@ -350,8 +350,8 @@ settings tests (password never serializes to the UI, patch set/clear).
 
 **⏳ Next up:**
 - [ ] Deploy the relay to Hetzner (systemd unit ready) → real two-machine E2EE test — blocks public release
-- [ ] Relay deploy package: reverse proxy (nginx or Caddy) with TLS/WSS + Let's Encrypt (or Cloudflare Tunnel) in front of the relay — required before public use; ship a config template under `server/deploy/`
-- [ ] Relay: trusted-proxy IP handling — when behind nginx/Caddy/Cloudflare, rate limiting must read the real client IP (`X-Forwarded-For` / PROXY protocol), otherwise every client shares the proxy's bucket and per-IP limits break
+- [ ] Relay deploy package: reverse proxy (nginx or Caddy) with TLS/WSS + Let's Encrypt (or Cloudflare Tunnel) in front of the relay — required before public use; ship a config template under `server/deploy/`; **decide before deploy: direct TLS + origin cert pinning (no tunnel) OR Cloudflare Tunnel without pinning — through a tunnel the client sees Cloudflare's edge cert, not the origin's, so the §9 pinning rule only holds with direct TLS**
+- [ ] Relay: trusted-proxy IP handling — when behind nginx/Caddy/Cloudflare, rate limiting must read the real client IP (`X-Forwarded-For` / PROXY protocol), otherwise every client shares the proxy's bucket and per-IP limits break; **the proxy must overwrite (not append) `X-Forwarded-For` and the relay must only trust a configured proxy list — otherwise clients can spoof the header and bypass rate limiting entirely; PROXY protocol v2 is the spoof-proof alternative (Cloudflare: use `CF-Connecting-IP`)**
 - [ ] Relay: rate-limiter bucket GC — prune idle per-IP buckets so the in-memory map cannot grow unbounded over time
 - [ ] Relay: optional `/metrics` endpoint (envelope counts, rate-limit hits, active WS connections) behind an env flag for light observability
 - [ ] Chat export (Signal-style plaintext/JSON) — small, high-trust, GDPR-friendly
