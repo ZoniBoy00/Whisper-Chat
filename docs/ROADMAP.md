@@ -350,6 +350,10 @@ settings tests (password never serializes to the UI, patch set/clear).
 
 **⏳ Next up:**
 - [ ] Deploy the relay to Hetzner (systemd unit ready) → real two-machine E2EE test — blocks public release
+- [ ] Relay deploy package: reverse proxy (nginx or Caddy) with TLS/WSS + Let's Encrypt (or Cloudflare Tunnel) in front of the relay — required before public use; ship a config template under `server/deploy/`
+- [ ] Relay: trusted-proxy IP handling — when behind nginx/Caddy/Cloudflare, rate limiting must read the real client IP (`X-Forwarded-For` / PROXY protocol), otherwise every client shares the proxy's bucket and per-IP limits break
+- [ ] Relay: rate-limiter bucket GC — prune idle per-IP buckets so the in-memory map cannot grow unbounded over time
+- [ ] Relay: optional `/metrics` endpoint (envelope counts, rate-limit hits, active WS connections) behind an env flag for light observability
 - [ ] Chat export (Signal-style plaintext/JSON) — small, high-trust, GDPR-friendly
 - [ ] Media: images & files (MEDIA-SYSTEM.md ready) → voice messages on the same channel
 - [ ] Production hardening: binary integrity check (devtools already disabled in release; no console)
