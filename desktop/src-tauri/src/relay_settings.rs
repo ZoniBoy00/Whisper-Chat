@@ -74,7 +74,18 @@ impl RelayClient {
             _ => store.delete_setting("autobackup_dir")?,
         }
         store.set_setting("autobackup_keep", &settings.autobackup_keep.to_string())?;
-        *write_guard(&self.inner.settings)? = settings.clone();
+        // The backup password is write-only: it is persisted in the encrypted
+        // local store and NEVER serialized back to the UI (skip_serializing).
+        match &settings.autobackup_password {
+            Some(pw) if !pw.is_empty() => store.set_setting("autobackup_password", pw)?,
+            _ => store.delete_setting("autobackup_password")?,
+        }
+        let mut settings = settings.clone();
+        settings.autobackup_password_set = settings
+            .autobackup_password
+            .as_deref()
+            .is_some_and(|pw| !pw.is_empty());
+        *write_guard(&self.inner.settings)? = settings;
         Ok(())
     }
 
@@ -157,6 +168,11 @@ impl RelayClient {
         }
         if let Some(value) = patch.autobackup_keep {
             settings.autobackup_keep = value.max(1);
+        }
+        if let Some(value) = patch.autobackup_password.clone() {
+            // `Some(Some(""))` clears the password; `Some(pw)` sets it. `None`
+            // (null / missing field) leaves it untouched.
+            settings.autobackup_password = value.filter(|pw| !pw.is_empty());
         }
         self.save_settings(&settings)
     }
@@ -362,6 +378,7 @@ mod tests {
         assert!(settings.enter_to_send);
         assert_eq!(settings.message_font_scale, None);
         assert!(!settings.autostart);
+        assert!(!settings.autobackup_password_set);
     }
 
     #[test]
@@ -397,6 +414,7 @@ mod tests {
         assert_eq!(patch.enter_to_send, None);
         assert_eq!(patch.message_font_scale, None);
         assert_eq!(patch.autostart, None);
+        assert_eq!(patch.autobackup_password, None);
     }
 
     #[test]
@@ -411,6 +429,46 @@ mod tests {
         assert_eq!(patch.enter_to_send, Some(false));
         assert_eq!(patch.message_font_scale.as_deref(), Some("small"));
         assert_eq!(patch.autostart, Some(true));
+    }
+
+    #[test]
+    fn settings_serialization_never_exposes_the_backup_password() {
+        // The backup password must be write-only: serializing Settings (which
+        // is what `get_settings` sends to the UI) leaks the password flag but
+        // never the password itself.
+        let settings = Settings {
+            autobackup_password: Some("hunter2".into()),
+            autobackup_password_set: true,
+            ..Settings::default()
+        };
+        let value = serde_json::to_value(&settings).expect("serialize settings");
+        assert_eq!(value.get("autobackup_password"), None);
+        assert_eq!(value["autobackup_password_set"], true);
+        assert!(value.get("autobackup_keep").is_some());
+    }
+
+    #[test]
+    fn settings_patch_carries_backup_password_and_clears_it() {
+        let set: SettingsPatch = serde_json::from_str(r#"{"autobackup_password":"s3cret-pass"}"#)
+            .expect("patch with password must parse");
+        assert_eq!(
+            set.autobackup_password,
+            Some(Some("s3cret-pass".to_string()))
+        );
+
+        // `null` (or a missing field) means "no change" — serde collapses it
+        // to `None`. Clearing is expressed with an empty string.
+        let untouched: SettingsPatch = serde_json::from_str(r#"{"autobackup_password":null}"#)
+            .expect("patch with null password must parse");
+        assert_eq!(untouched.autobackup_password, None);
+
+        let clear: SettingsPatch = serde_json::from_str(r#"{"autobackup_password":""}"#)
+            .expect("patch clearing the password must parse");
+        assert_eq!(clear.autobackup_password, Some(Some(String::new())));
+
+        let other: SettingsPatch =
+            serde_json::from_str(r#"{"autobackup_keep":3}"#).expect("partial patch must parse");
+        assert_eq!(other.autobackup_password, None);
     }
 
     #[test]

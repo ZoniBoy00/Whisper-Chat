@@ -62,9 +62,6 @@ interface SettingsDialogProps {
   /** Identity backup/restore through a native file dialog. */
   onExportIdentity: () => Promise<void>;
   onImportIdentity: () => Promise<void>;
-  /** Export/import the whole profile (identity + encrypted database). */
-  onExportEverything: () => Promise<void>;
-  onImportEverything: () => Promise<void>;
   /** Wipe the whole message history on this device. */
   onClearHistory: () => Promise<void>;
 }
@@ -109,8 +106,6 @@ export function SettingsDialog({
   onMessageFontScaleChange,
   onExportIdentity,
   onImportIdentity,
-  onExportEverything,
-  onImportEverything,
   onClearHistory,
 }: SettingsDialogProps) {
   const { t } = useI18n();
@@ -202,8 +197,6 @@ export function SettingsDialog({
                 onMessageFontScaleChange={onMessageFontScaleChange}
                 onExportIdentity={onExportIdentity}
                 onImportIdentity={onImportIdentity}
-                onExportEverything={onExportEverything}
-                onImportEverything={onImportEverything}
               />
               <PrivacyTab
                 active={activeTab === "privacy"}

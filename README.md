@@ -92,6 +92,11 @@ sender and the recipient can read them.
   time, no ANSI colors) with a one-click "Open logs folder" action in Settings.
 - **Automatic backups** — optional daily autobackup (enabled/directory/keep
   count) plus full export/import of identity + history as a single JSON file.
+  Every full backup is **password-encrypted** (Argon2id → AES-256-GCM): the
+  identity's private keys never leave the device in cleartext. **One password
+  covers everything** — set it once (manual export or Settings) and both
+  manual and automatic backups reuse it without asking again; restoring asks
+  for the password (a wrong one changes nothing on disk).
 - **Cross-platform future** — Tauri desktop today, Flutter mobile coming (one
   shared Rust crypto core).
 - **Hardened release builds** — `lto="fat"`, `panic="abort"`, `strip=true`
@@ -253,7 +258,7 @@ cargo fmt --check
 
 ## Testing & TDD
 
-- **328 unit tests** across the workspace (e2ee-core 88, whisper-desktop 99,
+- **341 unit tests** across the workspace (e2ee-core 88, whisper-desktop 112,
   whisper-relay 141)
 - **92 smoke tests** covering live routing, offline delivery, SQLite
   persistence, `fetch_since` sync, rate limiting and signed-hello spoofing
@@ -282,9 +287,9 @@ reactions, quoted replies, safety numbers + QR, invite/join deep links, i18n
 (EN/FI), notifications, presence and privacy controls, daily log files and
 automatic backups.
 
-**Next up:** relay deployment to a real VPS (two-machine E2EE test),
-disappearing messages, message editing + delete-for-everyone, media/calls,
-mobile (Flutter), external audit + post-quantum (X25519Kyber768).
+**Next up:** relay deployment to a real VPS (two-machine E2EE test —
+the last remaining release blocker), chat export, media/calls, mobile
+(Flutter), external audit + post-quantum (X25519Kyber768).
 
 See [docs/ROADMAP.md](docs/ROADMAP.md) for the full technical roadmap.
 

@@ -397,6 +397,15 @@ export const translations = {
       "Write a full backup (identity + history) into a cloud-synced folder every day.",
     "general.autobackup_pick_folder": "Choose backup folder…",
     "general.autobackup_now": "Back up now",
+    "general.autobackup_requires_password":
+      "Set a backup password before enabling automatic backups.",
+    "general.autobackup_password": "Backup password",
+    "general.autobackup_password_set": "Password set",
+    "general.autobackup_password_unset":
+      "No password — automatic backups stay off until one is set.",
+    "general.autobackup_password_set_btn": "Set password",
+    "general.autobackup_password_change": "Change",
+    "general.autobackup_password_remove": "Remove password",
     "general.restore_identity": "Restore identity",
     "general.restore_identity_warn":
       "Restoring replaces your current identity and requires an app restart.",
@@ -454,6 +463,26 @@ export const translations = {
     // ---- Chat list previews ----------------------------------------------
     "chatList.you_prefix": "You: ",
 
+    // ---- Backup password dialog ------------------------------------------
+    "backup.export_title": "Encrypt backup",
+    "backup.export_hint":
+      "This backup is encrypted with a password. You only set it once — the same password is then used for automatic backups too.",
+    "backup.unlock_title": "Unlock backup",
+    "backup.unlock_hint":
+      "Enter the backup's password to restore your identity and history.",
+    "backup.set_password_title": "Set backup password",
+    "backup.set_password_hint":
+      "Automatic backups are encrypted with this password. Keep it safe — it can't be recovered.",
+    "backup.password": "Password",
+    "backup.confirm_password": "Confirm password",
+    "backup.show_password": "Show password",
+    "backup.hide_password": "Hide password",
+    "backup.password_too_short": "Password must be at least {min} characters.",
+    "backup.password_mismatch": "Passwords don't match.",
+    "backup.unlock": "Unlock",
+    "backup.continue": "Continue",
+    "backup.working": "Working…",
+
     // ---- Toasts (in-app notifications) -----------------------------------
     "toast.dismiss": "Dismiss notification",
     "toast.avatar_updated": "Avatar updated",
@@ -477,6 +506,8 @@ export const translations = {
     "toast.backup_exported": "Full backup saved",
     "toast.backup_imported": "Backup restored",
     "toast.backup_import_restart": "Restarting to apply…",
+    "toast.backup_password_set": "Backup password set",
+    "toast.backup_password_removed": "Backup password removed",
     "toast.identity_import_restart":
       "Restarting to apply your restored identity\u2026",
     "toast.autostart_enabled": "Will open Whisper at startup",
@@ -869,6 +900,15 @@ export const translations = {
       "Kirjoita täysi varmuuskopio (henkilöllisyys + historia) pilveen synkattuun kansioon päivittäin.",
     "general.autobackup_pick_folder": "Valitse varmuuskopiokansio…",
     "general.autobackup_now": "Varmuuskopioi nyt",
+    "general.autobackup_requires_password":
+      "Aseta varmuuskopiosalasana ennen automaattisten varmuuskopioiden käyttöönottoa.",
+    "general.autobackup_password": "Varmuuskopiosalasana",
+    "general.autobackup_password_set": "Salasana asetettu",
+    "general.autobackup_password_unset":
+      "Ei salasanaa — automaattiset varmuuskopiot pysyvät pois päältä, kunnes salasana on asetettu.",
+    "general.autobackup_password_set_btn": "Aseta salasana",
+    "general.autobackup_password_change": "Vaihda",
+    "general.autobackup_password_remove": "Poista salasana",
     "general.restore_identity": "Palauta henkilöllisyys",
     "general.restore_identity_warn":
       "Palautus korvaa nykyisen henkilöllisyytesi ja edellyttää sovelluksen uudelleenkäynnistystä.",
@@ -927,6 +967,26 @@ export const translations = {
     // ---- Chat list previews ----------------------------------------------
     "chatList.you_prefix": "Sinä: ",
 
+    // ---- Backup password dialog ------------------------------------------
+    "backup.export_title": "Salaa varmuuskopio",
+    "backup.export_hint":
+      "Tämä varmuuskopio salataan salasanalla. Asetat sen vain kerran — samaa salasanaa käytetään sitten myös automaattisiin varmuuskopioihin.",
+    "backup.unlock_title": "Avaa varmuuskopio",
+    "backup.unlock_hint":
+      "Anna varmuuskopion salasana palauttaaksesi henkilöllisyyden ja historian.",
+    "backup.set_password_title": "Aseta varmuuskopiosalasana",
+    "backup.set_password_hint":
+      "Automaattiset varmuuskopiot salataan tällä salasanalla. Säilytä se turvassa — sitä ei voi palauttaa.",
+    "backup.password": "Salasana",
+    "backup.confirm_password": "Vahvista salasana",
+    "backup.show_password": "Näytä salasana",
+    "backup.hide_password": "Piilota salasana",
+    "backup.password_too_short": "Salasanan on oltava vähintään {min} merkkiä.",
+    "backup.password_mismatch": "Salasanat eivät täsmää.",
+    "backup.unlock": "Avaa",
+    "backup.continue": "Jatka",
+    "backup.working": "Käsitellään…",
+
     // ---- Toasts (in-app notifications) -----------------------------------
     "toast.dismiss": "Sulje ilmoitus",
     "toast.avatar_updated": "Profiilikuva päivitetty",
@@ -950,6 +1010,8 @@ export const translations = {
     "toast.backup_exported": "Täysi varmuuskopio tallennettu",
     "toast.backup_imported": "Varmuuskopio palautettu",
     "toast.backup_import_restart": "Käynnistetään uudelleen…",
+    "toast.backup_password_set": "Varmuuskopiosalasana asetettu",
+    "toast.backup_password_removed": "Varmuuskopiosalasana poistettu",
     "toast.identity_import_restart":
       "Käynnistetään uudelleen palautetun henkilöllisyyden käyttöönottamiseksi…",
     "toast.autostart_enabled": "Whisper avautuu kirjautumisen yhteydessä",

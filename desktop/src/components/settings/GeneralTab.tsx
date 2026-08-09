@@ -24,8 +24,10 @@ import type { Theme } from "../../types";
 import { cx, mediaUrl } from "../../lib/format";
 import { copyText } from "../../lib/clipboard";
 import {
+  exportEverything,
   getInviteLink,
   getSettings,
+  importEverything,
   pickAutobackupDir,
   runAutobackupNow,
   updateSettings,
@@ -34,6 +36,7 @@ import { useI18n } from "../../i18n/I18nContext";
 import { useToast } from "../../hooks/useToast";
 import type { TFunction } from "../../i18n/types";
 import { Avatar } from "../Avatar";
+import { BackupPasswordDialog } from "../BackupPasswordDialog";
 import { CopyButton } from "../CopyButton";
 import { SectionHeading, ToggleRow } from "./controls";
 
@@ -108,9 +111,6 @@ interface GeneralTabProps {
   /** Back up / restore the identity file through a native file dialog. */
   onExportIdentity: () => Promise<void>;
   onImportIdentity: () => Promise<void>;
-  /** Export/import the whole profile (identity + encrypted database). */
-  onExportEverything: () => Promise<void>;
-  onImportEverything: () => Promise<void>;
 }
 
 /** Message font scale options; labels are translated through `t`. */
@@ -144,8 +144,6 @@ export function GeneralTab({
   onMessageFontScaleChange,
   onExportIdentity,
   onImportIdentity,
-  onExportEverything,
-  onImportEverything,
 }: GeneralTabProps) {
   const { t, language, setLanguage } = useI18n();
   const { toast } = useToast();
@@ -168,12 +166,23 @@ export function GeneralTab({
   // Automatic-backup state, hydrated from the persisted settings on mount.
   const [autobackupEnabled, setAutobackupEnabled] = useState(false);
   const [autobackupDir, setAutobackupDir] = useState<string | null>(null);
+  // Whether a backup password is configured (the password itself is
+  // write-only — the backend only reports this flag).
+  const [backupPasswordSet, setBackupPasswordSet] = useState(false);
+  // Which backup-password prompt is open. Owned by this tab so the
+  // `backupPasswordSet` flag refreshes the moment a password is saved —
+  // a MainView-owned dialog would leave the autobackup toggle stale until
+  // re-opening the whole Settings dialog.
+  const [backupDialog, setBackupDialog] = useState<
+    "export" | "import" | "set" | null
+  >(null);
 
   useEffect(() => {
     getSettings()
       .then((settings) => {
         setAutobackupEnabled(settings.autobackup_enabled ?? false);
         setAutobackupDir(settings.autobackup_dir ?? null);
+        setBackupPasswordSet(settings.autobackup_password_set ?? false);
       })
       .catch(() => {});
   }, []);
@@ -191,8 +200,13 @@ export function GeneralTab({
     }
   };
 
-  /** Write a backup right now into the configured folder. */
+  /** Write a backup right now into the configured folder. Automatic backups
+   *  are always password-encrypted, so a password must be set first. */
   const handleRunBackupNow = async () => {
+    if (!backupPasswordSet) {
+      toast(t("general.autobackup_requires_password"), "error");
+      return;
+    }
     try {
       const path = await runAutobackupNow();
       toast(t("toast.backup_exported"), "success");
@@ -200,6 +214,78 @@ export function GeneralTab({
     } catch (err) {
       const message = String(err).replace(/^Error:\s*/, "");
       toast(message, "error");
+    }
+  };
+
+  /** Clear the backup password. If automatic backups are enabled they are
+   *  turned off too — a passwordless backup can never be written, so leaving
+   *  the scheduler on would just fail silently every day. */
+  const handleRemoveBackupPassword = async () => {
+    try {
+      await updateSettings({ autobackup_password: "" });
+      setBackupPasswordSet(false);
+      if (autobackupEnabled) {
+        setAutobackupEnabled(false);
+        await updateSettings({ autobackup_enabled: false });
+      }
+      toast(t("toast.backup_password_removed"), "success");
+    } catch (err) {
+      const message = String(err).replace(/^Error:\s*/, "");
+      toast(message, "error");
+    }
+  };
+
+  /** Persist a new automatic-backup password from the password dialog and
+   *  refresh the local `set` flag immediately, so the autobackup toggle and
+   *  "Back up now" work without re-opening Settings. */
+  const handleSetBackupPassword = async (password: string) => {
+    await updateSettings({ autobackup_password: password });
+    setBackupPasswordSet(true);
+    toast(t("toast.backup_password_set"), "success");
+  };
+
+  /** Export the whole profile. One password covers manual AND automatic
+   *  backups: if one is already stored it is reused silently (no prompt);
+   *  otherwise the dialog asks once and that password becomes the stored
+   *  one, so the autobackup toggle works immediately after. */
+  const handleExportEverything = async () => {
+    try {
+      const settings = await getSettings();
+      if (settings.autobackup_password_set) {
+        await exportEverything();
+        toast(t("toast.backup_exported"), "success");
+      } else {
+        setBackupDialog("export");
+      }
+    } catch (err) {
+      const message = String(err).replace(/^Error:\s*/, "");
+      toast(message, "error");
+    }
+  };
+
+  /** Import a full-profile backup. The dialog asks for the backup's
+   *  password; a wrong one fails cleanly without touching the disk. */
+  const handleImportEverything = async () => {
+    setBackupDialog("import");
+  };
+
+  /** Run the active backup-password dialog action. `export` persists the
+   *  entered password as the shared backup password and refreshes the flag;
+   *  `import` unlocks a backup and reloads; `set` stores the autobackup
+   *  password. */
+  const handleBackupDialogSubmit = async (password: string) => {
+    if (backupDialog === "export") {
+      await exportEverything(password);
+      setBackupPasswordSet(true);
+      toast(t("toast.backup_exported"), "success");
+    } else if (backupDialog === "import") {
+      await importEverything(password);
+      toast(t("toast.backup_imported"), "success");
+      toast(t("toast.backup_import_restart"), "info");
+      // Give the toasts a moment to render before the reload.
+      window.setTimeout(() => window.location.reload(), 1500);
+    } else {
+      await handleSetBackupPassword(password);
     }
   };
   const [inviteCopied, setInviteCopied] = useState(false);
@@ -829,7 +915,7 @@ export function GeneralTab({
             </button>
             <button
               type="button"
-              onClick={() => void onExportEverything()}
+              onClick={() => void handleExportEverything()}
               className="inline-flex items-center gap-2 rounded-xl bg-wp-panel-2 px-4 py-2.5 text-xs font-semibold text-wp-text transition hover:bg-wp-panel-3"
             >
               <Download className="h-3.5 w-3.5" aria-hidden="true" />
@@ -837,7 +923,7 @@ export function GeneralTab({
             </button>
             <button
               type="button"
-              onClick={() => void onImportEverything()}
+              onClick={() => void handleImportEverything()}
               className="inline-flex items-center gap-2 rounded-xl bg-wp-panel-2 px-4 py-2.5 text-xs font-semibold text-wp-text transition hover:bg-wp-panel-3"
             >
               <Upload className="h-3.5 w-3.5" aria-hidden="true" />
@@ -863,12 +949,56 @@ export function GeneralTab({
             description={t("general.autobackup_desc")}
             checked={autobackupEnabled}
             onChange={(value) => {
+              // Automatic backups are always password-encrypted: never enable
+              // the scheduler without a backup password in place.
+              if (value && !backupPasswordSet) {
+                toast(t("general.autobackup_requires_password"), "error");
+                return;
+              }
               setAutobackupEnabled(value);
               void updateSettings({ autobackup_enabled: value })
                 .then(() => toast(t("toast.settings_saved"), "info"))
                 .catch(() => {});
             }}
           />
+          {/* Backup password — write-only: the UI only ever sees the `set`
+              flag, never the password itself. */}
+          <div className="flex items-center justify-between gap-3 rounded-xl border border-wp-line/10 bg-wp-panel-2 px-3 py-2.5">
+            <div className="min-w-0">
+              <p className="flex items-center gap-1.5 text-xs font-semibold text-wp-text">
+                <KeyRound className="h-3.5 w-3.5 shrink-0 text-wp-accent" aria-hidden="true" />
+                {t("general.autobackup_password")}
+              </p>
+              <p className="mt-0.5 truncate text-[11px] leading-snug text-wp-dim">
+                {backupPasswordSet
+                  ? t("general.autobackup_password_set")
+                  : t("general.autobackup_password_unset")}
+              </p>
+            </div>
+            <div className="flex shrink-0 items-center gap-2">
+              <button
+                type="button"
+                onClick={() => setBackupDialog("set")}
+                className="inline-flex items-center gap-1.5 rounded-xl bg-wp-panel-3 px-3 py-1.5 text-xs font-semibold text-wp-text transition hover:bg-wp-panel-3 hover:text-wp-accent"
+              >
+                <KeyRound className="h-3 w-3" aria-hidden="true" />
+                {backupPasswordSet
+                  ? t("general.autobackup_password_change")
+                  : t("general.autobackup_password_set_btn")}
+              </button>
+              {backupPasswordSet ? (
+                <button
+                  type="button"
+                  onClick={() => void handleRemoveBackupPassword()}
+                  aria-label={t("general.autobackup_password_remove")}
+                  title={t("general.autobackup_password_remove")}
+                  className="inline-flex items-center rounded-xl p-2 text-wp-dim transition hover:bg-wp-panel-3 hover:text-wp-danger"
+                >
+                  <Trash2 className="h-3.5 w-3.5" aria-hidden="true" />
+                </button>
+              ) : null}
+            </div>
+          </div>
           <div className="flex items-center gap-2">
             <button
               type="button"
@@ -894,6 +1024,20 @@ export function GeneralTab({
           </div>
         </div>
       </section>
+
+      {/* Backup-password prompt for export / import / set. Rendered inside
+          this tab so the `set` flag and autobackup toggle refresh
+          immediately after the password is saved; nested `<dialog>` elements
+          are legal (the inner one opens in the browser top layer, above the
+          Settings dialog). */}
+      <BackupPasswordDialog
+        open={backupDialog !== null}
+        onOpenChange={(open) => {
+          if (!open) setBackupDialog(null);
+        }}
+        mode={backupDialog ?? "export"}
+        onSubmit={handleBackupDialogSubmit}
+      />
     </div>
   );
 }
