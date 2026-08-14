@@ -18,7 +18,7 @@ set -euo pipefail
 
 DOMAIN="${WHISPER_DOMAIN:-whisper-test.homelab.cfd}"
 CERTBOT_EMAIL="${WHISPER_CERTBOT_EMAIL:-}"
-RELAY_ADDR="127.0.0.1:8080"
+RELAY_ADDR="127.0.0.1:18080"
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 APP_DIR="/opt/whisper"
 DATA_DIR="${APP_DIR}/data"
@@ -78,7 +78,7 @@ server {
 
     # Envelope + media uploads.
     location /media/ {
-        proxy_pass http://127.0.0.1:8080;
+        proxy_pass http://127.0.0.1:18080;
         proxy_set_header Host \$host;
         proxy_set_header X-Forwarded-For \$remote_addr;
         proxy_set_header X-Forwarded-Proto https;
@@ -87,7 +87,7 @@ server {
     # WebSocket endpoint — the heart of the relay. Upgrade headers are
     # mandatory, and the proxy must not time out an idle chat connection.
     location /ws {
-        proxy_pass http://127.0.0.1:8080;
+        proxy_pass http://127.0.0.1:18080;
         proxy_http_version 1.1;
         proxy_set_header Upgrade \$http_upgrade;
         proxy_set_header Connection "upgrade";
@@ -100,13 +100,13 @@ server {
 
     # Liveness probe + optional metrics (WHISPER_METRICS=1).
     location = /healthz {
-        proxy_pass http://127.0.0.1:8080;
+        proxy_pass http://127.0.0.1:18080;
         proxy_set_header Host \$host;
         proxy_set_header X-Forwarded-For \$remote_addr;
         proxy_set_header X-Forwarded-Proto https;
     }
     location = /metrics {
-        proxy_pass http://127.0.0.1:8080;
+        proxy_pass http://127.0.0.1:18080;
         proxy_set_header Host \$host;
         proxy_set_header X-Forwarded-For \$remote_addr;
         proxy_set_header X-Forwarded-Proto https;

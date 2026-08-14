@@ -182,7 +182,7 @@ without rewriting the entire client.
 cargo build --release
 
 # Run
-WHISPER_ADDR=0.0.0.0:8080 cargo run --release
+WHISPER_ADDR=0.0.0.0:18080 cargo run --release
 ```
 
 The relay listens on `/ws` (WebSocket) and exposes a `/healthz` liveness probe.
@@ -193,7 +193,7 @@ Copy `server/.env.example` and adjust (or export directly):
 
 | Variable            | Default          | Purpose                              |
 |---------------------|------------------|--------------------------------------|
-| `WHISPER_ADDR`      | `0.0.0.0:8080`   | Bind address                         |
+| `WHISPER_ADDR`      | `0.0.0.0:18080`   | Bind address                         |
 | `WHISPER_DB_PATH`   | `data/relay.db`  | SQLite database location             |
 | `WHISPER_RATE_BURST`| `60`             | Max envelope burst per IP            |
 | `WHISPER_RATE_REFILL`| `1`             | Tokens refilled per second (~60/min) |

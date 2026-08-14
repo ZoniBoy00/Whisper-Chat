@@ -113,7 +113,7 @@ async fn main() {
     let app = app.with_state(app_state);
 
     let addr: SocketAddr = std::env::var("WHISPER_ADDR")
-        .unwrap_or_else(|_| "0.0.0.0:8080".into())
+        .unwrap_or_else(|_| "0.0.0.0:18080".into())
         .parse()
         .expect("invalid WHISPER_ADDR");
 

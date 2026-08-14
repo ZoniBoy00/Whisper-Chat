@@ -28,6 +28,14 @@ import type {
   TypingEvent,
 } from "../types";
 
+/**
+ * Default relay endpoint, used when no custom URL is persisted and
+ * `WHISPER_RELAY_URL` is unset. Currently points at the test relay
+ * (whisper-test.homelab.cfd) while the Hetzner E2EE test is running;
+ * replace with the production relay before public release.
+ */
+export const DEFAULT_RELAY_URL = "wss://whisper-test.homelab.cfd/ws";
+
 /** Connect to the relay and authenticate with the stored identity. */
 export function connectRelay(): Promise<void> {
   return invoke("connect_relay");

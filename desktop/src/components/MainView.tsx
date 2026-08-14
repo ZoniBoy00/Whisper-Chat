@@ -3,6 +3,7 @@ import type { QuoteInfo, Theme } from "../types";
 import {
   clearChatHistory,
   createGroup,
+  DEFAULT_RELAY_URL,
   demoteMember,
   exportIdentity,
   getGroupInfo,
@@ -168,7 +169,7 @@ export function MainView({ peerId, onReset }: MainViewProps) {
           // The relay URL is hardcoded in the client; keep the state in sync
           // even before the first connect persists the effective endpoint, so
           // `/media/{hash}` avatar paths always resolve.
-          setRelayUrl("ws://127.0.0.1:8080/ws");
+          setRelayUrl(DEFAULT_RELAY_URL);
         }
         if (settings.presence_visible != null) setPresenceVisible(settings.presence_visible);
         setReadReceipts(settings.read_receipts ?? true);
@@ -206,7 +207,7 @@ export function MainView({ peerId, onReset }: MainViewProps) {
         if (settings.relay_url) {
           setRelayUrl(settings.relay_url);
         } else {
-          setRelayUrl("ws://127.0.0.1:8080/ws");
+          setRelayUrl(DEFAULT_RELAY_URL);
         }
       } catch {
         // Best-effort: the initial mount already loaded the settings.
