@@ -1,10 +1,12 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../rust/api/whisper.dart' as core;
 import '../theme.dart';
+import '../widgets/avatar.dart';
 import 'settings_screen.dart';
 
 /// One chat line in a conversation.
@@ -17,8 +19,9 @@ class ChatLine {
       : at = DateTime.now();
 }
 
-/// The main app shell: a desktop-style sidebar (conversation list, contacts,
-/// new-chat, settings) plus the chat pane. Mirrors the desktop MainView.
+/// The main app shell — a pixel-faithful port of the desktop MainView:
+/// a 350px sidebar (profile header, search, Chats/Contacts tabs, conversation
+/// list) beside the chat pane (header, bubbles, composer).
 class MainScreen extends StatefulWidget {
   final core.WhisperClient client;
   final String peerId;
@@ -32,6 +35,8 @@ class MainScreen extends StatefulWidget {
   State<MainScreen> createState() => _MainScreenState();
 }
 
+enum _View { chats, contacts }
+
 class _MainScreenState extends State<MainScreen> {
   final _messages = <String, List<ChatLine>>{};
   String? _activePeer;
@@ -39,15 +44,15 @@ class _MainScreenState extends State<MainScreen> {
   String _status = 'Not connected';
   List<String> _contacts = [];
   List<String> _pendingRequests = [];
-  bool _showContacts = false;
+  _View _view = _View.chats;
   Timer? _poller;
+  final _searchCtrl = TextEditingController();
+  String _query = '';
 
   @override
   void initState() {
     super.initState();
-    // Auto-connect using the hardcoded relay URL.
     _connect();
-    // Poll the event queue (messages, contacts, presence, errors).
     _poller = Timer.periodic(const Duration(milliseconds: 500), (_) async {
       final events = await widget.client.takeEvents();
       for (final e in events) {
@@ -59,14 +64,15 @@ class _MainScreenState extends State<MainScreen> {
   @override
   void dispose() {
     _poller?.cancel();
+    _searchCtrl.dispose();
     super.dispose();
   }
 
   Future<void> _connect() async {
     setState(() => _status = 'Connecting…');
     try {
-      // Load the stored identity JSON for the handshake.
-      final json = await _loadIdentityJson();
+      final prefs = await SharedPreferences.getInstance();
+      final json = prefs.getString('identity_json') ?? '';
       await widget.client.connect(relayUrl: null, identityJson: json);
       setState(() {
         _connected = true;
@@ -77,11 +83,6 @@ class _MainScreenState extends State<MainScreen> {
     } catch (err) {
       setState(() => _status = '$err');
     }
-  }
-
-  Future<String> _loadIdentityJson() async {
-    final prefs = await SharedPreferences.getInstance();
-    return prefs.getString('identity_json') ?? '';
   }
 
   void _handleEvent(core.ChatEvent e) {
@@ -118,82 +119,14 @@ class _MainScreenState extends State<MainScreen> {
     await widget.client.watchPresence(peerId: peer);
   }
 
-  Future<void> _newChat() async {
-    final controller = TextEditingController();
-    final peer = await showDialog<String>(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        backgroundColor: Wp.panel,
-        title: const Text('New chat',
-            style: TextStyle(color: Wp.text, fontSize: 18)),
-        content: TextField(
-          controller: controller,
-          autofocus: true,
-          style: const TextStyle(color: Wp.text),
-          decoration: const InputDecoration(
-            hintText: 'Peer ID (24 hex)',
-            hintStyle: TextStyle(color: Wp.textFaint),
-          ),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(ctx),
-            child: const Text('Cancel',
-                style: TextStyle(color: Wp.textDim)),
-          ),
-          FilledButton(
-            onPressed: () => Navigator.pop(ctx, controller.text.trim()),
-            style: FilledButton.styleFrom(backgroundColor: Wp.accent),
-            child: const Text('Open', style: TextStyle(color: Wp.accentFg)),
-          ),
-        ],
-      ),
-    );
-    if (peer != null && peer.isNotEmpty) {
-      _openChat(peer);
-    }
-  }
-
-  Future<void> _addFriend() async {
-    final controller = TextEditingController();
-    final peer = await showDialog<String>(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        backgroundColor: Wp.panel,
-        title: const Text('Add contact',
-            style: TextStyle(color: Wp.text, fontSize: 18)),
-        content: TextField(
-          controller: controller,
-          autofocus: true,
-          style: const TextStyle(color: Wp.text),
-          decoration: const InputDecoration(
-            hintText: 'Peer ID (24 hex)',
-            hintStyle: TextStyle(color: Wp.textFaint),
-          ),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(ctx),
-            child: const Text('Cancel',
-                style: TextStyle(color: Wp.textDim)),
-          ),
-          FilledButton(
-            onPressed: () => Navigator.pop(ctx, controller.text.trim()),
-            style: FilledButton.styleFrom(backgroundColor: Wp.accent),
-            child: const Text('Send request',
-                style: TextStyle(color: Wp.accentFg)),
-          ),
-        ],
-      ),
-    );
-    if (peer != null && peer.isNotEmpty) {
-      await widget.client.sendFriendRequest(target: peer);
-    }
-  }
-
-  Future<void> _accept(String peer) async {
+  Future<void> _acceptRequest(String peer) async {
     await widget.client.acceptFriendRequest(peer: peer);
     await widget.client.refreshContacts();
+    await widget.client.refreshFriendRequests();
+  }
+
+  Future<void> _declineRequest(String peer) async {
+    // No decline command in the MVP core yet; accept is the primary path.
     await widget.client.refreshFriendRequests();
   }
 
@@ -207,7 +140,8 @@ class _MainScreenState extends State<MainScreen> {
     await Navigator.push(
       context,
       MaterialPageRoute(
-        builder: (_) => SettingsScreen(client: widget.client, peerId: widget.peerId),
+        builder: (_) =>
+            SettingsScreen(client: widget.client, peerId: widget.peerId),
       ),
     );
   }
@@ -229,185 +163,481 @@ class _MainScreenState extends State<MainScreen> {
   }
 
   // ---------------------------------------------------------------------
-  // Sidebar
+  // Sidebar (350px) — desktop Sidebar.tsx port
   // ---------------------------------------------------------------------
 
   Widget _buildSidebar() {
-    // Chat-list entries: every contact plus anyone we have messages with.
-    final ids = <String>{
-      ..._contacts,
-      ..._messages.keys,
-    }.toList();
-    final entries = ids.map((id) {
-      final msgs = _messages[id] ?? [];
-      return _SidebarEntry(
-        peerId: id,
-        lastText: msgs.isEmpty ? null : msgs.last.text,
-        active: id == _activePeer,
-        unread: false,
-        onTap: () => _openChat(id),
-      );
-    }).toList();
-
     return Container(
-      width: 280,
+      width: 350,
       color: Wp.panel,
       child: Column(
         children: [
-          // Header: logo + brand.
-          Padding(
-            padding: const EdgeInsets.fromLTRB(16, 14, 16, 10),
-            child: Row(
-              children: [
-                ClipRRect(
-                  borderRadius: BorderRadius.circular(7),
-                  child: Image.asset('assets/whisper-logo.png',
-                      width: 26, height: 26),
-                ),
-                const SizedBox(width: 10),
-                const Expanded(
-                  child: Text(
-                    'Whisper',
-                    style: TextStyle(
-                      color: Wp.text,
-                      fontSize: 18,
-                      fontWeight: FontWeight.w700,
-                      letterSpacing: -0.3,
-                    ),
-                  ),
-                ),
-                Container(
-                  width: 8,
-                  height: 8,
-                  decoration: BoxDecoration(
-                    shape: BoxShape.circle,
-                    color: _connected ? Wp.online : Wp.textFaint,
-                  ),
-                ),
-              ],
+          _buildProfileHeader(),
+          _buildSearch(),
+          _buildViewTabs(),
+          _buildSectionHeader(),
+          _buildRequests(),
+          Expanded(child: _buildList()),
+          _buildConnectionFooter(),
+        ],
+      ),
+    );
+  }
+
+  /// Slim connection-status footer at the bottom of the sidebar.
+  Widget _buildConnectionFooter() {
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+      decoration: const BoxDecoration(
+        border: Border(top: BorderSide(color: Wp.line)),
+      ),
+      child: Row(
+        children: [
+          Container(
+            width: 8,
+            height: 8,
+            decoration: BoxDecoration(
+              shape: BoxShape.circle,
+              color: _connected ? Wp.online : Wp.textFaint,
             ),
           ),
-          // New chat + contacts toggle.
-          Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-            child: Row(
+          const SizedBox(width: 8),
+          Expanded(
+            child: Text(
+              _status,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: TextStyle(
+                color: _connected ? Wp.online : Wp.textFaint,
+                fontSize: 11,
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildProfileHeader() {
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 16, 12, 12),
+      child: Row(
+        children: [
+          const WpAvatar(name: '', size: 40),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Expanded(
-                  child: FilledButton.icon(
-                    onPressed: _newChat,
-                    style: FilledButton.styleFrom(
-                      backgroundColor: Wp.accent,
-                      foregroundColor: Wp.accentFg,
-                      padding: const EdgeInsets.symmetric(vertical: 10),
-                      textStyle: const TextStyle(
-                          fontSize: 13, fontWeight: FontWeight.w700),
-                    ),
-                    icon: const Icon(Icons.edit, size: 16),
-                    label: const Text('New chat'),
+                Text(
+                  'Your Whisper ID',
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(
+                    color: Wp.text,
+                    fontSize: 14,
+                    fontWeight: FontWeight.w600,
                   ),
                 ),
-                const SizedBox(width: 8),
-                IconButton(
-                  onPressed: _addFriend,
-                  tooltip: 'Add contact',
-                  icon: const Icon(Icons.person_add_alt, size: 20),
-                  color: Wp.textDim,
-                ),
-                const SizedBox(width: 2),
-                IconButton(
-                  onPressed: () => setState(() => _showContacts = !_showContacts),
-                  tooltip: 'Contacts',
-                  icon: Icon(
-                    _showContacts ? Icons.chat_bubble : Icons.people,
-                    size: 20,
+                Text(
+                  widget.peerId,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(
                     color: Wp.textDim,
+                    fontSize: 12,
+                    fontFamily: 'monospace',
                   ),
                 ),
               ],
             ),
           ),
-          // Pending requests banner.
-          if (_pendingRequests.isNotEmpty)
+          _IconBtn(
+            icon: Icons.copy,
+            tooltip: 'Copy peer ID',
+            onTap: () =>
+                Clipboard.setData(ClipboardData(text: widget.peerId)),
+          ),
+          _IconBtn(
+            icon: Icons.settings_outlined,
+            tooltip: 'Settings',
+            onTap: _openSettings,
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildSearch() {
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 9),
+        decoration: BoxDecoration(
+          color: Wp.panel2,
+          borderRadius: BorderRadius.circular(12),
+        ),
+        child: Row(
+          children: [
+            Icon(_query.isNotEmpty ? Icons.search : Icons.search,
+                size: 16, color: Wp.textFaint),
+            const SizedBox(width: 8),
+            Expanded(
+              child: TextField(
+                controller: _searchCtrl,
+                onChanged: (v) => setState(() => _query = v),
+                style: const TextStyle(color: Wp.text, fontSize: 14),
+                decoration: const InputDecoration(
+                  isCollapsed: true,
+                  hintText: 'Search',
+                  hintStyle: TextStyle(color: Wp.textFaint),
+                  border: InputBorder.none,
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildViewTabs() {
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 0, 16, 10),
+      child: Row(
+        children: [
+          Expanded(
+            child: _TabBtn(
+              label: 'Chats',
+              active: _view == _View.chats,
+              onTap: () => setState(() => _view = _View.chats),
+            ),
+          ),
+          const SizedBox(width: 4),
+          Expanded(
+            child: _TabBtn(
+              label: 'Contacts',
+              active: _view == _View.contacts,
+              onTap: () => setState(() => _view = _View.contacts),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildSectionHeader() {
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
+      child: Row(
+        children: [
+          Text(
+            _view == _View.chats ? 'Conversations' : 'Contacts',
+            style: const TextStyle(
+              color: Wp.textFaint,
+              fontSize: 12,
+              fontWeight: FontWeight.w700,
+              letterSpacing: 1.2,
+            ),
+          ),
+          const Spacer(),
+          _IconBtn(
+            icon: Icons.edit_square,
+            tooltip: 'New chat',
+            onTap: () => _startNewChat(),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildRequests() {
+    if (_pendingRequests.isEmpty) return const SizedBox.shrink();
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.fromLTRB(8, 0, 8, 8),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Padding(
+            padding: EdgeInsets.symmetric(horizontal: 4, vertical: 6),
+            child: Text(
+              'CONTACTS',
+              style: TextStyle(
+                color: Wp.accent,
+                fontSize: 12,
+                fontWeight: FontWeight.w700,
+                letterSpacing: 1.2,
+              ),
+            ),
+          ),
+          for (final p in _pendingRequests)
             Container(
-              width: double.infinity,
-              margin: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
-              padding: const EdgeInsets.all(10),
+              margin: const EdgeInsets.only(bottom: 2),
+              padding: const EdgeInsets.symmetric(
+                  horizontal: 12, vertical: 8),
               decoration: BoxDecoration(
-                color: const Color(0x1437C03A),
+                color: Colors.transparent,
                 borderRadius: BorderRadius.circular(12),
               ),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
+              child: Row(
                 children: [
-                  const Text(
-                    'FRIEND REQUESTS',
-                    style: TextStyle(
-                      fontSize: 9,
-                      fontWeight: FontWeight.w700,
-                      color: Wp.online,
-                      letterSpacing: 1.0,
-                    ),
-                  ),
-                  for (final p in _pendingRequests)
-                    Row(
+                  WpAvatar(name: p, size: 36),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        Expanded(
-                          child: Text(
-                            p.length > 20 ? '${p.substring(0, 20)}…' : p,
-                            style: const TextStyle(
-                                fontSize: 11, color: Wp.textDim),
+                        Text(
+                          _short(p, 16),
+                          style: const TextStyle(
+                            color: Wp.text,
+                            fontSize: 14,
+                            fontWeight: FontWeight.w500,
                           ),
                         ),
-                        TextButton(
-                          onPressed: () => _accept(p),
-                          style: TextButton.styleFrom(
-                              foregroundColor: Wp.accent),
-                          child: const Text('Accept',
-                              style: TextStyle(fontSize: 12)),
+                        Text(
+                          _short(p, 16),
+                          style: const TextStyle(
+                            color: Wp.textFaint,
+                            fontSize: 12,
+                            fontFamily: 'monospace',
+                          ),
                         ),
                       ],
                     ),
+                  ),
+                  _IconBtn(
+                    icon: Icons.check,
+                    tooltip: 'Accept',
+                    hoverColor: Wp.online,
+                    onTap: () => _acceptRequest(p),
+                  ),
+                  _IconBtn(
+                    icon: Icons.close,
+                    tooltip: 'Decline',
+                    hoverColor: Wp.danger,
+                    onTap: () => _declineRequest(p),
+                  ),
                 ],
               ),
             ),
-          // List.
-          Expanded(
-            child: entries.isEmpty
-                ? Center(
-                    child: Text(
-                      'No conversations yet.\nAdd a contact to start.',
-                      textAlign: TextAlign.center,
-                      style: TextStyle(color: Wp.textFaint, fontSize: 12),
-                    ),
-                  )
-                : ListView.builder(
-                    itemCount: entries.length,
-                    itemBuilder: (context, i) => entries[i],
-                  ),
-          ),
-          // Footer: status + settings.
-          Container(
-            padding: const EdgeInsets.all(12),
-            decoration: const BoxDecoration(
-              border: Border(top: BorderSide(color: Wp.line)),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildList() {
+    // Filter by the search query (name/peer-id).
+    final q = _query.trim().toLowerCase();
+    List<String> ids;
+    if (_view == _View.contacts) {
+      ids = _contacts.toList();
+    } else {
+      ids = {
+        ..._contacts,
+        ..._messages.keys,
+      }.toList();
+    }
+    ids = ids
+        .where((id) => q.isEmpty || id.toLowerCase().contains(q))
+        .toList();
+
+    if (ids.isEmpty) {
+      return Center(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Container(
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                color: Wp.panel2,
+                shape: BoxShape.circle,
+              ),
+              child: Icon(Icons.search_off,
+                  size: 20, color: Wp.textFaint),
             ),
-            child: Row(
-              children: [
-                Expanded(
+            const SizedBox(height: 10),
+            Text(
+              _view == _View.chats ? 'No conversations yet' : 'No contacts yet',
+              style: TextStyle(color: Wp.textDim, fontSize: 13),
+            ),
+            Text(
+              _view == _View.chats
+                  ? 'Add a contact to start chatting'
+                  : 'Send a friend request to add someone',
+              style: TextStyle(color: Wp.textFaint, fontSize: 12),
+            ),
+          ],
+        ),
+      );
+    }
+
+    return ListView.builder(
+      padding: const EdgeInsets.symmetric(vertical: 2),
+      itemCount: ids.length,
+      itemBuilder: (context, i) {
+        final id = ids[i];
+        final msgs = _messages[id] ?? [];
+        final last = msgs.isEmpty ? null : msgs.last;
+        return _ConversationRow(
+          peerId: id,
+          lastText: last?.text,
+          lastTime: last?.at,
+          active: id == _activePeer,
+          online: _contacts.contains(id),
+          onTap: () => _openChat(id),
+        );
+      },
+    );
+  }
+
+  Future<void> _startNewChat() async {
+    final controller = TextEditingController();
+    final peer = await showDialog<String>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: Wp.panel,
+        title: const Text('New chat',
+            style: TextStyle(color: Wp.text, fontSize: 17)),
+        content: TextField(
+          controller: controller,
+          autofocus: true,
+          style: const TextStyle(color: Wp.text),
+          decoration: const InputDecoration(
+            hintText: 'Peer ID (24 hex)',
+            hintStyle: TextStyle(color: Wp.textFaint),
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('Cancel', style: TextStyle(color: Wp.textDim)),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(ctx, controller.text.trim()),
+            style: FilledButton.styleFrom(backgroundColor: Wp.accent),
+            child: const Text('Open', style: TextStyle(color: Wp.accentFg)),
+          ),
+        ],
+      ),
+    );
+    if (peer != null && peer.isNotEmpty) _openChat(peer);
+  }
+
+  // ---------------------------------------------------------------------
+  // Chat pane — desktop ChatView.tsx port
+  // ---------------------------------------------------------------------
+
+  Widget _buildChatPane() {
+    final peer = _activePeer;
+    if (peer == null) {
+      // Empty state: centered icon tile on wp-bg.
+      return Center(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Container(
+              width: 80,
+              height: 80,
+              decoration: BoxDecoration(
+                color: Wp.panel,
+                borderRadius: BorderRadius.circular(24),
+              ),
+              child: Icon(Icons.chat_bubble_outline,
+                  size: 32, color: Wp.textFaint),
+            ),
+            const SizedBox(height: 16),
+            Text(
+              'Select a conversation',
+              style: TextStyle(color: Wp.textFaint, fontSize: 14),
+            ),
+            const SizedBox(height: 4),
+            Text(
+              'Your messages are end-to-end encrypted',
+              style: TextStyle(color: Wp.textFaint, fontSize: 12),
+            ),
+          ],
+        ),
+      );
+    }
+    final msgs = _messages[peer] ?? [];
+    return Column(
+      children: [
+        _buildChatHeader(peer),
+        Expanded(
+          child: msgs.isEmpty
+              ? Center(
                   child: Text(
-                    _status,
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: TextStyle(
-                      color: _connected ? Wp.online : Wp.textFaint,
-                      fontSize: 11,
-                    ),
+                    'No messages yet',
+                    style: TextStyle(color: Wp.textFaint, fontSize: 13),
+                  ),
+                )
+              : ListView.builder(
+                  padding: const EdgeInsets.symmetric(
+                      horizontal: 16, vertical: 12),
+                  itemCount: msgs.length,
+                  itemBuilder: (context, i) => _Bubble(msg: msgs[i]),
+                ),
+        ),
+        _Composer(onSend: _send),
+      ],
+    );
+  }
+
+  Widget _buildChatHeader(String peer) {
+    final isContact = _contacts.contains(peer);
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
+      decoration: const BoxDecoration(
+        color: Wp.panel,
+        border: Border(bottom: BorderSide(color: Wp.line)),
+      ),
+      child: Row(
+        children: [
+          WpAvatar(name: peer, size: 36),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  _short(peer, 32),
+                  style: const TextStyle(
+                    color: Wp.text,
+                    fontSize: 14,
+                    fontWeight: FontWeight.w600,
                   ),
                 ),
-                IconButton(
-                  onPressed: _openSettings,
-                  icon: const Icon(Icons.settings, size: 20),
-                  color: Wp.textDim,
+                Row(
+                  children: [
+                    if (isContact) ...[
+                      Container(
+                        width: 8,
+                        height: 8,
+                        decoration: const BoxDecoration(
+                          shape: BoxShape.circle,
+                          color: Wp.online,
+                        ),
+                      ),
+                      const SizedBox(width: 6),
+                      const Text(
+                        'Online',
+                        style: TextStyle(
+                          color: Wp.online,
+                          fontSize: 13,
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                    ] else
+                      Text(
+                        _short(peer, 20),
+                        style:
+                            TextStyle(color: Wp.textFaint, fontSize: 12),
+                      ),
+                  ],
                 ),
               ],
             ),
@@ -417,151 +647,90 @@ class _MainScreenState extends State<MainScreen> {
     );
   }
 
-  // ---------------------------------------------------------------------
-  // Chat pane
-  // ---------------------------------------------------------------------
+  String _short(String s, int max) =>
+      s.length > max ? '${s.substring(0, max)}…' : s;
+}
 
-  Widget _buildChatPane() {
-    final peer = _activePeer;
-    if (peer == null) {
-      return Center(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Image.asset('assets/whisper-logo.png', width: 72, height: 72),
-            const SizedBox(height: 18),
-            Text(
-              'Select a conversation',
-              style: TextStyle(color: Wp.textFaint, fontSize: 14),
-            ),
-          ],
-        ),
-      );
-    }
-    final msgs = _messages[peer] ?? [];
-    return Column(
-      children: [
-        // Chat header.
-        Container(
-          width: double.infinity,
-          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-          decoration: const BoxDecoration(
-            color: Wp.panel,
-            border: Border(bottom: BorderSide(color: Wp.line)),
-          ),
-          child: Row(
-            children: [
-              Container(
-                width: 34,
-                height: 34,
-                decoration: BoxDecoration(
-                  gradient: const LinearGradient(
-                      colors: [Wp.accent, Wp.accentStrong]),
-                  borderRadius: BorderRadius.circular(10),
-                ),
-                child: Center(
-                  child: Text(
-                    peer.isEmpty ? '?' : peer[0].toUpperCase(),
-                    style: TextStyle(
-                      color: Wp.accentFg,
-                      fontWeight: FontWeight.w700,
-                      fontSize: 15,
-                    ),
-                  ),
-                ),
-              ),
-              const SizedBox(width: 12),
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      peer.length > 30
-                          ? '${peer.substring(0, 30)}…'
-                          : peer,
-                      style: const TextStyle(
-                        color: Wp.text,
-                        fontSize: 14,
-                        fontWeight: FontWeight.w600,
-                      ),
-                    ),
-                    Text(
-                      _contacts.contains(peer) ? 'Contact' : 'Peer',
-                      style: TextStyle(color: Wp.textFaint, fontSize: 11),
-                    ),
-                  ],
-                ),
-              ),
-            ],
-          ),
-        ),
-        // Messages.
-        Expanded(
-          child: msgs.isEmpty
-              ? Center(
-                  child: Text(
-                    'No messages yet.\nSay hello!',
-                    textAlign: TextAlign.center,
-                    style: TextStyle(color: Wp.textFaint, fontSize: 13),
-                  ),
-                )
-              : ListView.builder(
-                  padding: const EdgeInsets.all(14),
-                  itemCount: msgs.length,
-                  itemBuilder: (context, i) => _buildBubble(msgs[i]),
-                ),
-        ),
-        // Composer.
-        _Composer(onSend: _send),
-      ],
+// ---------------------------------------------------------------------------
+// Small widgets
+// ---------------------------------------------------------------------------
+
+class _IconBtn extends StatelessWidget {
+  final IconData icon;
+  final String tooltip;
+  final VoidCallback onTap;
+  final Color hoverColor;
+  const _IconBtn({
+    required this.icon,
+    required this.tooltip,
+    required this.onTap,
+    this.hoverColor = Wp.text,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return IconButton(
+      onPressed: onTap,
+      tooltip: tooltip,
+      iconSize: 16,
+      icon: Icon(icon, color: Wp.textDim),
+      padding: const EdgeInsets.all(6),
+      constraints: const BoxConstraints(),
+      style: IconButton.styleFrom(
+        hoverColor: Wp.panel2,
+      ),
     );
   }
+}
 
-  Widget _buildBubble(ChatLine m) {
-    return Align(
-      alignment: m.outgoing ? Alignment.centerRight : Alignment.centerLeft,
+class _TabBtn extends StatelessWidget {
+  final String label;
+  final bool active;
+  final VoidCallback onTap;
+  const _TabBtn({
+    required this.label,
+    required this.active,
+    required this.onTap,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return InkWell(
+      onTap: onTap,
+      borderRadius: BorderRadius.circular(10),
       child: Container(
-        margin: const EdgeInsets.symmetric(vertical: 3),
-        padding: const EdgeInsets.symmetric(horizontal: 13, vertical: 9),
-        constraints: BoxConstraints(
-          maxWidth: MediaQuery.of(context).size.width * 0.55,
-        ),
+        padding: const EdgeInsets.symmetric(vertical: 7),
         decoration: BoxDecoration(
-          gradient: m.outgoing
-              ? const LinearGradient(colors: [Wp.bubbleOut, Wp.bubbleOut2])
-              : null,
-          color: m.outgoing ? null : Wp.bubbleIn,
-          borderRadius: BorderRadius.only(
-            topLeft: const Radius.circular(14),
-            topRight: const Radius.circular(14),
-            bottomLeft: Radius.circular(m.outgoing ? 14 : 4),
-            bottomRight: Radius.circular(m.outgoing ? 4 : 14),
-          ),
+          color: active ? Wp.accent : Colors.transparent,
+          borderRadius: BorderRadius.circular(10),
         ),
         child: Text(
-          m.text,
-          style: const TextStyle(color: Wp.text, fontSize: 14, height: 1.35),
+          label,
+          textAlign: TextAlign.center,
+          style: TextStyle(
+            color: active ? Wp.accentFg : Wp.textDim,
+            fontSize: 14,
+            fontWeight: FontWeight.w600,
+          ),
         ),
       ),
     );
   }
 }
 
-// ---------------------------------------------------------------------------
-// Sidebar entry
-// ---------------------------------------------------------------------------
-
-class _SidebarEntry extends StatelessWidget {
+class _ConversationRow extends StatelessWidget {
   final String peerId;
   final String? lastText;
+  final DateTime? lastTime;
   final bool active;
-  final bool unread;
+  final bool online;
   final VoidCallback onTap;
-  const _SidebarEntry({
+  const _ConversationRow({
     required this.peerId,
     required this.lastText,
+    required this.lastTime,
     required this.active,
-    required this.unread,
+    required this.online,
     required this.onTap,
   });
 
@@ -571,42 +740,25 @@ class _SidebarEntry extends StatelessWidget {
       onTap: onTap,
       child: Container(
         color: active ? Wp.panel3 : Colors.transparent,
-        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
         child: Row(
           children: [
-            Container(
-              width: 38,
-              height: 38,
-              decoration: BoxDecoration(
-                color: Wp.panel2,
-                borderRadius: BorderRadius.circular(11),
-              ),
-              child: Center(
-                child: Text(
-                  peerId.isEmpty ? '?' : peerId[0].toUpperCase(),
-                  style: TextStyle(
-                    color: Wp.accent,
-                    fontWeight: FontWeight.w700,
-                    fontSize: 15,
-                  ),
-                ),
-              ),
-            ),
+            WpAvatar(name: peerId, size: 40),
             const SizedBox(width: 12),
             Expanded(
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   Text(
-                    peerId.length > 26
-                        ? '${peerId.substring(0, 26)}…'
+                    peerId.length > 24
+                        ? '${peerId.substring(0, 24)}…'
                         : peerId,
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
-                    style: TextStyle(
+                    style: const TextStyle(
                       color: Wp.text,
-                      fontSize: 13,
-                      fontWeight: unread ? FontWeight.w700 : FontWeight.w500,
+                      fontSize: 14,
+                      fontWeight: FontWeight.w500,
                     ),
                   ),
                   if (lastText != null)
@@ -614,18 +766,19 @@ class _SidebarEntry extends StatelessWidget {
                       lastText!,
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
-                      style: TextStyle(color: Wp.textFaint, fontSize: 11),
+                      style:
+                          TextStyle(color: Wp.textFaint, fontSize: 12),
                     ),
                 ],
               ),
             ),
-            if (unread)
+            if (online)
               Container(
                 width: 8,
                 height: 8,
                 decoration: const BoxDecoration(
                   shape: BoxShape.circle,
-                  color: Wp.accent,
+                  color: Wp.online,
                 ),
               ),
           ],
@@ -635,10 +788,68 @@ class _SidebarEntry extends StatelessWidget {
   }
 }
 
-// ---------------------------------------------------------------------------
-// Composer
-// ---------------------------------------------------------------------------
+/// Message bubble — desktop MessageBubble.tsx port:
+/// `max-w-[68%] rounded-2xl px-4 py-2.5`, own = teal gradient with rounded-br,
+/// incoming = dark with rounded-bl.
+class _Bubble extends StatelessWidget {
+  final ChatLine msg;
+  const _Bubble({required this.msg});
 
+  @override
+  Widget build(BuildContext context) {
+    final time = '${msg.at.hour.toString().padLeft(2, '0')}:'
+        '${msg.at.minute.toString().padLeft(2, '0')}';
+    return Align(
+      alignment: msg.outgoing ? Alignment.centerRight : Alignment.centerLeft,
+      child: Container(
+        margin: const EdgeInsets.symmetric(vertical: 3),
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+        constraints: BoxConstraints(
+          maxWidth: MediaQuery.of(context).size.width * 0.68,
+        ),
+        decoration: BoxDecoration(
+          gradient: msg.outgoing
+              ? const LinearGradient(
+                  begin: Alignment.topLeft,
+                  end: Alignment.bottomRight,
+                  colors: [Wp.bubbleOut2, Wp.bubbleOut],
+                )
+              : null,
+          color: msg.outgoing ? null : Wp.bubbleIn,
+          borderRadius: BorderRadius.only(
+            topLeft: const Radius.circular(16),
+            topRight: const Radius.circular(16),
+            bottomLeft: Radius.circular(msg.outgoing ? 16 : 6),
+            bottomRight: Radius.circular(msg.outgoing ? 6 : 16),
+          ),
+          boxShadow: const [
+            BoxShadow(color: Color(0x33000000), blurRadius: 4),
+          ],
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.end,
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Text(
+              msg.text,
+              style: const TextStyle(color: Wp.text, fontSize: 14, height: 1.35),
+            ),
+            const SizedBox(height: 2),
+            Text(
+              time,
+              style: TextStyle(
+                color: Wp.text.withValues(alpha: 0.5),
+                fontSize: 10,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+/// Composer — desktop Composer.tsx port: rounded-2xl field + circular send.
 class _Composer extends StatefulWidget {
   final ValueChanged<String> onSend;
   const _Composer({required this.onSend});
@@ -666,7 +877,7 @@ class _ComposerState extends State<_Composer> {
   @override
   Widget build(BuildContext context) {
     return Container(
-      padding: const EdgeInsets.fromLTRB(12, 8, 12, 10),
+      padding: const EdgeInsets.fromLTRB(16, 12, 16, 12),
       decoration: const BoxDecoration(
         color: Wp.panel,
         border: Border(top: BorderSide(color: Wp.line)),
@@ -677,23 +888,49 @@ class _ComposerState extends State<_Composer> {
           Expanded(
             child: TextField(
               controller: _controller,
-              style: const TextStyle(fontSize: 14, color: Wp.text),
-              decoration: const InputDecoration(
-                hintText: 'Message…',
-                hintStyle: TextStyle(color: Wp.textFaint),
+              minLines: 1,
+              maxLines: 5,
+              style: const TextStyle(color: Wp.text, fontSize: 14),
+              decoration: InputDecoration(
+                hintText: 'Message',
+                hintStyle: const TextStyle(color: Wp.textFaint),
                 isDense: true,
+                filled: true,
+                fillColor: Wp.panel2,
+                contentPadding:
+                    const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                border: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(16),
+                  borderSide: BorderSide.none,
+                ),
+                focusedBorder: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(16),
+                  borderSide: const BorderSide(color: Wp.accent, width: 1),
+                ),
               ),
               onSubmitted: (_) => _send(),
             ),
           ),
-          const SizedBox(width: 8),
-          IconButton.filled(
-            onPressed: _send,
-            style: IconButton.styleFrom(
-              backgroundColor: Wp.accent,
-              foregroundColor: Wp.accentFg,
+          const SizedBox(width: 12),
+          InkWell(
+            onTap: _send,
+            borderRadius: BorderRadius.circular(22),
+            child: Container(
+              width: 44,
+              height: 44,
+              decoration: BoxDecoration(
+                shape: BoxShape.circle,
+                gradient: const LinearGradient(
+                    colors: [Wp.accent, Wp.accentStrong]),
+                boxShadow: [
+                  BoxShadow(
+                    color: Wp.accent.withValues(alpha: 0.25),
+                    blurRadius: 8,
+                  ),
+                ],
+              ),
+              child: const Icon(Icons.send, size: 18, color: Wp.accentFg),
             ),
-            icon: const Icon(Icons.send, size: 18),
           ),
         ],
       ),
