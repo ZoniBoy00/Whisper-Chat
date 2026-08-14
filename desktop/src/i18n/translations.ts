@@ -359,6 +359,14 @@ export const translations = {
     "general.light": "Light",
     "general.language": "Language",
     "general.language_hint": "The language of the user interface.",
+    "general.relay_server": "Relay server",
+    "general.relay_server_desc":
+      "The server your messages are routed through. Leave empty to use the built-in default relay.",
+    "general.relay_url_placeholder": "wss://relay.example.com/ws",
+    "general.relay_url_save": "Save",
+    "general.relay_url_restore": "Default",
+    "general.relay_url_saved": "Relay URL saved — reconnecting",
+    "general.relay_url_invalid": "Invalid relay URL — must start with ws:// or wss://",
     "general.identity": "Identity",
     "general.identity_reset_hint":
       "Keys never leave this device. Resetting creates a fresh identity with a brand-new peer ID.",
@@ -862,6 +870,14 @@ export const translations = {
     "general.light": "Vaalea",
     "general.language": "Kieli",
     "general.language_hint": "Käyttöliittymän kieli.",
+    "general.relay_server": "Relay-palvelin",
+    "general.relay_server_desc":
+      "Palvelin jonka kautta viestisi kulkevat. Jätä tyhjäksi käyttääksesi sisäänrakennettua oletusrelayta.",
+    "general.relay_url_placeholder": "wss://relay.example.com/ws",
+    "general.relay_url_save": "Tallenna",
+    "general.relay_url_restore": "Oletus",
+    "general.relay_url_saved": "Relay-osoite tallennettu — yhdistetään uudelleen",
+    "general.relay_url_invalid": "Virheellinen relay-osoite — pitää alkaa ws:// tai wss://",
     "general.identity": "Henkilöllisyys",
     "general.identity_reset_hint":
       "Avaimet eivät koskaan poistu tästä laitteesta. Nollaus luo uuden henkilöllisyyden ja aivan uuden peer-ID:n.",

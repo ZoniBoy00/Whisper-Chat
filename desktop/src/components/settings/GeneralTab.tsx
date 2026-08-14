@@ -19,6 +19,7 @@ import {
   Type,
   Upload,
   User,
+  Server,
 } from "lucide-react";
 import type { Theme } from "../../types";
 import { cx, mediaUrl } from "../../lib/format";
@@ -86,6 +87,9 @@ interface GeneralTabProps {
   onThemeChange: (theme: Theme) => void;
   /** Relay endpoint; used to resolve `/media/{hash}` avatar paths. */
   relayUrl: string;
+  /** Persist a new relay endpoint (empty restores the built-in default) and
+   *  reconnect to it. */
+  onRelayUrlChange: (url: string) => Promise<void>;
   /** Persist a new display name; empty clears it. */
   onSaveDisplayName: (name: string) => Promise<void>;
   /** Register a public username for our identity. */
@@ -129,6 +133,7 @@ export function GeneralTab({
   theme,
   onThemeChange,
   relayUrl,
+  onRelayUrlChange,
   onSaveDisplayName,
   onRegisterUsername,
   onSetAvatar,
@@ -162,6 +167,12 @@ export function GeneralTab({
   const [nameError, setNameError] = useState<string | null>(null);
   const [usernameErrorText, setUsernameErrorText] = useState<string | null>(null);
   const [avatarError, setAvatarError] = useState<string | null>(null);
+  // Relay endpoint form: seeded from the persisted/effective URL, saved with
+  // a dedicated command (empty string = restore the built-in default).
+  const [relayInput, setRelayInput] = useState(relayUrl);
+  const [savingRelay, setSavingRelay] = useState(false);
+  const [relaySaved, setRelaySaved] = useState(false);
+  const [relayError, setRelayError] = useState<string | null>(null);
   const [confirmingReset, setConfirmingReset] = useState(false);
   // Automatic-backup state, hydrated from the persisted settings on mount.
   const [autobackupEnabled, setAutobackupEnabled] = useState(false);
@@ -318,6 +329,56 @@ export function GeneralTab({
       onReset();
     } else {
       setConfirmingReset(true);
+    }
+  };
+
+  const validateRelayUrl = (url: string): string | null => {
+    if (url === "") return null;
+    if (!/^wss?:\/\/.+/i.test(url)) {
+      return t("general.relay_url_invalid");
+    }
+    return null;
+  };
+
+  const handleSaveRelay = async () => {
+    const url = relayInput.trim();
+    const err = validateRelayUrl(url);
+    if (err) {
+      setRelayError(err);
+      toast(err, "error");
+      return;
+    }
+    setSavingRelay(true);
+    setRelayError(null);
+    try {
+      await onRelayUrlChange(url);
+      setRelaySaved(true);
+      window.setTimeout(() => setRelaySaved(false), 2000);
+      toast(t("general.relay_url_saved"), "success");
+    } catch (e) {
+      const message = String(e).replace(/^Error:\s*/, "");
+      setRelayError(message);
+      toast(message, "error");
+    } finally {
+      setSavingRelay(false);
+    }
+  };
+
+  const handleRestoreRelay = async () => {
+    setRelayInput("");
+    setRelayError(null);
+    setSavingRelay(true);
+    try {
+      await onRelayUrlChange("");
+      setRelaySaved(true);
+      window.setTimeout(() => setRelaySaved(false), 2000);
+      toast(t("general.relay_url_saved"), "success");
+    } catch (e) {
+      const message = String(e).replace(/^Error:\s*/, "");
+      setRelayError(message);
+      toast(message, "error");
+    } finally {
+      setSavingRelay(false);
     }
   };
 
@@ -860,6 +921,62 @@ export function GeneralTab({
               ))}
             </div>
           </div>
+        </div>
+      </section>
+
+      {/* Relay server */}
+      <section aria-labelledby="settings-relay-title">
+        <SectionHeading
+          id="settings-relay-title"
+          icon={<Server className="h-3.5 w-3.5" />}
+          label={t("general.relay_server")}
+        />
+        <div className="rounded-xl border border-wp-line/10 bg-wp-panel-3 p-4">
+          <p className="text-xs leading-relaxed text-wp-dim">
+            {t("general.relay_server_desc")}
+          </p>
+          <div className="mt-3 flex items-center gap-2">
+            <input
+              type="text"
+              value={relayInput}
+              onChange={(e) => setRelayInput(e.target.value)}
+              placeholder={t("general.relay_url_placeholder")}
+              spellCheck={false}
+              className="w-full rounded-xl border border-wp-line/10 bg-wp-panel-2 px-3 py-2.5 text-sm text-wp-text outline-none transition placeholder:text-wp-faint focus:border-wp-accent/50"
+            />
+            <button
+              type="button"
+              onClick={handleSaveRelay}
+              disabled={savingRelay}
+              className={cx(
+                "inline-flex shrink-0 items-center gap-1.5 rounded-xl px-4 py-2.5 text-xs font-semibold transition",
+                relaySaved
+                  ? "bg-wp-success/15 text-wp-success"
+                  : "bg-wp-accent text-wp-accent-fg hover:opacity-90"
+              )}
+            >
+              {savingRelay ? (
+                <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden="true" />
+              ) : relaySaved ? (
+                <CheckCircle2 className="h-3.5 w-3.5" aria-hidden="true" />
+              ) : (
+                <Save className="h-3.5 w-3.5" aria-hidden="true" />
+              )}
+              {t("general.relay_url_save")}
+            </button>
+            <button
+              type="button"
+              onClick={handleRestoreRelay}
+              disabled={savingRelay}
+              className="inline-flex shrink-0 items-center gap-1.5 rounded-xl border border-wp-line/10 px-3 py-2.5 text-xs font-semibold text-wp-dim transition hover:bg-wp-panel-2 hover:text-wp-text"
+            >
+              <Rocket className="h-3.5 w-3.5" aria-hidden="true" />
+              {t("general.relay_url_restore")}
+            </button>
+          </div>
+          {relayError && (
+            <p className="mt-2 text-xs font-medium text-wp-danger">{relayError}</p>
+          )}
         </div>
       </section>
 
