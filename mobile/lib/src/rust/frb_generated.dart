@@ -67,7 +67,7 @@ class RustLib extends BaseEntrypoint<RustLibApi, RustLibApiImpl, RustLibWire> {
   String get codegenVersion => '2.12.0';
 
   @override
-  int get rustContentHash => 445404312;
+  int get rustContentHash => 25553631;
 
   static const kDefaultExternalLibraryLoaderConfig =
       ExternalLibraryLoaderConfig(
@@ -84,15 +84,107 @@ abstract class RustLibApi extends BaseApi {
     required String peer,
   });
 
+  Future<void> crateApiWhisperWhisperClientAcceptGroupInvite({
+    required WhisperClient that,
+    required String groupId,
+  });
+
+  Future<void> crateApiWhisperWhisperClientAddGroupMember({
+    required WhisperClient that,
+    required String groupId,
+    required String peerId,
+  });
+
   Future<void> crateApiWhisperWhisperClientConnect({
     required WhisperClient that,
     String? relayUrl,
     required String identityJson,
   });
 
+  Future<void> crateApiWhisperWhisperClientCreateGroup({
+    required WhisperClient that,
+    required String name,
+  });
+
+  Future<void> crateApiWhisperWhisperClientDeclineFriendRequest({
+    required WhisperClient that,
+    required String peer,
+  });
+
+  Future<void> crateApiWhisperWhisperClientDeclineGroupInvite({
+    required WhisperClient that,
+    required String groupId,
+  });
+
   Future<WhisperClient> crateApiWhisperWhisperClientDefault();
 
+  Future<void> crateApiWhisperWhisperClientDeleteMessage({
+    required WhisperClient that,
+    required String peerId,
+    required String messageId,
+  });
+
+  Future<void> crateApiWhisperWhisperClientDemoteMember({
+    required WhisperClient that,
+    required String groupId,
+    required String peerId,
+  });
+
+  Future<void> crateApiWhisperWhisperClientEditMessage({
+    required WhisperClient that,
+    required String peerId,
+    required String messageId,
+    required String text,
+  });
+
+  Future<void> crateApiWhisperWhisperClientGetGroupInfo({
+    required WhisperClient that,
+    required String groupId,
+  });
+
+  Future<void> crateApiWhisperWhisperClientGetGroupJoinLink({
+    required WhisperClient that,
+    required String groupId,
+  });
+
+  Future<void> crateApiWhisperWhisperClientGetPresence({
+    required WhisperClient that,
+    required String peerId,
+  });
+
+  Future<void> crateApiWhisperWhisperClientGetProfile({
+    required WhisperClient that,
+    required String peerId,
+  });
+
+  Future<void> crateApiWhisperWhisperClientInviteToGroup({
+    required WhisperClient that,
+    required String groupId,
+    required String peerId,
+  });
+
+  Future<bool> crateApiWhisperWhisperClientIsConnected({
+    required WhisperClient that,
+  });
+
+  Future<void> crateApiWhisperWhisperClientJoinGroup({
+    required WhisperClient that,
+    required String groupId,
+    required String token,
+  });
+
+  Future<void> crateApiWhisperWhisperClientLeaveGroup({
+    required WhisperClient that,
+    required String groupId,
+  });
+
   Future<WhisperClient> crateApiWhisperWhisperClientNew();
+
+  Future<void> crateApiWhisperWhisperClientPromoteMember({
+    required WhisperClient that,
+    required String groupId,
+    required String peerId,
+  });
 
   Future<void> crateApiWhisperWhisperClientRefreshContacts({
     required WhisperClient that,
@@ -102,15 +194,75 @@ abstract class RustLibApi extends BaseApi {
     required WhisperClient that,
   });
 
+  Future<void> crateApiWhisperWhisperClientRefreshGroupInvites({
+    required WhisperClient that,
+  });
+
+  Future<void> crateApiWhisperWhisperClientRegisterProfile({
+    required WhisperClient that,
+    required String username,
+    required String signature,
+    String? displayName,
+  });
+
+  Future<void> crateApiWhisperWhisperClientRemoveContact({
+    required WhisperClient that,
+    required String peer,
+  });
+
+  Future<void> crateApiWhisperWhisperClientRemoveMember({
+    required WhisperClient that,
+    required String groupId,
+    required String peerId,
+  });
+
+  Future<void> crateApiWhisperWhisperClientRenameGroup({
+    required WhisperClient that,
+    required String groupId,
+    required String name,
+  });
+
+  Future<void> crateApiWhisperWhisperClientSearchUsers({
+    required WhisperClient that,
+    required String query,
+  });
+
   Future<void> crateApiWhisperWhisperClientSendFriendRequest({
     required WhisperClient that,
     required String target,
+  });
+
+  Future<void> crateApiWhisperWhisperClientSendGroupMessage({
+    required WhisperClient that,
+    required String groupId,
+    required String text,
   });
 
   Future<void> crateApiWhisperWhisperClientSendMessage({
     required WhisperClient that,
     required String peerId,
     required String text,
+  });
+
+  Future<void> crateApiWhisperWhisperClientSendMessageFull({
+    required WhisperClient that,
+    required String peerId,
+    required String text,
+    String? quote,
+    String? messageId,
+    BigInt? expiresInSeconds,
+  });
+
+  Future<void> crateApiWhisperWhisperClientSendReaction({
+    required WhisperClient that,
+    required String peerId,
+    required String messageId,
+    required String emoji,
+  });
+
+  Future<void> crateApiWhisperWhisperClientSetDisplayName({
+    required WhisperClient that,
+    required String displayName,
   });
 
   Future<List<ChatEvent>> crateApiWhisperWhisperClientTakeEvents({
@@ -126,7 +278,14 @@ abstract class RustLibApi extends BaseApi {
 
   Future<IdentityInfo> crateApiWhisperIdentityFromJson({required String json});
 
+  Future<String> crateApiWhisperInviteLink({required String json});
+
   Future<bool> crateApiWhisperIsValidPeerId({required String peerId});
+
+  Future<String> crateApiWhisperSignUsername({
+    required String json,
+    required String username,
+  });
 
   RustArcIncrementStrongCountFnType
   get rust_arc_increment_strong_count_WhisperClient;
@@ -185,6 +344,84 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       );
 
   @override
+  Future<void> crateApiWhisperWhisperClientAcceptGroupInvite({
+    required WhisperClient that,
+    required String groupId,
+  }) {
+    return handler.executeNormal(
+      NormalTask(
+        callFfi: (port_) {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerWhisperClient(
+            that,
+            serializer,
+          );
+          sse_encode_String(groupId, serializer);
+          pdeCallFfi(
+            generalizedFrbRustBinding,
+            serializer,
+            funcId: 2,
+            port: port_,
+          );
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_unit,
+          decodeErrorData: sse_decode_String,
+        ),
+        constMeta: kCrateApiWhisperWhisperClientAcceptGroupInviteConstMeta,
+        argValues: [that, groupId],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateApiWhisperWhisperClientAcceptGroupInviteConstMeta =>
+      const TaskConstMeta(
+        debugName: "WhisperClient_accept_group_invite",
+        argNames: ["that", "groupId"],
+      );
+
+  @override
+  Future<void> crateApiWhisperWhisperClientAddGroupMember({
+    required WhisperClient that,
+    required String groupId,
+    required String peerId,
+  }) {
+    return handler.executeNormal(
+      NormalTask(
+        callFfi: (port_) {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerWhisperClient(
+            that,
+            serializer,
+          );
+          sse_encode_String(groupId, serializer);
+          sse_encode_String(peerId, serializer);
+          pdeCallFfi(
+            generalizedFrbRustBinding,
+            serializer,
+            funcId: 3,
+            port: port_,
+          );
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_unit,
+          decodeErrorData: sse_decode_String,
+        ),
+        constMeta: kCrateApiWhisperWhisperClientAddGroupMemberConstMeta,
+        argValues: [that, groupId, peerId],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateApiWhisperWhisperClientAddGroupMemberConstMeta =>
+      const TaskConstMeta(
+        debugName: "WhisperClient_add_group_member",
+        argNames: ["that", "groupId", "peerId"],
+      );
+
+  @override
   Future<void> crateApiWhisperWhisperClientConnect({
     required WhisperClient that,
     String? relayUrl,
@@ -203,7 +440,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 2,
+            funcId: 4,
             port: port_,
           );
         },
@@ -225,6 +462,121 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       );
 
   @override
+  Future<void> crateApiWhisperWhisperClientCreateGroup({
+    required WhisperClient that,
+    required String name,
+  }) {
+    return handler.executeNormal(
+      NormalTask(
+        callFfi: (port_) {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerWhisperClient(
+            that,
+            serializer,
+          );
+          sse_encode_String(name, serializer);
+          pdeCallFfi(
+            generalizedFrbRustBinding,
+            serializer,
+            funcId: 5,
+            port: port_,
+          );
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_unit,
+          decodeErrorData: sse_decode_String,
+        ),
+        constMeta: kCrateApiWhisperWhisperClientCreateGroupConstMeta,
+        argValues: [that, name],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateApiWhisperWhisperClientCreateGroupConstMeta =>
+      const TaskConstMeta(
+        debugName: "WhisperClient_create_group",
+        argNames: ["that", "name"],
+      );
+
+  @override
+  Future<void> crateApiWhisperWhisperClientDeclineFriendRequest({
+    required WhisperClient that,
+    required String peer,
+  }) {
+    return handler.executeNormal(
+      NormalTask(
+        callFfi: (port_) {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerWhisperClient(
+            that,
+            serializer,
+          );
+          sse_encode_String(peer, serializer);
+          pdeCallFfi(
+            generalizedFrbRustBinding,
+            serializer,
+            funcId: 6,
+            port: port_,
+          );
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_unit,
+          decodeErrorData: sse_decode_String,
+        ),
+        constMeta: kCrateApiWhisperWhisperClientDeclineFriendRequestConstMeta,
+        argValues: [that, peer],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta
+  get kCrateApiWhisperWhisperClientDeclineFriendRequestConstMeta =>
+      const TaskConstMeta(
+        debugName: "WhisperClient_decline_friend_request",
+        argNames: ["that", "peer"],
+      );
+
+  @override
+  Future<void> crateApiWhisperWhisperClientDeclineGroupInvite({
+    required WhisperClient that,
+    required String groupId,
+  }) {
+    return handler.executeNormal(
+      NormalTask(
+        callFfi: (port_) {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerWhisperClient(
+            that,
+            serializer,
+          );
+          sse_encode_String(groupId, serializer);
+          pdeCallFfi(
+            generalizedFrbRustBinding,
+            serializer,
+            funcId: 7,
+            port: port_,
+          );
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_unit,
+          decodeErrorData: sse_decode_String,
+        ),
+        constMeta: kCrateApiWhisperWhisperClientDeclineGroupInviteConstMeta,
+        argValues: [that, groupId],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateApiWhisperWhisperClientDeclineGroupInviteConstMeta =>
+      const TaskConstMeta(
+        debugName: "WhisperClient_decline_group_invite",
+        argNames: ["that", "groupId"],
+      );
+
+  @override
   Future<WhisperClient> crateApiWhisperWhisperClientDefault() {
     return handler.executeNormal(
       NormalTask(
@@ -233,7 +585,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 3,
+            funcId: 8,
             port: port_,
           );
         },
@@ -253,6 +605,434 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       const TaskConstMeta(debugName: "WhisperClient_default", argNames: []);
 
   @override
+  Future<void> crateApiWhisperWhisperClientDeleteMessage({
+    required WhisperClient that,
+    required String peerId,
+    required String messageId,
+  }) {
+    return handler.executeNormal(
+      NormalTask(
+        callFfi: (port_) {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerWhisperClient(
+            that,
+            serializer,
+          );
+          sse_encode_String(peerId, serializer);
+          sse_encode_String(messageId, serializer);
+          pdeCallFfi(
+            generalizedFrbRustBinding,
+            serializer,
+            funcId: 9,
+            port: port_,
+          );
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_unit,
+          decodeErrorData: sse_decode_String,
+        ),
+        constMeta: kCrateApiWhisperWhisperClientDeleteMessageConstMeta,
+        argValues: [that, peerId, messageId],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateApiWhisperWhisperClientDeleteMessageConstMeta =>
+      const TaskConstMeta(
+        debugName: "WhisperClient_delete_message",
+        argNames: ["that", "peerId", "messageId"],
+      );
+
+  @override
+  Future<void> crateApiWhisperWhisperClientDemoteMember({
+    required WhisperClient that,
+    required String groupId,
+    required String peerId,
+  }) {
+    return handler.executeNormal(
+      NormalTask(
+        callFfi: (port_) {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerWhisperClient(
+            that,
+            serializer,
+          );
+          sse_encode_String(groupId, serializer);
+          sse_encode_String(peerId, serializer);
+          pdeCallFfi(
+            generalizedFrbRustBinding,
+            serializer,
+            funcId: 10,
+            port: port_,
+          );
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_unit,
+          decodeErrorData: sse_decode_String,
+        ),
+        constMeta: kCrateApiWhisperWhisperClientDemoteMemberConstMeta,
+        argValues: [that, groupId, peerId],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateApiWhisperWhisperClientDemoteMemberConstMeta =>
+      const TaskConstMeta(
+        debugName: "WhisperClient_demote_member",
+        argNames: ["that", "groupId", "peerId"],
+      );
+
+  @override
+  Future<void> crateApiWhisperWhisperClientEditMessage({
+    required WhisperClient that,
+    required String peerId,
+    required String messageId,
+    required String text,
+  }) {
+    return handler.executeNormal(
+      NormalTask(
+        callFfi: (port_) {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerWhisperClient(
+            that,
+            serializer,
+          );
+          sse_encode_String(peerId, serializer);
+          sse_encode_String(messageId, serializer);
+          sse_encode_String(text, serializer);
+          pdeCallFfi(
+            generalizedFrbRustBinding,
+            serializer,
+            funcId: 11,
+            port: port_,
+          );
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_unit,
+          decodeErrorData: sse_decode_String,
+        ),
+        constMeta: kCrateApiWhisperWhisperClientEditMessageConstMeta,
+        argValues: [that, peerId, messageId, text],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateApiWhisperWhisperClientEditMessageConstMeta =>
+      const TaskConstMeta(
+        debugName: "WhisperClient_edit_message",
+        argNames: ["that", "peerId", "messageId", "text"],
+      );
+
+  @override
+  Future<void> crateApiWhisperWhisperClientGetGroupInfo({
+    required WhisperClient that,
+    required String groupId,
+  }) {
+    return handler.executeNormal(
+      NormalTask(
+        callFfi: (port_) {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerWhisperClient(
+            that,
+            serializer,
+          );
+          sse_encode_String(groupId, serializer);
+          pdeCallFfi(
+            generalizedFrbRustBinding,
+            serializer,
+            funcId: 12,
+            port: port_,
+          );
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_unit,
+          decodeErrorData: sse_decode_String,
+        ),
+        constMeta: kCrateApiWhisperWhisperClientGetGroupInfoConstMeta,
+        argValues: [that, groupId],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateApiWhisperWhisperClientGetGroupInfoConstMeta =>
+      const TaskConstMeta(
+        debugName: "WhisperClient_get_group_info",
+        argNames: ["that", "groupId"],
+      );
+
+  @override
+  Future<void> crateApiWhisperWhisperClientGetGroupJoinLink({
+    required WhisperClient that,
+    required String groupId,
+  }) {
+    return handler.executeNormal(
+      NormalTask(
+        callFfi: (port_) {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerWhisperClient(
+            that,
+            serializer,
+          );
+          sse_encode_String(groupId, serializer);
+          pdeCallFfi(
+            generalizedFrbRustBinding,
+            serializer,
+            funcId: 13,
+            port: port_,
+          );
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_unit,
+          decodeErrorData: sse_decode_String,
+        ),
+        constMeta: kCrateApiWhisperWhisperClientGetGroupJoinLinkConstMeta,
+        argValues: [that, groupId],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateApiWhisperWhisperClientGetGroupJoinLinkConstMeta =>
+      const TaskConstMeta(
+        debugName: "WhisperClient_get_group_join_link",
+        argNames: ["that", "groupId"],
+      );
+
+  @override
+  Future<void> crateApiWhisperWhisperClientGetPresence({
+    required WhisperClient that,
+    required String peerId,
+  }) {
+    return handler.executeNormal(
+      NormalTask(
+        callFfi: (port_) {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerWhisperClient(
+            that,
+            serializer,
+          );
+          sse_encode_String(peerId, serializer);
+          pdeCallFfi(
+            generalizedFrbRustBinding,
+            serializer,
+            funcId: 14,
+            port: port_,
+          );
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_unit,
+          decodeErrorData: sse_decode_String,
+        ),
+        constMeta: kCrateApiWhisperWhisperClientGetPresenceConstMeta,
+        argValues: [that, peerId],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateApiWhisperWhisperClientGetPresenceConstMeta =>
+      const TaskConstMeta(
+        debugName: "WhisperClient_get_presence",
+        argNames: ["that", "peerId"],
+      );
+
+  @override
+  Future<void> crateApiWhisperWhisperClientGetProfile({
+    required WhisperClient that,
+    required String peerId,
+  }) {
+    return handler.executeNormal(
+      NormalTask(
+        callFfi: (port_) {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerWhisperClient(
+            that,
+            serializer,
+          );
+          sse_encode_String(peerId, serializer);
+          pdeCallFfi(
+            generalizedFrbRustBinding,
+            serializer,
+            funcId: 15,
+            port: port_,
+          );
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_unit,
+          decodeErrorData: sse_decode_String,
+        ),
+        constMeta: kCrateApiWhisperWhisperClientGetProfileConstMeta,
+        argValues: [that, peerId],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateApiWhisperWhisperClientGetProfileConstMeta =>
+      const TaskConstMeta(
+        debugName: "WhisperClient_get_profile",
+        argNames: ["that", "peerId"],
+      );
+
+  @override
+  Future<void> crateApiWhisperWhisperClientInviteToGroup({
+    required WhisperClient that,
+    required String groupId,
+    required String peerId,
+  }) {
+    return handler.executeNormal(
+      NormalTask(
+        callFfi: (port_) {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerWhisperClient(
+            that,
+            serializer,
+          );
+          sse_encode_String(groupId, serializer);
+          sse_encode_String(peerId, serializer);
+          pdeCallFfi(
+            generalizedFrbRustBinding,
+            serializer,
+            funcId: 16,
+            port: port_,
+          );
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_unit,
+          decodeErrorData: sse_decode_String,
+        ),
+        constMeta: kCrateApiWhisperWhisperClientInviteToGroupConstMeta,
+        argValues: [that, groupId, peerId],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateApiWhisperWhisperClientInviteToGroupConstMeta =>
+      const TaskConstMeta(
+        debugName: "WhisperClient_invite_to_group",
+        argNames: ["that", "groupId", "peerId"],
+      );
+
+  @override
+  Future<bool> crateApiWhisperWhisperClientIsConnected({
+    required WhisperClient that,
+  }) {
+    return handler.executeNormal(
+      NormalTask(
+        callFfi: (port_) {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerWhisperClient(
+            that,
+            serializer,
+          );
+          pdeCallFfi(
+            generalizedFrbRustBinding,
+            serializer,
+            funcId: 17,
+            port: port_,
+          );
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_bool,
+          decodeErrorData: null,
+        ),
+        constMeta: kCrateApiWhisperWhisperClientIsConnectedConstMeta,
+        argValues: [that],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateApiWhisperWhisperClientIsConnectedConstMeta =>
+      const TaskConstMeta(
+        debugName: "WhisperClient_is_connected",
+        argNames: ["that"],
+      );
+
+  @override
+  Future<void> crateApiWhisperWhisperClientJoinGroup({
+    required WhisperClient that,
+    required String groupId,
+    required String token,
+  }) {
+    return handler.executeNormal(
+      NormalTask(
+        callFfi: (port_) {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerWhisperClient(
+            that,
+            serializer,
+          );
+          sse_encode_String(groupId, serializer);
+          sse_encode_String(token, serializer);
+          pdeCallFfi(
+            generalizedFrbRustBinding,
+            serializer,
+            funcId: 18,
+            port: port_,
+          );
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_unit,
+          decodeErrorData: sse_decode_String,
+        ),
+        constMeta: kCrateApiWhisperWhisperClientJoinGroupConstMeta,
+        argValues: [that, groupId, token],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateApiWhisperWhisperClientJoinGroupConstMeta =>
+      const TaskConstMeta(
+        debugName: "WhisperClient_join_group",
+        argNames: ["that", "groupId", "token"],
+      );
+
+  @override
+  Future<void> crateApiWhisperWhisperClientLeaveGroup({
+    required WhisperClient that,
+    required String groupId,
+  }) {
+    return handler.executeNormal(
+      NormalTask(
+        callFfi: (port_) {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerWhisperClient(
+            that,
+            serializer,
+          );
+          sse_encode_String(groupId, serializer);
+          pdeCallFfi(
+            generalizedFrbRustBinding,
+            serializer,
+            funcId: 19,
+            port: port_,
+          );
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_unit,
+          decodeErrorData: sse_decode_String,
+        ),
+        constMeta: kCrateApiWhisperWhisperClientLeaveGroupConstMeta,
+        argValues: [that, groupId],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateApiWhisperWhisperClientLeaveGroupConstMeta =>
+      const TaskConstMeta(
+        debugName: "WhisperClient_leave_group",
+        argNames: ["that", "groupId"],
+      );
+
+  @override
   Future<WhisperClient> crateApiWhisperWhisperClientNew() {
     return handler.executeNormal(
       NormalTask(
@@ -261,7 +1041,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 4,
+            funcId: 20,
             port: port_,
           );
         },
@@ -281,6 +1061,46 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       const TaskConstMeta(debugName: "WhisperClient_new", argNames: []);
 
   @override
+  Future<void> crateApiWhisperWhisperClientPromoteMember({
+    required WhisperClient that,
+    required String groupId,
+    required String peerId,
+  }) {
+    return handler.executeNormal(
+      NormalTask(
+        callFfi: (port_) {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerWhisperClient(
+            that,
+            serializer,
+          );
+          sse_encode_String(groupId, serializer);
+          sse_encode_String(peerId, serializer);
+          pdeCallFfi(
+            generalizedFrbRustBinding,
+            serializer,
+            funcId: 21,
+            port: port_,
+          );
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_unit,
+          decodeErrorData: sse_decode_String,
+        ),
+        constMeta: kCrateApiWhisperWhisperClientPromoteMemberConstMeta,
+        argValues: [that, groupId, peerId],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateApiWhisperWhisperClientPromoteMemberConstMeta =>
+      const TaskConstMeta(
+        debugName: "WhisperClient_promote_member",
+        argNames: ["that", "groupId", "peerId"],
+      );
+
+  @override
   Future<void> crateApiWhisperWhisperClientRefreshContacts({
     required WhisperClient that,
   }) {
@@ -295,7 +1115,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 5,
+            funcId: 22,
             port: port_,
           );
         },
@@ -331,7 +1151,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 6,
+            funcId: 23,
             port: port_,
           );
         },
@@ -354,6 +1174,240 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       );
 
   @override
+  Future<void> crateApiWhisperWhisperClientRefreshGroupInvites({
+    required WhisperClient that,
+  }) {
+    return handler.executeNormal(
+      NormalTask(
+        callFfi: (port_) {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerWhisperClient(
+            that,
+            serializer,
+          );
+          pdeCallFfi(
+            generalizedFrbRustBinding,
+            serializer,
+            funcId: 24,
+            port: port_,
+          );
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_unit,
+          decodeErrorData: sse_decode_String,
+        ),
+        constMeta: kCrateApiWhisperWhisperClientRefreshGroupInvitesConstMeta,
+        argValues: [that],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateApiWhisperWhisperClientRefreshGroupInvitesConstMeta =>
+      const TaskConstMeta(
+        debugName: "WhisperClient_refresh_group_invites",
+        argNames: ["that"],
+      );
+
+  @override
+  Future<void> crateApiWhisperWhisperClientRegisterProfile({
+    required WhisperClient that,
+    required String username,
+    required String signature,
+    String? displayName,
+  }) {
+    return handler.executeNormal(
+      NormalTask(
+        callFfi: (port_) {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerWhisperClient(
+            that,
+            serializer,
+          );
+          sse_encode_String(username, serializer);
+          sse_encode_String(signature, serializer);
+          sse_encode_opt_String(displayName, serializer);
+          pdeCallFfi(
+            generalizedFrbRustBinding,
+            serializer,
+            funcId: 25,
+            port: port_,
+          );
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_unit,
+          decodeErrorData: sse_decode_String,
+        ),
+        constMeta: kCrateApiWhisperWhisperClientRegisterProfileConstMeta,
+        argValues: [that, username, signature, displayName],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateApiWhisperWhisperClientRegisterProfileConstMeta =>
+      const TaskConstMeta(
+        debugName: "WhisperClient_register_profile",
+        argNames: ["that", "username", "signature", "displayName"],
+      );
+
+  @override
+  Future<void> crateApiWhisperWhisperClientRemoveContact({
+    required WhisperClient that,
+    required String peer,
+  }) {
+    return handler.executeNormal(
+      NormalTask(
+        callFfi: (port_) {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerWhisperClient(
+            that,
+            serializer,
+          );
+          sse_encode_String(peer, serializer);
+          pdeCallFfi(
+            generalizedFrbRustBinding,
+            serializer,
+            funcId: 26,
+            port: port_,
+          );
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_unit,
+          decodeErrorData: sse_decode_String,
+        ),
+        constMeta: kCrateApiWhisperWhisperClientRemoveContactConstMeta,
+        argValues: [that, peer],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateApiWhisperWhisperClientRemoveContactConstMeta =>
+      const TaskConstMeta(
+        debugName: "WhisperClient_remove_contact",
+        argNames: ["that", "peer"],
+      );
+
+  @override
+  Future<void> crateApiWhisperWhisperClientRemoveMember({
+    required WhisperClient that,
+    required String groupId,
+    required String peerId,
+  }) {
+    return handler.executeNormal(
+      NormalTask(
+        callFfi: (port_) {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerWhisperClient(
+            that,
+            serializer,
+          );
+          sse_encode_String(groupId, serializer);
+          sse_encode_String(peerId, serializer);
+          pdeCallFfi(
+            generalizedFrbRustBinding,
+            serializer,
+            funcId: 27,
+            port: port_,
+          );
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_unit,
+          decodeErrorData: sse_decode_String,
+        ),
+        constMeta: kCrateApiWhisperWhisperClientRemoveMemberConstMeta,
+        argValues: [that, groupId, peerId],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateApiWhisperWhisperClientRemoveMemberConstMeta =>
+      const TaskConstMeta(
+        debugName: "WhisperClient_remove_member",
+        argNames: ["that", "groupId", "peerId"],
+      );
+
+  @override
+  Future<void> crateApiWhisperWhisperClientRenameGroup({
+    required WhisperClient that,
+    required String groupId,
+    required String name,
+  }) {
+    return handler.executeNormal(
+      NormalTask(
+        callFfi: (port_) {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerWhisperClient(
+            that,
+            serializer,
+          );
+          sse_encode_String(groupId, serializer);
+          sse_encode_String(name, serializer);
+          pdeCallFfi(
+            generalizedFrbRustBinding,
+            serializer,
+            funcId: 28,
+            port: port_,
+          );
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_unit,
+          decodeErrorData: sse_decode_String,
+        ),
+        constMeta: kCrateApiWhisperWhisperClientRenameGroupConstMeta,
+        argValues: [that, groupId, name],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateApiWhisperWhisperClientRenameGroupConstMeta =>
+      const TaskConstMeta(
+        debugName: "WhisperClient_rename_group",
+        argNames: ["that", "groupId", "name"],
+      );
+
+  @override
+  Future<void> crateApiWhisperWhisperClientSearchUsers({
+    required WhisperClient that,
+    required String query,
+  }) {
+    return handler.executeNormal(
+      NormalTask(
+        callFfi: (port_) {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerWhisperClient(
+            that,
+            serializer,
+          );
+          sse_encode_String(query, serializer);
+          pdeCallFfi(
+            generalizedFrbRustBinding,
+            serializer,
+            funcId: 29,
+            port: port_,
+          );
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_unit,
+          decodeErrorData: sse_decode_String,
+        ),
+        constMeta: kCrateApiWhisperWhisperClientSearchUsersConstMeta,
+        argValues: [that, query],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateApiWhisperWhisperClientSearchUsersConstMeta =>
+      const TaskConstMeta(
+        debugName: "WhisperClient_search_users",
+        argNames: ["that", "query"],
+      );
+
+  @override
   Future<void> crateApiWhisperWhisperClientSendFriendRequest({
     required WhisperClient that,
     required String target,
@@ -370,7 +1424,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 7,
+            funcId: 30,
             port: port_,
           );
         },
@@ -392,6 +1446,46 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       );
 
   @override
+  Future<void> crateApiWhisperWhisperClientSendGroupMessage({
+    required WhisperClient that,
+    required String groupId,
+    required String text,
+  }) {
+    return handler.executeNormal(
+      NormalTask(
+        callFfi: (port_) {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerWhisperClient(
+            that,
+            serializer,
+          );
+          sse_encode_String(groupId, serializer);
+          sse_encode_String(text, serializer);
+          pdeCallFfi(
+            generalizedFrbRustBinding,
+            serializer,
+            funcId: 31,
+            port: port_,
+          );
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_unit,
+          decodeErrorData: sse_decode_String,
+        ),
+        constMeta: kCrateApiWhisperWhisperClientSendGroupMessageConstMeta,
+        argValues: [that, groupId, text],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateApiWhisperWhisperClientSendGroupMessageConstMeta =>
+      const TaskConstMeta(
+        debugName: "WhisperClient_send_group_message",
+        argNames: ["that", "groupId", "text"],
+      );
+
+  @override
   Future<void> crateApiWhisperWhisperClientSendMessage({
     required WhisperClient that,
     required String peerId,
@@ -410,7 +1504,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 8,
+            funcId: 32,
             port: port_,
           );
         },
@@ -432,6 +1526,139 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       );
 
   @override
+  Future<void> crateApiWhisperWhisperClientSendMessageFull({
+    required WhisperClient that,
+    required String peerId,
+    required String text,
+    String? quote,
+    String? messageId,
+    BigInt? expiresInSeconds,
+  }) {
+    return handler.executeNormal(
+      NormalTask(
+        callFfi: (port_) {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerWhisperClient(
+            that,
+            serializer,
+          );
+          sse_encode_String(peerId, serializer);
+          sse_encode_String(text, serializer);
+          sse_encode_opt_String(quote, serializer);
+          sse_encode_opt_String(messageId, serializer);
+          sse_encode_opt_box_autoadd_u_64(expiresInSeconds, serializer);
+          pdeCallFfi(
+            generalizedFrbRustBinding,
+            serializer,
+            funcId: 33,
+            port: port_,
+          );
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_unit,
+          decodeErrorData: sse_decode_String,
+        ),
+        constMeta: kCrateApiWhisperWhisperClientSendMessageFullConstMeta,
+        argValues: [that, peerId, text, quote, messageId, expiresInSeconds],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateApiWhisperWhisperClientSendMessageFullConstMeta =>
+      const TaskConstMeta(
+        debugName: "WhisperClient_send_message_full",
+        argNames: [
+          "that",
+          "peerId",
+          "text",
+          "quote",
+          "messageId",
+          "expiresInSeconds",
+        ],
+      );
+
+  @override
+  Future<void> crateApiWhisperWhisperClientSendReaction({
+    required WhisperClient that,
+    required String peerId,
+    required String messageId,
+    required String emoji,
+  }) {
+    return handler.executeNormal(
+      NormalTask(
+        callFfi: (port_) {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerWhisperClient(
+            that,
+            serializer,
+          );
+          sse_encode_String(peerId, serializer);
+          sse_encode_String(messageId, serializer);
+          sse_encode_String(emoji, serializer);
+          pdeCallFfi(
+            generalizedFrbRustBinding,
+            serializer,
+            funcId: 34,
+            port: port_,
+          );
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_unit,
+          decodeErrorData: sse_decode_String,
+        ),
+        constMeta: kCrateApiWhisperWhisperClientSendReactionConstMeta,
+        argValues: [that, peerId, messageId, emoji],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateApiWhisperWhisperClientSendReactionConstMeta =>
+      const TaskConstMeta(
+        debugName: "WhisperClient_send_reaction",
+        argNames: ["that", "peerId", "messageId", "emoji"],
+      );
+
+  @override
+  Future<void> crateApiWhisperWhisperClientSetDisplayName({
+    required WhisperClient that,
+    required String displayName,
+  }) {
+    return handler.executeNormal(
+      NormalTask(
+        callFfi: (port_) {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerWhisperClient(
+            that,
+            serializer,
+          );
+          sse_encode_String(displayName, serializer);
+          pdeCallFfi(
+            generalizedFrbRustBinding,
+            serializer,
+            funcId: 35,
+            port: port_,
+          );
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_unit,
+          decodeErrorData: sse_decode_String,
+        ),
+        constMeta: kCrateApiWhisperWhisperClientSetDisplayNameConstMeta,
+        argValues: [that, displayName],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateApiWhisperWhisperClientSetDisplayNameConstMeta =>
+      const TaskConstMeta(
+        debugName: "WhisperClient_set_display_name",
+        argNames: ["that", "displayName"],
+      );
+
+  @override
   Future<List<ChatEvent>> crateApiWhisperWhisperClientTakeEvents({
     required WhisperClient that,
   }) {
@@ -446,7 +1673,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 9,
+            funcId: 36,
             port: port_,
           );
         },
@@ -484,7 +1711,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 10,
+            funcId: 37,
             port: port_,
           );
         },
@@ -514,7 +1741,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 11,
+            funcId: 38,
             port: port_,
           );
         },
@@ -542,7 +1769,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 12,
+            funcId: 39,
             port: port_,
           );
         },
@@ -561,6 +1788,34 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       const TaskConstMeta(debugName: "identity_from_json", argNames: ["json"]);
 
   @override
+  Future<String> crateApiWhisperInviteLink({required String json}) {
+    return handler.executeNormal(
+      NormalTask(
+        callFfi: (port_) {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_String(json, serializer);
+          pdeCallFfi(
+            generalizedFrbRustBinding,
+            serializer,
+            funcId: 40,
+            port: port_,
+          );
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_String,
+          decodeErrorData: sse_decode_String,
+        ),
+        constMeta: kCrateApiWhisperInviteLinkConstMeta,
+        argValues: [json],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateApiWhisperInviteLinkConstMeta =>
+      const TaskConstMeta(debugName: "invite_link", argNames: ["json"]);
+
+  @override
   Future<bool> crateApiWhisperIsValidPeerId({required String peerId}) {
     return handler.executeNormal(
       NormalTask(
@@ -570,7 +1825,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 13,
+            funcId: 41,
             port: port_,
           );
         },
@@ -587,6 +1842,41 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
 
   TaskConstMeta get kCrateApiWhisperIsValidPeerIdConstMeta =>
       const TaskConstMeta(debugName: "is_valid_peer_id", argNames: ["peerId"]);
+
+  @override
+  Future<String> crateApiWhisperSignUsername({
+    required String json,
+    required String username,
+  }) {
+    return handler.executeNormal(
+      NormalTask(
+        callFfi: (port_) {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_String(json, serializer);
+          sse_encode_String(username, serializer);
+          pdeCallFfi(
+            generalizedFrbRustBinding,
+            serializer,
+            funcId: 42,
+            port: port_,
+          );
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_String,
+          decodeErrorData: sse_decode_String,
+        ),
+        constMeta: kCrateApiWhisperSignUsernameConstMeta,
+        argValues: [json, username],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateApiWhisperSignUsernameConstMeta =>
+      const TaskConstMeta(
+        debugName: "sign_username",
+        argNames: ["json", "username"],
+      );
 
   RustArcIncrementStrongCountFnType
   get rust_arc_increment_strong_count_WhisperClient => wire
@@ -636,6 +1926,12 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  BigInt dco_decode_box_autoadd_u_64(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return dco_decode_u_64(raw);
+  }
+
+  @protected
   ChatEvent dco_decode_chat_event(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     final arr = raw as List<dynamic>;
@@ -677,6 +1973,18 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   String? dco_decode_opt_String(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     return raw == null ? null : dco_decode_String(raw);
+  }
+
+  @protected
+  BigInt? dco_decode_opt_box_autoadd_u_64(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return raw == null ? null : dco_decode_box_autoadd_u_64(raw);
+  }
+
+  @protected
+  BigInt dco_decode_u_64(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return dcoDecodeU64(raw);
   }
 
   @protected
@@ -747,6 +2055,12 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  BigInt sse_decode_box_autoadd_u_64(SseDeserializer deserializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    return (sse_decode_u_64(deserializer));
+  }
+
+  @protected
   ChatEvent sse_decode_chat_event(SseDeserializer deserializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     var var_kind = sse_decode_String(deserializer);
@@ -797,6 +2111,23 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     } else {
       return null;
     }
+  }
+
+  @protected
+  BigInt? sse_decode_opt_box_autoadd_u_64(SseDeserializer deserializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+
+    if (sse_decode_bool(deserializer)) {
+      return (sse_decode_box_autoadd_u_64(deserializer));
+    } else {
+      return null;
+    }
+  }
+
+  @protected
+  BigInt sse_decode_u_64(SseDeserializer deserializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    return deserializer.buffer.getBigUint64();
   }
 
   @protected
@@ -874,6 +2205,12 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  void sse_encode_box_autoadd_u_64(BigInt self, SseSerializer serializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_u_64(self, serializer);
+  }
+
+  @protected
   void sse_encode_chat_event(ChatEvent self, SseSerializer serializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     sse_encode_String(self.kind, serializer);
@@ -922,6 +2259,22 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  void sse_encode_opt_box_autoadd_u_64(BigInt? self, SseSerializer serializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+
+    sse_encode_bool(self != null, serializer);
+    if (self != null) {
+      sse_encode_box_autoadd_u_64(self, serializer);
+    }
+  }
+
+  @protected
+  void sse_encode_u_64(BigInt self, SseSerializer serializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    serializer.buffer.putBigUint64(self);
+  }
+
+  @protected
   void sse_encode_u_8(int self, SseSerializer serializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     serializer.buffer.putUint8(self);
@@ -964,14 +2317,26 @@ class WhisperClientImpl extends RustOpaque implements WhisperClient {
         RustLib.instance.api.rust_arc_decrement_strong_count_WhisperClientPtr,
   );
 
-  /// Accept a pending friend request from `peer`.
   Future<void> acceptFriendRequest({required String peer}) => RustLib
       .instance
       .api
       .crateApiWhisperWhisperClientAcceptFriendRequest(that: this, peer: peer);
 
-  /// Connect to the relay: open the WebSocket, send the signed hello and
-  /// publish our pre-key bundle so other peers can start sessions.
+  Future<void> acceptGroupInvite({required String groupId}) =>
+      RustLib.instance.api.crateApiWhisperWhisperClientAcceptGroupInvite(
+        that: this,
+        groupId: groupId,
+      );
+
+  Future<void> addGroupMember({
+    required String groupId,
+    required String peerId,
+  }) => RustLib.instance.api.crateApiWhisperWhisperClientAddGroupMember(
+    that: this,
+    groupId: groupId,
+    peerId: peerId,
+  );
+
   Future<void> connect({String? relayUrl, required String identityJson}) =>
       RustLib.instance.api.crateApiWhisperWhisperClientConnect(
         that: this,
@@ -979,23 +2344,160 @@ class WhisperClientImpl extends RustOpaque implements WhisperClient {
         identityJson: identityJson,
       );
 
-  /// Ask the relay for our accepted contacts (as peer IDs).
+  Future<void> createGroup({required String name}) => RustLib.instance.api
+      .crateApiWhisperWhisperClientCreateGroup(that: this, name: name);
+
+  Future<void> declineFriendRequest({required String peer}) => RustLib
+      .instance
+      .api
+      .crateApiWhisperWhisperClientDeclineFriendRequest(that: this, peer: peer);
+
+  Future<void> declineGroupInvite({required String groupId}) =>
+      RustLib.instance.api.crateApiWhisperWhisperClientDeclineGroupInvite(
+        that: this,
+        groupId: groupId,
+      );
+
+  /// Delete a message for everyone.
+  Future<void> deleteMessage({
+    required String peerId,
+    required String messageId,
+  }) => RustLib.instance.api.crateApiWhisperWhisperClientDeleteMessage(
+    that: this,
+    peerId: peerId,
+    messageId: messageId,
+  );
+
+  Future<void> demoteMember({
+    required String groupId,
+    required String peerId,
+  }) => RustLib.instance.api.crateApiWhisperWhisperClientDemoteMember(
+    that: this,
+    groupId: groupId,
+    peerId: peerId,
+  );
+
+  /// Edit a message's text.
+  Future<void> editMessage({
+    required String peerId,
+    required String messageId,
+    required String text,
+  }) => RustLib.instance.api.crateApiWhisperWhisperClientEditMessage(
+    that: this,
+    peerId: peerId,
+    messageId: messageId,
+    text: text,
+  );
+
+  Future<void> getGroupInfo({required String groupId}) => RustLib.instance.api
+      .crateApiWhisperWhisperClientGetGroupInfo(that: this, groupId: groupId);
+
+  Future<void> getGroupJoinLink({required String groupId}) =>
+      RustLib.instance.api.crateApiWhisperWhisperClientGetGroupJoinLink(
+        that: this,
+        groupId: groupId,
+      );
+
+  Future<void> getPresence({required String peerId}) => RustLib.instance.api
+      .crateApiWhisperWhisperClientGetPresence(that: this, peerId: peerId);
+
+  /// Fetch a peer's public profile.
+  Future<void> getProfile({required String peerId}) => RustLib.instance.api
+      .crateApiWhisperWhisperClientGetProfile(that: this, peerId: peerId);
+
+  Future<void> inviteToGroup({
+    required String groupId,
+    required String peerId,
+  }) => RustLib.instance.api.crateApiWhisperWhisperClientInviteToGroup(
+    that: this,
+    groupId: groupId,
+    peerId: peerId,
+  );
+
+  Future<bool> isConnected() =>
+      RustLib.instance.api.crateApiWhisperWhisperClientIsConnected(that: this);
+
+  Future<void> joinGroup({required String groupId, required String token}) =>
+      RustLib.instance.api.crateApiWhisperWhisperClientJoinGroup(
+        that: this,
+        groupId: groupId,
+        token: token,
+      );
+
+  Future<void> leaveGroup({required String groupId}) => RustLib.instance.api
+      .crateApiWhisperWhisperClientLeaveGroup(that: this, groupId: groupId);
+
+  Future<void> promoteMember({
+    required String groupId,
+    required String peerId,
+  }) => RustLib.instance.api.crateApiWhisperWhisperClientPromoteMember(
+    that: this,
+    groupId: groupId,
+    peerId: peerId,
+  );
+
   Future<void> refreshContacts() => RustLib.instance.api
       .crateApiWhisperWhisperClientRefreshContacts(that: this);
 
-  /// Ask the relay for pending friend requests.
   Future<void> refreshFriendRequests() => RustLib.instance.api
       .crateApiWhisperWhisperClientRefreshFriendRequests(that: this);
 
-  /// Send a friend request to `target`.
+  Future<void> refreshGroupInvites() => RustLib.instance.api
+      .crateApiWhisperWhisperClientRefreshGroupInvites(that: this);
+
+  /// Register (or refresh) a signed username + optional display name.
+  Future<void> registerProfile({
+    required String username,
+    required String signature,
+    String? displayName,
+  }) => RustLib.instance.api.crateApiWhisperWhisperClientRegisterProfile(
+    that: this,
+    username: username,
+    signature: signature,
+    displayName: displayName,
+  );
+
+  Future<void> removeContact({required String peer}) => RustLib.instance.api
+      .crateApiWhisperWhisperClientRemoveContact(that: this, peer: peer);
+
+  Future<void> removeMember({
+    required String groupId,
+    required String peerId,
+  }) => RustLib.instance.api.crateApiWhisperWhisperClientRemoveMember(
+    that: this,
+    groupId: groupId,
+    peerId: peerId,
+  );
+
+  Future<void> renameGroup({required String groupId, required String name}) =>
+      RustLib.instance.api.crateApiWhisperWhisperClientRenameGroup(
+        that: this,
+        groupId: groupId,
+        name: name,
+      );
+
+  /// Search the public directory by username / peer ID.
+  Future<void> searchUsers({required String query}) => RustLib.instance.api
+      .crateApiWhisperWhisperClientSearchUsers(that: this, query: query);
+
   Future<void> sendFriendRequest({required String target}) =>
       RustLib.instance.api.crateApiWhisperWhisperClientSendFriendRequest(
         that: this,
         target: target,
       );
 
-  /// Send a text message to `peer_id`, establishing a Double Ratchet
-  /// session with a handshake on the first message.
+  /// Send a text message to a group (Megolm-encrypted). The session key is
+  /// shared to members over 1:1 E2EE; for the MVP we reuse the same
+  /// envelope routing with a group recipient and an encrypted payload.
+  Future<void> sendGroupMessage({
+    required String groupId,
+    required String text,
+  }) => RustLib.instance.api.crateApiWhisperWhisperClientSendGroupMessage(
+    that: this,
+    groupId: groupId,
+    text: text,
+  );
+
   Future<void> sendMessage({required String peerId, required String text}) =>
       RustLib.instance.api.crateApiWhisperWhisperClientSendMessage(
         that: this,
@@ -1003,11 +2505,43 @@ class WhisperClientImpl extends RustOpaque implements WhisperClient {
         text: text,
       );
 
-  /// Drain all pending events (polled by the UI, e.g. once per second).
+  Future<void> sendMessageFull({
+    required String peerId,
+    required String text,
+    String? quote,
+    String? messageId,
+    BigInt? expiresInSeconds,
+  }) => RustLib.instance.api.crateApiWhisperWhisperClientSendMessageFull(
+    that: this,
+    peerId: peerId,
+    text: text,
+    quote: quote,
+    messageId: messageId,
+    expiresInSeconds: expiresInSeconds,
+  );
+
+  /// Send an emoji reaction to a message (encrypted inside the session).
+  Future<void> sendReaction({
+    required String peerId,
+    required String messageId,
+    required String emoji,
+  }) => RustLib.instance.api.crateApiWhisperWhisperClientSendReaction(
+    that: this,
+    peerId: peerId,
+    messageId: messageId,
+    emoji: emoji,
+  );
+
+  /// Set our public display name.
+  Future<void> setDisplayName({required String displayName}) =>
+      RustLib.instance.api.crateApiWhisperWhisperClientSetDisplayName(
+        that: this,
+        displayName: displayName,
+      );
+
   Future<List<ChatEvent>> takeEvents() =>
       RustLib.instance.api.crateApiWhisperWhisperClientTakeEvents(that: this);
 
-  /// Subscribe to online/offline pushes for `peer_id`.
   Future<void> watchPresence({required String peerId}) => RustLib.instance.api
       .crateApiWhisperWhisperClientWatchPresence(that: this, peerId: peerId);
 }

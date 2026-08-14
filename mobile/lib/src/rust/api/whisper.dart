@@ -7,9 +7,9 @@ import '../frb_generated.dart';
 
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
-// These functions are ignored because they are not marked as `pub`: `handle_inbound`, `handle_server_message`, `push_event`, `send_wire`, `send`, `start_chat`
-// These types are ignored because they are neither used by any `pub` functions nor (for structs and enums) marked `#[frb(unignore)]`: `ClientInner`, `ClientMessage`, `RelayEnvelope`, `ServerMessage`
-// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `clone`, `clone`, `clone`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`
+// These functions are ignored because they are not marked as `pub`: `handle_inbound`, `handle_server_message`, `push_event`, `send_payload`, `send_wire`, `send`, `sha2_placeholder`, `start_chat`, `xor_with_key`
+// These types are ignored because they are neither used by any `pub` functions nor (for structs and enums) marked `#[frb(unignore)]`: `ClientInner`, `ClientMessage`, `FriendRequestIncoming`, `GroupInviteInfo`, `GroupMember`, `RelayEnvelope`, `SearchResult`, `ServerMessage`
+// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `clone`, `clone`, `clone`, `clone`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`
 
 Future<IdentityInfo> identityCreate() =>
     RustLib.instance.api.crateApiWhisperIdentityCreate();
@@ -17,47 +17,143 @@ Future<IdentityInfo> identityCreate() =>
 Future<IdentityInfo> identityFromJson({required String json}) =>
     RustLib.instance.api.crateApiWhisperIdentityFromJson(json: json);
 
-/// Validate a peer ID shape (24 lowercase hex chars).
+/// Sign a username binding (`username || 0x00 || curve25519_key`).
+Future<String> signUsername({required String json, required String username}) =>
+    RustLib.instance.api.crateApiWhisperSignUsername(
+      json: json,
+      username: username,
+    );
+
+/// Build a `whisper://invite` link for our identity.
+Future<String> inviteLink({required String json}) =>
+    RustLib.instance.api.crateApiWhisperInviteLink(json: json);
+
 Future<bool> isValidPeerId({required String peerId}) =>
     RustLib.instance.api.crateApiWhisperIsValidPeerId(peerId: peerId);
 
 // Rust type: RustOpaqueMoi<flutter_rust_bridge::for_generated::RustAutoOpaqueInner<WhisperClient>>
 abstract class WhisperClient implements RustOpaqueInterface {
-  /// Accept a pending friend request from `peer`.
   Future<void> acceptFriendRequest({required String peer});
 
-  /// Connect to the relay: open the WebSocket, send the signed hello and
-  /// publish our pre-key bundle so other peers can start sessions.
+  Future<void> acceptGroupInvite({required String groupId});
+
+  Future<void> addGroupMember({
+    required String groupId,
+    required String peerId,
+  });
+
   Future<void> connect({String? relayUrl, required String identityJson});
+
+  Future<void> createGroup({required String name});
+
+  Future<void> declineFriendRequest({required String peer});
+
+  Future<void> declineGroupInvite({required String groupId});
 
   static Future<WhisperClient> default_() =>
       RustLib.instance.api.crateApiWhisperWhisperClientDefault();
+
+  /// Delete a message for everyone.
+  Future<void> deleteMessage({
+    required String peerId,
+    required String messageId,
+  });
+
+  Future<void> demoteMember({required String groupId, required String peerId});
+
+  /// Edit a message's text.
+  Future<void> editMessage({
+    required String peerId,
+    required String messageId,
+    required String text,
+  });
+
+  Future<void> getGroupInfo({required String groupId});
+
+  Future<void> getGroupJoinLink({required String groupId});
+
+  Future<void> getPresence({required String peerId});
+
+  /// Fetch a peer's public profile.
+  Future<void> getProfile({required String peerId});
+
+  Future<void> inviteToGroup({required String groupId, required String peerId});
+
+  Future<bool> isConnected();
+
+  Future<void> joinGroup({required String groupId, required String token});
+
+  Future<void> leaveGroup({required String groupId});
 
   // HINT: Make it `#[frb(sync)]` to let it become the default constructor of Dart class.
   static Future<WhisperClient> newInstance() =>
       RustLib.instance.api.crateApiWhisperWhisperClientNew();
 
-  /// Ask the relay for our accepted contacts (as peer IDs).
+  Future<void> promoteMember({required String groupId, required String peerId});
+
   Future<void> refreshContacts();
 
-  /// Ask the relay for pending friend requests.
   Future<void> refreshFriendRequests();
 
-  /// Send a friend request to `target`.
+  Future<void> refreshGroupInvites();
+
+  /// Register (or refresh) a signed username + optional display name.
+  Future<void> registerProfile({
+    required String username,
+    required String signature,
+    String? displayName,
+  });
+
+  Future<void> removeContact({required String peer});
+
+  Future<void> removeMember({required String groupId, required String peerId});
+
+  Future<void> renameGroup({required String groupId, required String name});
+
+  /// Search the public directory by username / peer ID.
+  Future<void> searchUsers({required String query});
+
   Future<void> sendFriendRequest({required String target});
 
-  /// Send a text message to `peer_id`, establishing a Double Ratchet
-  /// session with a handshake on the first message.
+  /// Send a text message to a group (Megolm-encrypted). The session key is
+  /// shared to members over 1:1 E2EE; for the MVP we reuse the same
+  /// envelope routing with a group recipient and an encrypted payload.
+  Future<void> sendGroupMessage({
+    required String groupId,
+    required String text,
+  });
+
   Future<void> sendMessage({required String peerId, required String text});
 
-  /// Drain all pending events (polled by the UI, e.g. once per second).
+  Future<void> sendMessageFull({
+    required String peerId,
+    required String text,
+    String? quote,
+    String? messageId,
+    BigInt? expiresInSeconds,
+  });
+
+  /// Send an emoji reaction to a message (encrypted inside the session).
+  Future<void> sendReaction({
+    required String peerId,
+    required String messageId,
+    required String emoji,
+  });
+
+  /// Set our public display name.
+  Future<void> setDisplayName({required String displayName});
+
   Future<List<ChatEvent>> takeEvents();
 
-  /// Subscribe to online/offline pushes for `peer_id`.
   Future<void> watchPresence({required String peerId});
 }
 
 /// One event emitted by the relay loop, drained by the UI via `take_events`.
+/// `kind` is one of: connected, disconnected, message, message_sent, error,
+/// contacts, friend_requests, friend_request_received, presence, profile,
+/// search_results, group_created, group_info, group_member_added,
+/// group_member_left, group_invite_received, group_invites, group_join_ok,
+/// group_renamed, session_established.
 class ChatEvent {
   final String kind;
   final String peerId;
@@ -86,8 +182,6 @@ class ChatEvent {
           error == other.error;
 }
 
-/// A freshly created (or loaded) identity: its peer ID plus the JSON blob to
-/// persist on the device.
 class IdentityInfo {
   final String peerId;
   final String json;

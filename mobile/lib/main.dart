@@ -39,6 +39,7 @@ class _RootScreenState extends State<RootScreen> {
   bool _ready = false;
   bool _needsOnboarding = false;
   String _peerId = '';
+  String _identityJson = '';
   core.WhisperClient? _client;
 
   @override
@@ -55,11 +56,13 @@ class _RootScreenState extends State<RootScreen> {
     if (stored != null) {
       final info = await core.identityFromJson(json: stored);
       peerId = info.peerId;
+      _identityJson = stored;
       _needsOnboarding = false;
     } else {
       final info = await core.identityCreate();
       await prefs.setString('identity_json', info.json);
       peerId = info.peerId;
+      _identityJson = info.json;
       _needsOnboarding = true;
     }
     _client = await core.WhisperClient.newInstance();
@@ -77,13 +80,14 @@ class _RootScreenState extends State<RootScreen> {
       return SplashScreen(onDone: _onSplashDone);
     }
     if (!_ready) {
-      // Still initializing (RustLib / identity) — keep the splash visible.
       return SplashScreen(onDone: () {});
     }
     final client = _client!;
     if (_needsOnboarding) {
       return OnboardingScreen(
-        identity: core.IdentityInfo(peerId: _peerId, json: ''),
+        client: client,
+        identityJson: _identityJson,
+        peerId: _peerId,
         onDone: () => setState(() => _needsOnboarding = false),
       );
     }
