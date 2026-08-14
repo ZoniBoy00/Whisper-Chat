@@ -22,6 +22,7 @@ import {
   setAvatar,
   setGroupAvatar,
   setPrivacy,
+  setRelayUrl as persistRelayUrl,
   setTheme as persistTheme,
   updateSettings,
 } from "../lib/relay";
@@ -107,6 +108,14 @@ export function MainView({ peerId, onReset }: MainViewProps) {
     connected: chat.connected,
     onPresence: chat.updatePresence,
   });
+
+  // Persist a new relay endpoint and switch to it. The backend drops the
+  // current connection on change; the auto-reconnect loop picks up the new
+  // address. An empty value restores the built-in default relay.
+  const handleRelayUrlChange = useCallback(async (url: string) => {
+    await persistRelayUrl(url);
+    setRelayUrl(url.trim() === "" ? DEFAULT_RELAY_URL : url.trim());
+  }, []);
 
   // Keep the DOM attribute in sync with the active theme. The stylesheet
   // defines a light variant under `[data-theme="light"]`; anything else
@@ -843,6 +852,7 @@ export function MainView({ peerId, onReset }: MainViewProps) {
         theme={theme}
         onThemeChange={handleThemeChange}
         relayUrl={relayUrl}
+        onRelayUrlChange={handleRelayUrlChange}
         onSaveDisplayName={chat.saveDisplayName}
         onRegisterUsername={handleRegisterUsername}
         onSetAvatar={handleSetAvatar}
