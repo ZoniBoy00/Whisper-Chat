@@ -27,6 +27,11 @@ tokio-tungstenite = { version = "0.30", features = ["rustls-tls-webpki-roots"] }
 # Exactly one rustls crypto provider (ring) — see desktop Cargo.toml note.
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "logging", "tls12"] }
 futures-util = "0.3"
+# Password-encrypted backups: Argon2id (KDF) + AES-256-GCM (AEAD) — the same
+# scheme as the desktop client's backup.rs.
+argon2 = "0.5"
+aes-gcm = "0.11"
+rand = "0.10"
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(frb_expand)'] }
