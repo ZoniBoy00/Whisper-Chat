@@ -120,7 +120,7 @@ log "[7/7] Let's Encrypt certificate (direct TLS)"
 if [[ -n "${CERTBOT_EMAIL}" ]]; then
     certbot --nginx -d "${DOMAIN}" --non-interactive --agree-tos -m "${CERTBOT_EMAIL}" --redirect
 else
-    certbot --nginx -d "${DOMAIN}" --non-interactive --register-unsafely-without-email --redirect
+    certbot --nginx -d "${DOMAIN}" --non-interactive --agree-tos --register-unsafely-without-email --redirect
 fi
 systemctl reload nginx
 
