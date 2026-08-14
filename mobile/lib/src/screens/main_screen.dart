@@ -182,7 +182,7 @@ class _MainScreenState extends State<MainScreen> {
               .map((l) {
             final p = l.split('|');
             return SearchHit(
-              p.length > 0 ? p[0] : '',
+              p.isNotEmpty ? p[0] : '',
               p.length > 1 ? p[1] : '',
               p.length > 2 ? p[2] : '',
             );
@@ -498,34 +498,37 @@ class _MainScreenState extends State<MainScreen> {
   }
 
   Widget _buildProfileHeader() {
+    final t = LanguageScope.of(context).t;
+    final short = _short(widget.peerId, 18);
     return Padding(
-      padding: const EdgeInsets.fromLTRB(16, 16, 12, 12),
+      padding: const EdgeInsets.fromLTRB(16, 14, 12, 12),
       child: Row(
         children: [
-          const WpAvatar(name: '', size: 40),
-          const SizedBox(width: 12),
+          GestureDetector(
+            onTap: _openMyProfile,
+            child: const WpAvatar(name: '', size: 36),
+          ),
+          const SizedBox(width: 10),
           Expanded(
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Text(
-                  'Your Whisper ID',
+                  short,
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
                   style: const TextStyle(
                     color: Wp.text,
-                    fontSize: 14,
+                    fontSize: 13,
                     fontWeight: FontWeight.w600,
+                    fontFamily: 'monospace',
                   ),
                 ),
                 Text(
-                  widget.peerId,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: const TextStyle(
-                    color: Wp.textDim,
-                    fontSize: 12,
-                    fontFamily: 'monospace',
+                  t('connected'),
+                  style: TextStyle(
+                    color: _connected ? Wp.online : Wp.textFaint,
+                    fontSize: 11,
                   ),
                 ),
               ],
@@ -533,16 +536,34 @@ class _MainScreenState extends State<MainScreen> {
           ),
           _IconBtn(
             icon: Icons.copy,
-            tooltip: 'Copy peer ID',
+            tooltip: t('copy_peer_id'),
             onTap: () =>
                 Clipboard.setData(ClipboardData(text: widget.peerId)),
           ),
           _IconBtn(
             icon: Icons.settings_outlined,
-            tooltip: 'Settings',
+            tooltip: t('settings'),
             onTap: _openSettings,
           ),
         ],
+      ),
+    );
+  }
+
+  Future<void> _openMyProfile() async {
+    final prefs = await SharedPreferences.getInstance();
+    final identityJson = prefs.getString('identity_json') ?? '';
+    if (!mounted) return;
+    await Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (_) => ProfileScreen(
+          client: widget.client,
+          identityJson: identityJson,
+          myPeerId: widget.peerId,
+          peerId: widget.peerId,
+          isSelf: true,
+        ),
       ),
     );
   }
@@ -1037,6 +1058,7 @@ class _MainScreenState extends State<MainScreen> {
         final emoji = await _pickEmoji();
         if (emoji != null) _react(m, emoji);
       case 'reply':
+        if (!mounted) break;
         final controller = TextEditingController();
         final text = await showDialog<String>(
           context: context,
@@ -1496,7 +1518,7 @@ class _Bubble extends StatelessWidget {
                     color: Colors.black.withValues(alpha: 0.15),
                     borderRadius: BorderRadius.circular(6),
                     border: const Border(
-                      left: BorderSide(color: Color(0x99B8A6), width: 2),
+                      left: BorderSide(color: Color(0x9914B8A6), width: 2),
                     ),
                   ),
                   child: Text(

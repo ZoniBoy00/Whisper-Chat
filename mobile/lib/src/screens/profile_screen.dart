@@ -51,10 +51,12 @@ class _ProfileScreenState extends State<ProfileScreen> {
           await core.safetyNumber(identityJson: widget.identityJson, theirCurve25519: widget.curve25519Key!);
       final ss = await core.shortSafetyNumber(
           identityJson: widget.identityJson, theirCurve25519: widget.curve25519Key!);
-      if (mounted) setState(() {
-        _safety = s;
-        _shortSafety = ss;
-      });
+      if (mounted) {
+        setState(() {
+          _safety = s;
+          _shortSafety = ss;
+        });
+      }
     } catch (_) {}
   }
 
@@ -147,7 +149,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
                           size: 16, color: Wp.accent),
                       const SizedBox(width: 8),
                       Text(
-                        '${_shortSafety ?? ''}',
+                        _shortSafety ?? '',
                         style: const TextStyle(
                           color: Wp.accent,
                           fontSize: 14,

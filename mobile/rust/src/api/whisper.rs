@@ -148,6 +148,7 @@ struct RelayEnvelope {
     sender: String,
     recipient: String,
     payload: String,
+    #[allow(dead_code)] // wire field; the relay acks by seq
     seq: u64,
 }
 
@@ -163,10 +164,12 @@ enum ServerMessage {
         envelope: RelayEnvelope,
     },
     Acknowledged {
+        #[allow(dead_code)] // wire field; acks are matched by seq on send
         seq: u64,
     },
     Prekeys {
         bundle: Box<PreKeyBundle>,
+        #[allow(dead_code)] // serde field; display name is optional metadata
         display_name: Option<String>,
     },
     Error {
@@ -215,6 +218,7 @@ enum ServerMessage {
     GroupCreated {
         group_id: String,
         name: String,
+        #[allow(dead_code)] // serde field; roster arrives via group_info
         members: Vec<String>,
     },
     GroupMemberAdded {
@@ -233,6 +237,7 @@ enum ServerMessage {
         group_id: String,
         name: String,
         owner_peer_id: String,
+        #[allow(dead_code)] // serde field; avatar rendering is a follow-up
         avatar_url: Option<String>,
         members: Vec<GroupMember>,
     },
@@ -283,6 +288,7 @@ enum ServerMessage {
 #[derive(Debug, Deserialize)]
 struct FriendRequestIncoming {
     peer_id: String,
+    #[allow(dead_code)] // serde field; the UI shows the peer ID for now
     display_name: Option<String>,
 }
 
@@ -521,6 +527,9 @@ impl WhisperClient {
         }
         self.inner.connected.store(true, Ordering::SeqCst);
         self.push_event("connected", "", None, None);
+
+        // Drain any offline envelopes queued while we were away.
+        let _ = self.send(&ClientMessage::FetchSince { since: 0 }).await;
 
         let client = self.clone();
         tokio::spawn(async move {

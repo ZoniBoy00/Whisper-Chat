@@ -459,8 +459,7 @@ impl Store {
             .prepare(
                 "SELECT peer_id, username, display_name, avatar_hash, curve25519_key
                  FROM users
-                 WHERE username IS NOT NULL
-                   AND (lower(username) LIKE ?1 OR peer_id LIKE ?1)
+                 WHERE lower(username) LIKE ?1 OR peer_id LIKE ?1
                  ORDER BY username
                  LIMIT ?2",
             )
@@ -1508,8 +1507,25 @@ mod tests {
         assert_eq!(hits.len(), 2);
         assert!(
             hits.iter().all(|p| p.username.is_some()),
-            "peers without a username must never be searchable"
+            "username searches only return peers with a username"
         );
+    }
+
+    #[test]
+    fn search_users_finds_peers_without_a_username_by_peer_id_prefix() {
+        // A peer who only ever set a display name (no username) must still be
+        // findable by peer-ID prefix — this is how a fresh mobile client
+        // (never registered a username) is found from the desktop.
+        let store = Store::open_in_memory().unwrap();
+        let now = unix_now();
+        store
+            .register_user_with_keys("317b8da4abcdef", "curve-x", "ed-x", now)
+            .unwrap();
+
+        let hits = store.search_users("317b8da4", 10);
+        assert_eq!(hits.len(), 1, "peer must be found by peer-ID prefix");
+        assert_eq!(hits[0].peer_id, "317b8da4abcdef");
+        assert_eq!(hits[0].username, None);
     }
 
     #[test]

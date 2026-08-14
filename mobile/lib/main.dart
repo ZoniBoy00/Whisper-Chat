@@ -46,6 +46,12 @@ class _WhisperAppState extends State<WhisperApp> {
         title: 'Whisper',
         debugShowCheckedModeBanner: false,
         theme: whisperTheme(),
+        // Lock the text scale: dynamic OS font scaling was resizing elements
+        // while scrolling in Settings (B2 in MOBILE-GAP.md).
+        builder: (context, child) => MediaQuery(
+          data: MediaQuery.of(context).copyWith(textScaler: TextScaler.noScaling),
+          child: child!,
+        ),
         home: const RootScreen(),
       ),
     );
