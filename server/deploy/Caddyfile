@@ -1,0 +1,51 @@
+# Whisper relay — Caddy reverse proxy template (direct TLS, origin cert).
+#
+# Chosen over Cloudflare Tunnel so the client can pin the ORIGIN certificate
+# (through a tunnel the client would see Cloudflare's edge cert instead, and
+# the §9 pinning rule only holds with direct TLS).
+#
+# Caddy is the zero-friction option: it provisions and renews the Let's
+# Encrypt certificate automatically and writes X-Forwarded-For itself.
+#
+# Install:
+#   1. Install Caddy (https://caddyserver.com/docs/install)
+#   2. Copy this file to /etc/caddy/Caddyfile, edit the site address
+#      (relay.example.com -> your actual domain)
+#   3. sudo systemctl reload caddy
+#   4. Configure the relay to trust this proxy:
+#        /etc/whisper/relay.env  ->  WHISPER_TRUSTED_PROXIES=127.0.0.1
+#
+# Security notes:
+#   - Caddy only offers TLS 1.2+, defaults are sane; it manages HSTS headers
+#     for HTTPS sites automatically (Strict-Transport-Security on by default).
+#   - Caddy overwrites X-Forwarded-For with the direct peer address, so a
+#     direct client cannot spoof it; the relay trusts it only from 127.0.0.1.
+#   - `header_up Connection` forwarding keeps the WebSocket upgrade intact.
+
+relay.example.com {
+    encode zstd gzip
+
+    handle /ws* {
+        reverse_proxy 127.0.0.1:8080 {
+            header_up X-Forwarded-For {remote_host}
+            # Keep the WebSocket upgrade working.
+            header_up Connection {http.request.header.Connection}
+            header_up Upgrade {http.request.header.Upgrade}
+        }
+    }
+
+    handle /media/* {
+        reverse_proxy 127.0.0.1:8080 {
+            header_up X-Forwarded-For {remote_host}
+        }
+    }
+
+    handle /healthz {
+        reverse_proxy 127.0.0.1:8080 {
+            header_up X-Forwarded-For {remote_host}
+        }
+    }
+
+    # Reject anything else (avoids proxying unknown paths to the relay).
+    respond 404
+}

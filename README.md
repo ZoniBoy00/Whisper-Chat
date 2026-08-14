@@ -197,14 +197,26 @@ Copy `server/.env.example` and adjust (or export directly):
 | `WHISPER_DB_PATH`   | `data/relay.db`  | SQLite database location             |
 | `WHISPER_RATE_BURST`| `60`             | Max envelope burst per IP            |
 | `WHISPER_RATE_REFILL`| `1`             | Tokens refilled per second (~60/min) |
+| `WHISPER_TRUSTED_PROXIES` | *(empty)* | Comma/space-separated trusted proxy IPs; forwarded headers are only honored from these, so per-IP rate limiting sees the real client behind nginx/Caddy/Cloudflare (empty = direct connections only) |
 | `RUST_LOG`          | `info`           | Log level                            |
 
-### 3. Deploy with systemd
+### 3. Deploy with systemd + a reverse proxy
 
 A hardened, production-ready unit template is included at
 `server/deploy/whisper-relay.service` — it runs as a dedicated non-root user
 with `NoNewPrivileges`, `ProtectSystem=strict`, `PrivateTmp`, an empty
 `CapabilityBoundingSet` and a read-only root filesystem.
+
+For public use the relay sits behind a TLS-terminating reverse proxy (direct
+TLS + origin certificate pinning — no tunnel). Pick a template from
+`server/deploy/`:
+
+- **nginx** (`whisper-relay.nginx.conf`) — TLS 1.2/1.3, HSTS, WSS upgrade
+  headers; certificates via certbot
+- **Caddy** (`Caddyfile`) — automatic Let's Encrypt, zero config
+
+Then set `WHISPER_TRUSTED_PROXIES=127.0.0.1` in `/etc/whisper/relay.env` so
+rate limiting reads the real client IP from the forwarded headers.
 
 ### 4. Desktop app
 
@@ -247,7 +259,7 @@ cargo fmt --check
 ```
 ├── e2ee-core/        # Shared crypto core: identity, prekeys, X3DH, Double Ratchet, wire protocol
 ├── server/           # whisper-relay: zero-knowledge blind relay (axum + tokio + SQLite)
-│   ├── deploy/       #   hardened systemd unit template
+│   ├── deploy/       #   hardened systemd unit + nginx/Caddy reverse-proxy templates
 │   └── tests/        #   smoke.mjs end-to-end tests
 ├── desktop/          # Tauri v2 desktop client (React + TypeScript + Tailwind)
 ├── docs/             # ROADMAP.md and other technical documentation
@@ -258,8 +270,8 @@ cargo fmt --check
 
 ## Testing & TDD
 
-- **341 unit tests** across the workspace (e2ee-core 88, whisper-desktop 112,
-  whisper-relay 141)
+- **350 unit tests** across the workspace (e2ee-core 88, whisper-desktop 112,
+  whisper-relay 150)
 - **92 smoke tests** covering live routing, offline delivery, SQLite
   persistence, `fetch_since` sync, rate limiting and signed-hello spoofing
   protection

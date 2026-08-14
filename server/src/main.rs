@@ -5,6 +5,7 @@
 //! envelopes between peers and holds zero plaintext, zero keys and
 //! (by design) zero message content.
 
+mod proxy;
 mod relay;
 mod store;
 
@@ -12,14 +13,36 @@ use std::net::SocketAddr;
 use std::time::Duration;
 
 use axum::{
-    extract::{ws::WebSocketUpgrade, ConnectInfo, Path, State},
-    http::{header, HeaderValue, StatusCode},
+    extract::{ws::WebSocketUpgrade, ConnectInfo, FromRef, Path, State},
+    http::{header, HeaderMap, HeaderValue, StatusCode},
     response::{IntoResponse, Response},
     routing::get,
     Router,
 };
 
+use proxy::TrustedProxies;
 use relay::Relay;
+
+/// Shared router state. Both the relay handle and the trusted-proxy list are
+/// exposed to handlers through `FromRef`, so the router carries a single
+/// type (axum 0.8 does not destructure state tuples automatically).
+#[derive(Clone)]
+struct AppState {
+    relay: Relay,
+    proxies: TrustedProxies,
+}
+
+impl FromRef<AppState> for Relay {
+    fn from_ref(state: &AppState) -> Self {
+        state.relay.clone()
+    }
+}
+
+impl FromRef<AppState> for TrustedProxies {
+    fn from_ref(state: &AppState) -> Self {
+        state.proxies.clone()
+    }
+}
 
 /// Formats timestamps as local wall-clock RFC 3339 so relay logs match the
 /// operator's clock instead of always showing UTC.
@@ -46,7 +69,15 @@ async fn main() {
 
     // Shared relay state: presence map + SQLite-backed offline queue.
     let relay = Relay::new();
-    let state = relay.clone();
+
+    // Trusted reverse proxies (WHISPER_TRUSTED_PROXIES): when the relay runs
+    // behind nginx/Caddy/Cloudflare, per-IP rate limiting must key on the
+    // real client address from the forwarded headers, not the proxy's IP.
+    let proxies = TrustedProxies::from_env();
+    let app_state = AppState {
+        relay: relay.clone(),
+        proxies,
+    };
 
     // Hourly sweep: purge offline envelopes past their 7-day TTL.
     {
@@ -67,7 +98,7 @@ async fn main() {
         .route("/healthz", get(health))
         .route("/ws", get(ws_handler))
         .route("/media/{hash}", get(media))
-        .with_state(state);
+        .with_state(app_state);
 
     let addr: SocketAddr = std::env::var("WHISPER_ADDR")
         .unwrap_or_else(|_| "0.0.0.0:8080".into())
@@ -190,16 +221,20 @@ fn image_content_type(bytes: &[u8]) -> &'static str {
 }
 
 /// Upgrade an incoming connection to WebSocket and hand it to the relay,
-/// passing the peer's source IP for rate limiting.
+/// passing the peer's source IP for rate limiting. When the connection comes
+/// from a configured trusted proxy, the real client IP is recovered from the
+/// forwarded headers first (see [`TrustedProxies`]).
 async fn ws_handler(
     ws: WebSocketUpgrade,
     State(relay): State<Relay>,
+    State(proxies): State<TrustedProxies>,
+    headers: HeaderMap,
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
 ) -> impl IntoResponse {
+    let ip = proxies.resolve_client_ip(addr, &headers).ip().to_string();
     ws.on_upgrade(move |socket| {
         // Clone so the spawned future owns its relay handle outright.
         let relay = relay.clone();
-        let ip = addr.ip().to_string();
         async move { relay.handle_socket(socket, ip).await }
     })
 }
