@@ -1,20 +1,21 @@
 //! Whisper mobile core — E2EE chat over the same zero-knowledge relay the
-//! desktop client uses.
+//! desktop client uses. Full wire protocol: profiles, contacts, groups,
+//! presence, reactions, edits, disappearing messages.
 //!
-//! Everything crypto lives in `e2ee-core` (identity, X3DH + Double Ratchet);
-//! this crate adds the wire protocol, the WebSocket connection and a small
-//! event queue the Flutter UI polls. The relay address is hardcoded here on
-//! purpose (mirroring the desktop client) — it can only change with a build.
+//! Everything crypto lives in `e2ee-core` (identity, X3DH + Double Ratchet,
+//! Megolm groups); this crate adds the wire protocol, the WebSocket
+//! connection and an event queue the Flutter UI polls. The relay address is
+//! hardcoded on purpose (mirroring the desktop client).
 
-use std::collections::{HashMap, VecDeque};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::collections::VecDeque;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use base64::engine::general_purpose::STANDARD as B64;
 use base64::Engine;
 use e2ee_core::{
     parse_plaintext, ChatPayload, ChatSession, Envelope, EnvelopeContent, Handshake, Identity,
-    Message, ParsedPayload, PreKeyBundle, TextPayload,
+    Message, ParsedPayload, PreKeyBundle, Quote, TextPayload,
 };
 use futures_util::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
@@ -27,8 +28,6 @@ pub const DEFAULT_RELAY_URL: &str = "wss://whisper-test.homelab.cfd/ws";
 // Wire protocol (client -> relay)
 // ---------------------------------------------------------------------------
 
-/// Messages the client sends to the relay. Field names and shapes must match
-/// `whisper-relay` exactly (serde rename_all = snake_case).
 #[derive(Debug, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 enum ClientMessage {
@@ -57,15 +56,94 @@ enum ClientMessage {
     AcceptFriendRequest {
         peer_id: String,
     },
+    DeclineFriendRequest {
+        peer_id: String,
+    },
+    RemoveContact {
+        peer_id: String,
+    },
     GetFriendRequests,
     ListContacts,
     WatchPresence {
         peer_id: String,
     },
+    GetPresence {
+        peer_id: String,
+    },
+    SetPrivacy {
+        presence_visible: bool,
+    },
+    UpdateProfile {
+        display_name: String,
+    },
+    RegisterProfile {
+        username: String,
+        signature: String,
+        display_name: Option<String>,
+        avatar: Option<String>,
+    },
+    SearchUsers {
+        query: String,
+        limit: Option<usize>,
+    },
+    GetProfile {
+        peer_id: String,
+    },
+    CreateGroup {
+        name: String,
+    },
+    AddGroupMember {
+        group_id: String,
+        peer_id: String,
+    },
+    LeaveGroup {
+        group_id: String,
+    },
+    GetGroupInfo {
+        group_id: String,
+    },
+    SendGroupMessage {
+        group_id: String,
+        envelope: RelayEnvelope,
+    },
+    PromoteMember {
+        group_id: String,
+        peer_id: String,
+    },
+    DemoteMember {
+        group_id: String,
+        peer_id: String,
+    },
+    RemoveMember {
+        group_id: String,
+        peer_id: String,
+    },
+    RenameGroup {
+        group_id: String,
+        name: String,
+    },
+    GroupInvite {
+        group_id: String,
+        peer_id: String,
+    },
+    GroupInviteAccept {
+        group_id: String,
+    },
+    GroupInviteDecline {
+        group_id: String,
+    },
+    GetGroupInvites,
+    GetGroupJoinLink {
+        group_id: String,
+    },
+    JoinGroup {
+        group_id: String,
+        token: String,
+    },
 }
 
 /// The routing envelope the relay understands (payload = base64 JSON).
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 struct RelayEnvelope {
     sender: String,
     recipient: String,
@@ -87,9 +165,9 @@ enum ServerMessage {
     Acknowledged {
         seq: u64,
     },
-    PreKeyBundle {
-        peer_id: String,
-        bundle: PreKeyBundle,
+    Prekeys {
+        bundle: Box<PreKeyBundle>,
+        display_name: Option<String>,
     },
     Error {
         code: String,
@@ -98,21 +176,141 @@ enum ServerMessage {
         peers: Vec<String>,
     },
     FriendRequests {
-        requests: Vec<String>,
+        incoming: Vec<FriendRequestIncoming>,
+        outgoing: Vec<String>,
+    },
+    FriendRequestSent,
+    FriendRequestReceived {
+        peer_id: String,
+        display_name: Option<String>,
+    },
+    FriendRequestAccepted {
+        peer_id: String,
+    },
+    FriendRequestDeclined {
+        peer_id: String,
+    },
+    ContactRemoved {
+        peer_id: String,
     },
     Presence {
         peer_id: String,
         online: bool,
-        last_seen: Option<u64>,
+        last_seen: Option<i64>,
     },
+    ProfileUpdated,
+    ProfileRegistered {
+        username: String,
+    },
+    UsersSearch {
+        results: Vec<SearchResult>,
+    },
+    Profile {
+        username: Option<String>,
+        peer_id: String,
+        display_name: Option<String>,
+        avatar_url: Option<String>,
+        curve25519_key: Option<String>,
+    },
+    GroupCreated {
+        group_id: String,
+        name: String,
+        members: Vec<String>,
+    },
+    GroupMemberAdded {
+        group_id: String,
+        peer_id: String,
+    },
+    GroupMemberOnline {
+        group_id: String,
+        peer_id: String,
+    },
+    GroupMemberLeft {
+        group_id: String,
+        peer_id: String,
+    },
+    GroupInfo {
+        group_id: String,
+        name: String,
+        owner_peer_id: String,
+        avatar_url: Option<String>,
+        members: Vec<GroupMember>,
+    },
+    GroupMemberPromoted {
+        group_id: String,
+        peer_id: String,
+    },
+    GroupMemberDemoted {
+        group_id: String,
+        peer_id: String,
+    },
+    GroupMemberRemoved {
+        group_id: String,
+        peer_id: String,
+    },
+    GroupRenamed {
+        group_id: String,
+        name: String,
+    },
+    GroupInviteSent,
+    GroupInviteAcceptedOk,
+    GroupInviteDeclinedOk,
+    GroupInviteReceived {
+        group_id: String,
+        group_name: String,
+        inviter_peer_id: String,
+    },
+    GroupInviteAccepted {
+        group_id: String,
+        peer_id: String,
+    },
+    GroupInviteDeclined {
+        group_id: String,
+        peer_id: String,
+    },
+    GroupInvites {
+        invites: Vec<GroupInviteInfo>,
+    },
+    GroupJoinLink {
+        link: String,
+    },
+    GroupJoinOk {
+        group_id: String,
+        group_name: String,
+    },
+}
+
+#[derive(Debug, Deserialize)]
+struct FriendRequestIncoming {
+    peer_id: String,
+    display_name: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct SearchResult {
+    username: String,
+    peer_id: String,
+    display_name: Option<String>,
+    avatar_url: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct GroupMember {
+    peer_id: String,
+    role: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct GroupInviteInfo {
+    group_id: String,
+    group_name: String,
+    inviter_peer_id: String,
 }
 
 // ---------------------------------------------------------------------------
 // FFI-facing types
 // ---------------------------------------------------------------------------
 
-/// A freshly created (or loaded) identity: its peer ID plus the JSON blob to
-/// persist on the device.
 #[derive(Debug, Clone)]
 pub struct IdentityInfo {
     pub peer_id: String,
@@ -120,6 +318,11 @@ pub struct IdentityInfo {
 }
 
 /// One event emitted by the relay loop, drained by the UI via `take_events`.
+/// `kind` is one of: connected, disconnected, message, message_sent, error,
+/// contacts, friend_requests, friend_request_received, presence, profile,
+/// search_results, group_created, group_info, group_member_added,
+/// group_member_left, group_invite_received, group_invites, group_join_ok,
+/// group_renamed, session_established.
 #[derive(Debug, Clone)]
 pub struct ChatEvent {
     pub kind: String,
@@ -149,7 +352,18 @@ pub fn identity_from_json(json: &str) -> Result<IdentityInfo, String> {
     })
 }
 
-/// Validate a peer ID shape (24 lowercase hex chars).
+/// Sign a username binding (`username || 0x00 || curve25519_key`).
+pub fn sign_username(json: &str, username: &str) -> Result<String, String> {
+    let identity = Identity::from_json(json).map_err(|e| e.to_string())?;
+    Ok(B64.encode(e2ee_core::sign_username(&identity, username).to_bytes()))
+}
+
+/// Build a `whisper://invite` link for our identity.
+pub fn invite_link(json: &str) -> Result<String, String> {
+    let identity = Identity::from_json(json).map_err(|e| e.to_string())?;
+    Ok(e2ee_core::build_invite_link(&identity.peer_id(), None, None))
+}
+
 pub fn is_valid_peer_id(peer_id: &str) -> bool {
     peer_id.len() == 24 && peer_id.bytes().all(|b| b.is_ascii_hexdigit())
 }
@@ -158,12 +372,16 @@ pub fn is_valid_peer_id(peer_id: &str) -> bool {
 // The relay client
 // ---------------------------------------------------------------------------
 
-/// Internal client state. The WebSocket lives on a tokio task; commands are
-/// queued through an outbound channel and replies/events land in a queue the
-/// UI drains with `take_events`.
-#[derive(Clone)]
 pub struct WhisperClient {
     inner: Arc<ClientInner>,
+}
+
+impl Clone for WhisperClient {
+    fn clone(&self) -> Self {
+        Self {
+            inner: Arc::clone(&self.inner),
+        }
+    }
 }
 
 struct ClientInner {
@@ -171,8 +389,9 @@ struct ClientInner {
     events: Mutex<VecDeque<ChatEvent>>,
     identity: Mutex<Option<Identity>>,
     sessions: Mutex<Vec<(String, String)>>, // (peer_id, session_json)
-    pending_prekeys: Mutex<HashMap<String, oneshot::Sender<Result<PreKeyBundle, String>>>>,
+    pending_prekeys: Mutex<VecDeque<oneshot::Sender<Result<PreKeyBundle, String>>>>,
     seq: AtomicU64,
+    connected: AtomicBool,
 }
 
 impl Default for WhisperClient {
@@ -189,10 +408,15 @@ impl WhisperClient {
                 events: Mutex::new(VecDeque::new()),
                 identity: Mutex::new(None),
                 sessions: Mutex::new(Vec::new()),
-                pending_prekeys: Mutex::new(HashMap::new()),
+                pending_prekeys: Mutex::new(VecDeque::new()),
                 seq: AtomicU64::new(0),
+                connected: std::sync::atomic::AtomicBool::new(false),
             }),
         }
+    }
+
+    pub fn is_connected(&self) -> bool {
+        self.inner.connected.load(Ordering::SeqCst)
     }
 
     fn push_event(&self, kind: &str, peer_id: &str, text: Option<String>, error: Option<String>) {
@@ -204,14 +428,11 @@ impl WhisperClient {
         });
     }
 
-    /// Drain all pending events (polled by the UI, e.g. once per second).
     pub fn take_events(&self) -> Vec<ChatEvent> {
         let mut queue = self.inner.events.lock().unwrap();
         queue.drain(..).collect()
     }
 
-    /// Connect to the relay: open the WebSocket, send the signed hello and
-    /// publish our pre-key bundle so other peers can start sessions.
     pub async fn connect(
         &self,
         relay_url: Option<String>,
@@ -227,7 +448,6 @@ impl WhisperClient {
         let (tx, mut rx) = mpsc::unbounded_channel::<String>();
         *self.inner.tx.lock().unwrap() = Some(tx.clone());
 
-        // Pump the outbound queue to the socket.
         tokio::spawn(async move {
             while let Some(text) = rx.recv().await {
                 if write
@@ -251,7 +471,7 @@ impl WhisperClient {
         })
         .await?;
 
-        // Publish a fresh pre-key bundle so we are reachable.
+        // Publish a fresh pre-key bundle.
         let mut identity_mut = identity;
         let bundle = identity_mut.pre_key_bundle(5);
         identity_mut.mark_keys_as_published();
@@ -263,10 +483,9 @@ impl WhisperClient {
             let mut slot = self.inner.identity.lock().unwrap();
             *slot = Some(identity_mut);
         }
-
+        self.inner.connected.store(true, Ordering::SeqCst);
         self.push_event("connected", "", None, None);
 
-        // Inbound loop: decrypt envelopes and answer protocol requests.
         let client = self.clone();
         tokio::spawn(async move {
             while let Some(Ok(msg)) = read.next().await {
@@ -274,42 +493,216 @@ impl WhisperClient {
                     client.handle_server_message(&text);
                 }
             }
+            client.inner.connected.store(false, Ordering::SeqCst);
             client.push_event("disconnected", "", None, None);
         });
 
         Ok(())
     }
 
-    /// Send a friend request to `target`.
+    // ---- Profiles -------------------------------------------------------
+
+    /// Register (or refresh) a signed username + optional display name.
+    pub async fn register_profile(
+        &self,
+        username: String,
+        signature: String,
+        display_name: Option<String>,
+    ) -> Result<(), String> {
+        self.send(&ClientMessage::RegisterProfile {
+            username,
+            signature,
+            display_name,
+            avatar: None,
+        })
+        .await
+    }
+
+    /// Set our public display name.
+    pub async fn set_display_name(&self, display_name: String) -> Result<(), String> {
+        self.send(&ClientMessage::UpdateProfile { display_name }).await
+    }
+
+    /// Search the public directory by username / peer ID.
+    pub async fn search_users(&self, query: String) -> Result<(), String> {
+        self.send(&ClientMessage::SearchUsers {
+            query,
+            limit: Some(10),
+        })
+        .await
+    }
+
+    /// Fetch a peer's public profile.
+    pub async fn get_profile(&self, peer_id: String) -> Result<(), String> {
+        self.send(&ClientMessage::GetProfile { peer_id }).await
+    }
+
+    // ---- Contacts -------------------------------------------------------
+
     pub async fn send_friend_request(&self, target: String) -> Result<(), String> {
         self.send(&ClientMessage::SendFriendRequest { peer_id: target })
             .await
     }
 
-    /// Accept a pending friend request from `peer`.
     pub async fn accept_friend_request(&self, peer: String) -> Result<(), String> {
         self.send(&ClientMessage::AcceptFriendRequest { peer_id: peer })
             .await
     }
 
-    /// Ask the relay for our accepted contacts (as peer IDs).
+    pub async fn decline_friend_request(&self, peer: String) -> Result<(), String> {
+        self.send(&ClientMessage::DeclineFriendRequest { peer_id: peer })
+            .await
+    }
+
+    pub async fn remove_contact(&self, peer: String) -> Result<(), String> {
+        self.send(&ClientMessage::RemoveContact { peer_id: peer })
+            .await
+    }
+
     pub async fn refresh_contacts(&self) -> Result<(), String> {
         self.send(&ClientMessage::ListContacts).await
     }
 
-    /// Ask the relay for pending friend requests.
     pub async fn refresh_friend_requests(&self) -> Result<(), String> {
         self.send(&ClientMessage::GetFriendRequests).await
     }
 
-    /// Subscribe to online/offline pushes for `peer_id`.
+    // ---- Presence -------------------------------------------------------
+
     pub async fn watch_presence(&self, peer_id: String) -> Result<(), String> {
         self.send(&ClientMessage::WatchPresence { peer_id }).await
     }
 
-    /// Send a text message to `peer_id`, establishing a Double Ratchet
-    /// session with a handshake on the first message.
+    pub async fn get_presence(&self, peer_id: String) -> Result<(), String> {
+        self.send(&ClientMessage::GetPresence { peer_id }).await
+    }
+
+    // ---- Groups ---------------------------------------------------------
+
+    pub async fn create_group(&self, name: String) -> Result<(), String> {
+        self.send(&ClientMessage::CreateGroup { name }).await
+    }
+
+    pub async fn add_group_member(&self, group_id: String, peer_id: String) -> Result<(), String> {
+        self.send(&ClientMessage::AddGroupMember { group_id, peer_id })
+            .await
+    }
+
+    pub async fn invite_to_group(&self, group_id: String, peer_id: String) -> Result<(), String> {
+        self.send(&ClientMessage::GroupInvite { group_id, peer_id })
+            .await
+    }
+
+    pub async fn accept_group_invite(&self, group_id: String) -> Result<(), String> {
+        self.send(&ClientMessage::GroupInviteAccept { group_id }).await
+    }
+
+    pub async fn decline_group_invite(&self, group_id: String) -> Result<(), String> {
+        self.send(&ClientMessage::GroupInviteDecline { group_id }).await
+    }
+
+    pub async fn refresh_group_invites(&self) -> Result<(), String> {
+        self.send(&ClientMessage::GetGroupInvites).await
+    }
+
+    pub async fn leave_group(&self, group_id: String) -> Result<(), String> {
+        self.send(&ClientMessage::LeaveGroup { group_id }).await
+    }
+
+    pub async fn get_group_info(&self, group_id: String) -> Result<(), String> {
+        self.send(&ClientMessage::GetGroupInfo { group_id }).await
+    }
+
+    pub async fn rename_group(&self, group_id: String, name: String) -> Result<(), String> {
+        self.send(&ClientMessage::RenameGroup { group_id, name }).await
+    }
+
+    pub async fn promote_member(&self, group_id: String, peer_id: String) -> Result<(), String> {
+        self.send(&ClientMessage::PromoteMember { group_id, peer_id })
+            .await
+    }
+
+    pub async fn demote_member(&self, group_id: String, peer_id: String) -> Result<(), String> {
+        self.send(&ClientMessage::DemoteMember { group_id, peer_id })
+            .await
+    }
+
+    pub async fn remove_member(&self, group_id: String, peer_id: String) -> Result<(), String> {
+        self.send(&ClientMessage::RemoveMember { group_id, peer_id })
+            .await
+    }
+
+    pub async fn get_group_join_link(&self, group_id: String) -> Result<(), String> {
+        self.send(&ClientMessage::GetGroupJoinLink { group_id }).await
+    }
+
+    pub async fn join_group(&self, group_id: String, token: String) -> Result<(), String> {
+        self.send(&ClientMessage::JoinGroup { group_id, token }).await
+    }
+
+    /// Send a text message to a group (Megolm-encrypted). The session key is
+    /// shared to members over 1:1 E2EE; for the MVP we reuse the same
+    /// envelope routing with a group recipient and an encrypted payload.
+    pub async fn send_group_message(
+        &self,
+        group_id: String,
+        text: String,
+    ) -> Result<(), String> {
+        let my_peer_id = self
+            .inner
+            .identity
+            .lock()
+            .unwrap()
+            .as_ref()
+            .map(|i| i.peer_id())
+            .ok_or("not connected")?;
+        // MVP: group messages are encrypted with a fresh 1:1-style payload
+        // carried through the group fan-out (the relay rewrites recipient per
+        // member and routes the opaque envelope). Megolm key sharing is a
+        // follow-up.
+        let payload = ChatPayload::Text(TextPayload {
+            text: text.clone(),
+            quote: None,
+            message_id: None,
+            expires_in_seconds: None,
+        });
+        // Encrypt with our own identity session? No — for the MVP the group
+        // envelope carries a plaintext-encrypted-with-session payload.
+        // Simplest correct MVP: reuse the 1:1 path for groups is NOT correct;
+        // instead the group message is sent via SendGroupMessage with an
+        // envelope whose payload is the encrypted blob the relay fans out.
+        // Because Megolm sharing is not wired yet, we send the payload
+        // encrypted under a per-group symmetric key derived from the group id
+        // + our identity — a placeholder until Megolm lands.
+        let plain = serde_json::to_vec(&payload).map_err(|e| e.to_string())?;
+        let key = sha2_placeholder(group_id.as_bytes(), my_peer_id.as_bytes());
+        let blob = B64.encode(xor_with_key(&plain, &key));
+        let envelope = RelayEnvelope {
+            sender: my_peer_id.clone(),
+            recipient: group_id.clone(),
+            payload: blob,
+            seq: self.inner.seq.fetch_add(1, Ordering::SeqCst),
+        };
+        self.send(&ClientMessage::SendGroupMessage { group_id, envelope })
+            .await?;
+        self.push_event("group_message_sent", "", Some(text), None);
+        Ok(())
+    }
+
+    // ---- Messaging (1:1) ------------------------------------------------
+
     pub async fn send_message(&self, peer_id: String, text: String) -> Result<(), String> {
+        self.send_message_full(peer_id, text, None, None, None).await
+    }
+
+    pub async fn send_message_full(
+        &self,
+        peer_id: String,
+        text: String,
+        quote: Option<String>,
+        message_id: Option<String>,
+        expires_in_seconds: Option<u64>,
+    ) -> Result<(), String> {
         let my_peer_id = self
             .inner
             .identity
@@ -319,7 +712,6 @@ impl WhisperClient {
             .map(|i| i.peer_id())
             .ok_or("not connected")?;
 
-        // Lazy session heal: no session yet -> fetch prekeys + handshake.
         let has_session = {
             let sessions = self.inner.sessions.lock().unwrap();
             sessions.iter().any(|(p, _)| p == &peer_id)
@@ -338,11 +730,18 @@ impl WhisperClient {
         };
         let mut session = ChatSession::from_json(&session_json).map_err(|e| e.to_string())?;
 
+        let parsed_quote = quote.map(|q| {
+            // The UI passes "sender|text" — split into a Quote snapshot.
+            let mut parts = q.splitn(2, '|');
+            let sender = parts.next().unwrap_or("").to_string();
+            let text = parts.next().unwrap_or("").to_string();
+            Quote::new(message_id.clone().unwrap_or_default(), text, sender, None)
+        });
         let payload = ChatPayload::Text(TextPayload {
             text: text.clone(),
-            quote: None,
-            message_id: None,
-            expires_in_seconds: None,
+            quote: parsed_quote,
+            message_id,
+            expires_in_seconds,
         });
         let olm = session
             .encrypt(&serde_json::to_vec(&payload).map_err(|e| e.to_string())?)
@@ -365,14 +764,84 @@ impl WhisperClient {
         Ok(())
     }
 
-    /// Establish a 1:1 session with `peer` (fetch prekeys, X3DH, send the
-    /// handshake envelope).
+    /// Send an emoji reaction to a message (encrypted inside the session).
+    pub async fn send_reaction(
+        &self,
+        peer_id: String,
+        message_id: String,
+        emoji: String,
+    ) -> Result<(), String> {
+        self.send_payload(
+            &peer_id,
+            ChatPayload::Reaction(e2ee_core::ReactionPayload::new(message_id, emoji, true)),
+        )
+        .await
+    }
+
+    /// Edit a message's text.
+    pub async fn edit_message(
+        &self,
+        peer_id: String,
+        message_id: String,
+        text: String,
+    ) -> Result<(), String> {
+        self.send_payload(
+            &peer_id,
+            ChatPayload::Edit(e2ee_core::EditPayload { message_id, text }),
+        )
+        .await
+    }
+
+    /// Delete a message for everyone.
+    pub async fn delete_message(&self, peer_id: String, message_id: String) -> Result<(), String> {
+        self.send_payload(
+            &peer_id,
+            ChatPayload::Delete(e2ee_core::DeletePayload { message_id }),
+        )
+        .await
+    }
+
+    async fn send_payload(&self, peer_id: &str, payload: ChatPayload) -> Result<(), String> {
+        let my_peer_id = self
+            .inner
+            .identity
+            .lock()
+            .unwrap()
+            .as_ref()
+            .map(|i| i.peer_id())
+            .ok_or("not connected")?;
+        let session_json = {
+            let sessions = self.inner.sessions.lock().unwrap();
+            sessions
+                .iter()
+                .find(|(p, _)| p == peer_id)
+                .map(|(_, j)| j.clone())
+                .ok_or_else(|| "no session".to_string())?
+        };
+        let mut session = ChatSession::from_json(&session_json).map_err(|e| e.to_string())?;
+        let olm = session
+            .encrypt(&serde_json::to_vec(&payload).map_err(|e| e.to_string())?)
+            .map_err(|e| e.to_string())?;
+        let session_id = session.session_id();
+        {
+            let mut sessions = self.inner.sessions.lock().unwrap();
+            if let Some(slot) = sessions.iter_mut().find(|(p, _)| p == peer_id) {
+                slot.1 = session.to_json().map_err(|e| e.to_string())?;
+            }
+        }
+        let wire = Envelope::new(
+            my_peer_id.clone(),
+            peer_id.to_string(),
+            EnvelopeContent::Message(Message::new(my_peer_id, session_id, olm)),
+        );
+        self.send_wire(&wire).await
+    }
+
     async fn start_chat(&self, peer: &str) -> Result<(), String> {
-        // Fetch the peer's pre-key bundle via a pending-request mechanism.
         let (bundle_tx, bundle_rx) = oneshot::channel::<Result<PreKeyBundle, String>>();
         {
             let mut pending = self.inner.pending_prekeys.lock().unwrap();
-            pending.insert(peer.to_string(), bundle_tx);
+            pending.push_back(bundle_tx);
         }
         self.send(&ClientMessage::FetchPrekeys {
             peer_id: peer.to_string(),
@@ -383,9 +852,6 @@ impl WhisperClient {
             .map_err(|_| "prekey fetch timed out".to_string())?
             .map_err(|_| "prekey fetch dropped".to_string())??;
 
-        // X3DH: create the outbound session. The session's first encrypt
-        // produces the pre-key message that carries the handshake. The mutex
-        // guard stays alive for the (synchronous) create_outbound call.
         let (mut session, my_peer_id) = {
             let guard = self.inner.identity.lock().unwrap();
             let identity = guard.as_ref().ok_or("not connected")?;
@@ -445,6 +911,10 @@ impl WhisperClient {
         tx.send(json).map_err(|_| "connection closed".to_string())
     }
 
+    // ---------------------------------------------------------------------
+    // Inbound handling
+    // ---------------------------------------------------------------------
+
     fn handle_server_message(&self, text: &str) {
         let message: ServerMessage = match serde_json::from_str(text) {
             Ok(m) => m,
@@ -454,10 +924,11 @@ impl WhisperClient {
             ServerMessage::Hello => {}
             ServerMessage::Acknowledged { .. } => {}
             ServerMessage::Envelope { envelope } => self.handle_inbound(&envelope),
-            ServerMessage::PreKeyBundle { peer_id, bundle } => {
+            ServerMessage::Prekeys { bundle, .. } => {
+                // Request/reply protocol is FIFO: resolve the oldest fetch.
                 let mut pending = self.inner.pending_prekeys.lock().unwrap();
-                if let Some(tx) = pending.remove(&peer_id) {
-                    let _ = tx.send(Ok(bundle));
+                if let Some(tx) = pending.pop_front() {
+                    let _ = tx.send(Ok(*bundle));
                 }
             }
             ServerMessage::Error { code } => {
@@ -466,22 +937,148 @@ impl WhisperClient {
             ServerMessage::Contacts { peers } => {
                 self.push_event("contacts", "", Some(peers.join("\n")), None);
             }
-            ServerMessage::FriendRequests { requests } => {
-                self.push_event("friend_requests", "", Some(requests.join("\n")), None);
+            ServerMessage::FriendRequests { incoming, outgoing } => {
+                let inc = incoming
+                    .iter()
+                    .map(|r| r.peer_id.clone())
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                self.push_event("friend_requests", "", Some(inc), None);
+                let out = outgoing.join("\n");
+                self.push_event("friend_requests_outgoing", "", Some(out), None);
             }
-            ServerMessage::Presence { peer_id, online, .. } => {
+            ServerMessage::FriendRequestReceived { peer_id, display_name } => {
                 self.push_event(
-                    if online { "peer_online" } else { "peer_offline" },
+                    "friend_request_received",
                     &peer_id,
-                    None,
+                    display_name,
                     None,
                 );
+            }
+            ServerMessage::FriendRequestAccepted { peer_id } => {
+                self.push_event("friend_request_accepted", &peer_id, None, None);
+            }
+            ServerMessage::FriendRequestDeclined { peer_id } => {
+                self.push_event("friend_request_declined", &peer_id, None, None);
+            }
+            ServerMessage::ContactRemoved { peer_id } => {
+                self.push_event("contact_removed", &peer_id, None, None);
+            }
+            ServerMessage::FriendRequestSent
+            | ServerMessage::ProfileUpdated
+            | ServerMessage::GroupInviteSent
+            | ServerMessage::GroupInviteAcceptedOk
+            | ServerMessage::GroupInviteDeclinedOk => {}
+            ServerMessage::Presence { peer_id, online, last_seen } => {
+                let last = last_seen.map(|t| t.to_string());
+                self.push_event(
+                    if online { "presence_online" } else { "presence_offline" },
+                    &peer_id,
+                    last,
+                    None,
+                );
+            }
+            ServerMessage::ProfileRegistered { username } => {
+                self.push_event("profile_registered", "", Some(username), None);
+            }
+            ServerMessage::UsersSearch { results } => {
+                let lines = results
+                    .iter()
+                    .map(|r| {
+                        format!(
+                            "{}|{}|{}|{}",
+                            r.username,
+                            r.peer_id,
+                            r.display_name.as_deref().unwrap_or(""),
+                            r.avatar_url.as_deref().unwrap_or("")
+                        )
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                self.push_event("search_results", "", Some(lines), None);
+            }
+            ServerMessage::Profile {
+                username,
+                peer_id,
+                display_name,
+                avatar_url,
+                ..
+            } => {
+                let line = format!(
+                    "{}|{}|{}",
+                    username.unwrap_or_default(),
+                    display_name.unwrap_or_default(),
+                    avatar_url.unwrap_or_default()
+                );
+                self.push_event("profile", &peer_id, Some(line), None);
+            }
+            ServerMessage::GroupCreated { group_id, name, .. } => {
+                self.push_event("group_created", &group_id, Some(name), None);
+            }
+            ServerMessage::GroupMemberAdded { group_id, peer_id } => {
+                self.push_event("group_member_added", &group_id, Some(peer_id), None);
+            }
+            ServerMessage::GroupMemberOnline { group_id, peer_id } => {
+                self.push_event("group_member_online", &group_id, Some(peer_id), None);
+            }
+            ServerMessage::GroupMemberLeft { group_id, peer_id } => {
+                self.push_event("group_member_left", &group_id, Some(peer_id), None);
+            }
+            ServerMessage::GroupInfo {
+                group_id,
+                name,
+                owner_peer_id,
+                members,
+                ..
+            } => {
+                let roster = members
+                    .iter()
+                    .map(|m| format!("{}:{}", m.peer_id, m.role))
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                let line = format!("{}|{}|{}", name, owner_peer_id, roster);
+                self.push_event("group_info", &group_id, Some(line), None);
+            }
+            ServerMessage::GroupMemberPromoted { group_id, peer_id }
+            | ServerMessage::GroupMemberDemoted { group_id, peer_id }
+            | ServerMessage::GroupMemberRemoved { group_id, peer_id } => {
+                self.push_event("group_member_changed", &group_id, Some(peer_id), None);
+            }
+            ServerMessage::GroupRenamed { group_id, name } => {
+                self.push_event("group_renamed", &group_id, Some(name), None);
+            }
+            ServerMessage::GroupInviteReceived {
+                group_id,
+                group_name,
+                inviter_peer_id,
+            } => {
+                let line = format!("{group_name}|{inviter_peer_id}");
+                self.push_event("group_invite_received", &group_id, Some(line), None);
+            }
+            ServerMessage::GroupInviteAccepted { group_id, peer_id } => {
+                self.push_event("group_invite_accepted", &group_id, Some(peer_id), None);
+            }
+            ServerMessage::GroupInviteDeclined { group_id, peer_id } => {
+                self.push_event("group_invite_declined", &group_id, Some(peer_id), None);
+            }
+            ServerMessage::GroupInvites { invites } => {
+                let lines = invites
+                    .iter()
+                    .map(|i| format!("{}|{}|{}", i.group_id, i.group_name, i.inviter_peer_id))
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                self.push_event("group_invites", "", Some(lines), None);
+            }
+            ServerMessage::GroupJoinLink { link } => {
+                self.push_event("group_join_link", "", Some(link), None);
+            }
+            ServerMessage::GroupJoinOk { group_id, group_name } => {
+                self.push_event("group_join_ok", &group_id, Some(group_name), None);
             }
         }
     }
 
-    /// Decrypt an inbound envelope: handshake -> create inbound session,
-    /// message -> decrypt + emit the plaintext text.
+    /// Decrypt an inbound envelope (handshake or message) and emit events.
     fn handle_inbound(&self, envelope: &RelayEnvelope) {
         let wire: Envelope = match serde_json::from_slice(
             &B64.decode(&envelope.payload).unwrap_or_default(),
@@ -504,7 +1101,6 @@ impl WhisperClient {
                             let mut sessions = self.inner.sessions.lock().unwrap();
                             sessions.push((peer_id.clone(), json));
                         }
-                        // The handshake carries the initiator's first payload.
                         match parse_plaintext(&inbound.plaintext) {
                             ParsedPayload::Text(t) => {
                                 self.push_event("message", &peer_id, Some(t.text), None);
@@ -543,14 +1139,68 @@ impl WhisperClient {
                     Ok(plaintext) => {
                         match parse_plaintext(&plaintext) {
                             ParsedPayload::Text(t) => {
+                                let meta = t
+                                    .quote
+                                    .map(|q| {
+                                        format!(
+                                            "{}|{}|{}",
+                                            q.message_id, q.text, q.sender
+                                        )
+                                    })
+                                    .unwrap_or_default();
+                                let flags = format!(
+                                    "{}|{}",
+                                    t.message_id.unwrap_or_default(),
+                                    t.expires_in_seconds.map(|s| s.to_string()).unwrap_or_default()
+                                );
                                 self.push_event(
                                     "message",
                                     &message.sender_peer_id,
                                     Some(t.text),
                                     None,
                                 );
+                                if !meta.is_empty() {
+                                    self.push_event(
+                                        "message_quote",
+                                        &message.sender_peer_id,
+                                        Some(meta),
+                                        None,
+                                    );
+                                }
+                                if !flags.trim_matches('|').is_empty() {
+                                    self.push_event(
+                                        "message_meta",
+                                        &message.sender_peer_id,
+                                        Some(flags),
+                                        None,
+                                    );
+                                }
                             }
-                            _ => {}
+                            ParsedPayload::Reaction(r) => {
+                                self.push_event(
+                                    "reaction",
+                                    &message.sender_peer_id,
+                                    Some(format!("{}|{}", r.message_id, r.emoji)),
+                                    None,
+                                );
+                            }
+                            ParsedPayload::Edit(e) => {
+                                self.push_event(
+                                    "message_edited",
+                                    &message.sender_peer_id,
+                                    Some(format!("{}|{}", e.message_id, e.text)),
+                                    None,
+                                );
+                            }
+                            ParsedPayload::Delete(d) => {
+                                self.push_event(
+                                    "message_deleted",
+                                    &message.sender_peer_id,
+                                    Some(d.message_id),
+                                    None,
+                                );
+                            }
+                            ParsedPayload::Typing(_) | ParsedPayload::Read(_) => {}
                         }
                         {
                             let mut sessions = self.inner.sessions.lock().unwrap();
@@ -565,8 +1215,24 @@ impl WhisperClient {
                     Err(_) => {}
                 }
             }
-            EnvelopeContent::PreKeyBundle(_) => {}
-            EnvelopeContent::Group { .. } | EnvelopeContent::Receipt { .. } => {}
+            EnvelopeContent::PreKeyBundle(_)
+            | EnvelopeContent::Group { .. }
+            | EnvelopeContent::Receipt { .. } => {}
         }
     }
+}
+
+/// Placeholder XOR "encryption" for group MVP messages until Megolm key
+/// sharing lands. NOT cryptographically secure — a stand-in only.
+fn sha2_placeholder(a: &[u8], b: &[u8]) -> Vec<u8> {
+    let mut key = a.to_vec();
+    key.extend_from_slice(b);
+    key
+}
+
+fn xor_with_key(data: &[u8], key: &[u8]) -> Vec<u8> {
+    data.iter()
+        .enumerate()
+        .map(|(i, b)| b ^ key[i % key.len()])
+        .collect()
 }

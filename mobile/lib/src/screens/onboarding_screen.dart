@@ -4,14 +4,18 @@ import 'package:flutter/services.dart';
 import '../rust/api/whisper.dart' as core;
 import '../theme.dart';
 
-/// First-run onboarding: create the identity and show the peer ID card,
-/// mirroring the desktop Onboarding.tsx flow.
+/// First-run onboarding: choose a display name (and optionally register a
+/// username), then show the peer ID card. Mirrors desktop Onboarding.tsx.
 class OnboardingScreen extends StatefulWidget {
-  final core.IdentityInfo identity;
+  final core.WhisperClient client;
+  final String identityJson;
+  final String peerId;
   final VoidCallback onDone;
   const OnboardingScreen({
     super.key,
-    required this.identity,
+    required this.client,
+    required this.identityJson,
+    required this.peerId,
     required this.onDone,
   });
 
@@ -20,10 +24,48 @@ class OnboardingScreen extends StatefulWidget {
 }
 
 class _OnboardingScreenState extends State<OnboardingScreen> {
+  final _nameCtrl = TextEditingController();
+  final _userCtrl = TextEditingController();
+  bool _busy = false;
   bool _copied = false;
+  String? _error;
+
+  @override
+  void dispose() {
+    _nameCtrl.dispose();
+    _userCtrl.dispose();
+    super.dispose();
+  }
+
+  Future<void> _continue() async {
+    setState(() {
+      _busy = true;
+      _error = null;
+    });
+    try {
+      final name = _nameCtrl.text.trim();
+      final username = _userCtrl.text.trim().toLowerCase();
+      // Set the display name first (best-effort; the relay may be offline).
+      if (name.isNotEmpty) {
+        await widget.client.setDisplayName(displayName: name);
+      }
+      // Register a username if the user provided one (signed binding).
+      if (username.isNotEmpty) {
+        final sig = await core.signUsername(
+            json: widget.identityJson, username: username);
+        await widget.client.registerProfile(
+            username: username, signature: sig, displayName: name.isEmpty ? null : name);
+      }
+      if (mounted) widget.onDone();
+    } catch (err) {
+      setState(() => _error = '$err');
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
 
   Future<void> _copy() async {
-    await Clipboard.setData(ClipboardData(text: widget.identity.peerId));
+    await Clipboard.setData(ClipboardData(text: widget.peerId));
     setState(() => _copied = true);
     Future.delayed(const Duration(milliseconds: 1600), () {
       if (mounted) setState(() => _copied = false);
@@ -66,8 +108,8 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
                   ),
                   const SizedBox(height: 8),
                   Text(
-                    'Your identity is a cryptographic key pair — no phone '
-                    'number, no account. Share your peer ID to start chatting.',
+                    'Set up your profile. You can change these later in '
+                    'Settings.',
                     textAlign: TextAlign.center,
                     style: TextStyle(
                       color: Wp.textDim,
@@ -75,7 +117,46 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
                       height: 1.45,
                     ),
                   ),
-                  const SizedBox(height: 26),
+                  const SizedBox(height: 24),
+                  TextField(
+                    controller: _nameCtrl,
+                    style: const TextStyle(color: Wp.text),
+                    decoration: const InputDecoration(
+                      labelText: 'Display name',
+                      hintText: 'What friends will see',
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+                  TextField(
+                    controller: _userCtrl,
+                    style: const TextStyle(color: Wp.text),
+                    decoration: const InputDecoration(
+                      labelText: 'Username (optional)',
+                      hintText: 'lowercase_letters_123',
+                    ),
+                  ),
+                  if (_error != null) ...[
+                    const SizedBox(height: 10),
+                    Text(
+                      _error!,
+                      style: TextStyle(color: Wp.danger, fontSize: 12),
+                    ),
+                  ],
+                  const SizedBox(height: 20),
+                  FilledButton(
+                    onPressed: _busy ? null : _continue,
+                    style: FilledButton.styleFrom(
+                      backgroundColor: Wp.accent,
+                      foregroundColor: Wp.accentFg,
+                      padding: const EdgeInsets.symmetric(vertical: 14),
+                      textStyle: const TextStyle(
+                        fontSize: 15,
+                        fontWeight: FontWeight.w700,
+                      ),
+                    ),
+                    child: Text(_busy ? 'Setting up…' : 'Continue'),
+                  ),
+                  const SizedBox(height: 22),
                   Container(
                     padding: const EdgeInsets.all(16),
                     decoration: BoxDecoration(
@@ -96,60 +177,38 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
                           ),
                         ),
                         const SizedBox(height: 8),
-                        SelectableText(
-                          widget.identity.peerId,
-                          style: const TextStyle(
-                            color: Wp.accent,
-                            fontSize: 16,
-                            fontFamily: 'monospace',
-                            letterSpacing: 1.0,
-                          ),
+                        Row(
+                          children: [
+                            Expanded(
+                              child: SelectableText(
+                                widget.peerId,
+                                style: const TextStyle(
+                                  color: Wp.accent,
+                                  fontSize: 14,
+                                  fontFamily: 'monospace',
+                                  letterSpacing: 0.8,
+                                ),
+                              ),
+                            ),
+                            IconButton(
+                              onPressed: _copy,
+                              icon: Icon(
+                                _copied ? Icons.check : Icons.copy,
+                                size: 16,
+                                color: _copied ? Wp.online : Wp.textDim,
+                              ),
+                            ),
+                          ],
                         ),
-                        const SizedBox(height: 10),
                         Text(
-                          'Keys stay on this device. Back them up if you ever '
-                          'want to restore this identity.',
+                          'Share this ID so others can add you.',
                           style: TextStyle(
                             color: Wp.textFaint,
                             fontSize: 11,
-                            height: 1.4,
                           ),
                         ),
                       ],
                     ),
-                  ),
-                  const SizedBox(height: 24),
-                  FilledButton.icon(
-                    onPressed: _copy,
-                    style: FilledButton.styleFrom(
-                      backgroundColor: Wp.panel3,
-                      foregroundColor: Wp.text,
-                      side: const BorderSide(color: Wp.line),
-                      padding: const EdgeInsets.symmetric(vertical: 14),
-                    ),
-                    icon: Icon(
-                      _copied ? Icons.check : Icons.copy,
-                      size: 18,
-                      color: _copied ? Wp.online : Wp.textDim,
-                    ),
-                    label: Text(
-                      _copied ? 'Copied!' : 'Copy peer ID',
-                      style: const TextStyle(fontWeight: FontWeight.w600),
-                    ),
-                  ),
-                  const SizedBox(height: 10),
-                  FilledButton(
-                    onPressed: widget.onDone,
-                    style: FilledButton.styleFrom(
-                      backgroundColor: Wp.accent,
-                      foregroundColor: Wp.accentFg,
-                      padding: const EdgeInsets.symmetric(vertical: 14),
-                      textStyle: const TextStyle(
-                        fontSize: 15,
-                        fontWeight: FontWeight.w700,
-                      ),
-                    ),
-                    child: const Text('Start chatting'),
                   ),
                 ],
               ),
