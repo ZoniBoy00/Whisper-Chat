@@ -99,6 +99,23 @@ sender and the recipient can read them.
   for the password (a wrong one changes nothing on disk).
 - **Cross-platform future** — Tauri desktop today, Flutter mobile coming (one
   shared Rust crypto core).
+
+## Mobile client (Android)
+
+The Flutter client in `mobile/` shares the same `e2ee-core` crypto stack via
+`flutter_rust_bridge` (`whisper_core`): E2EE 1:1 chat, profiles (signed
+usernames, avatars, directory search), contacts, groups (invites, join links,
+roles), reactions, quoted replies, edit/delete, disappearing messages, safety
+numbers and password-encrypted backups. The relay URL is hardcoded (mirroring
+the desktop) and can only change with a build.
+
+```sh
+cd mobile
+flutter pub get
+flutter_rust_bridge_codegen generate   # after touching rust/src/api/*
+flutter test
+flutter run                              # on a device/emulator
+```
 - **Hardened release builds** — `lto="fat"`, `panic="abort"`, `strip=true`
   release profile keeps the binary small and hostile to reverse engineering.
 
@@ -263,6 +280,7 @@ cargo fmt --check
 │   ├── deploy/       #   hardened systemd unit + nginx/Caddy reverse-proxy templates
 │   └── tests/        #   smoke.mjs end-to-end tests
 ├── desktop/          # Tauri v2 desktop client (React + TypeScript + Tailwind)
+├── mobile/           # Flutter mobile client (Android) — whisper_core via flutter_rust_bridge
 ├── docs/             # ROADMAP.md and other technical documentation
 └── .github/          # GitHub Actions CI workflows
 ```
@@ -271,8 +289,9 @@ cargo fmt --check
 
 ## Testing & TDD
 
-- **357 unit tests** across the workspace (e2ee-core 88, whisper-desktop 113,
-  whisper-relay 156)
+- **358 unit tests** across the workspace (e2ee-core 88, whisper-desktop 113,
+  whisper-relay 157) plus **5 unit tests** in the mobile `whisper_core`
+  (backup crypto)
 - **92 smoke tests** covering live routing, offline delivery, SQLite
   persistence, `fetch_since` sync, rate limiting and signed-hello spoofing
   protection

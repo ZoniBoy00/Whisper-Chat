@@ -337,9 +337,9 @@ impact and effort. Pull items into the phase table when they get scheduled.
 - [x] Relay ops: structured logging (`RUST_LOG`-controllable, peer-ID level only) + graceful shutdown on Ctrl+C/SIGTERM
 - [x] Robustness fixes: FIFO→keyed request resolution (get_group_info), error-code→queue routing (stale groups evicted), legacy avatar sync, contact-only group cleanup
 
-**Test counts (2026-08-14):** 357 unit tests — e2ee-core 88, whisper-relay 156
-(bucket GC +4, metrics +2), whisper-desktop 113 (wss/TLS +1); smoke suite
-all green. The E2EE backup fix adds 11
+**Test counts (2026-08-14):** 358 unit tests — e2ee-core 88, whisper-relay 157
+(peer-ID search +1), whisper-desktop 113; mobile `whisper_core` adds 5 backup
+tests. Smoke suite all green. The E2EE backup fix adds 11
 `backup.rs` crypto tests (roundtrip, wrong-password rejection, ciphertext /
 KDF-cost / metadata tamper detection — the KDF params, version and nonce are
 bound into the GCM **AAD** so weakening Argon2id costs in the file fails
@@ -355,6 +355,8 @@ settings tests (password never serializes to the UI, patch set/clear).
 - [x] **Relay: rate-limiter bucket GC.** `RateLimiter` now sweeps per-IP buckets idle for 10+ minutes, at most once per 60 s (atomic `last_gc_ms` slot reservation, so the hot path only pays an atomic load). A swept bucket is recreated at full burst on the next draw, so GC is invisible to clients; 4 unit tests including a full drop-and-restart integration case.
 - [x] **Relay: `/metrics` endpoint** behind `WHISPER_METRICS=1` (off by default): `whisper_envelopes_relayed_total`, `whisper_rate_limited_total` (summed across envelope/profile/contact limiters) and `whisper_connections_active` in Prometheus text format. Counters are atomics — no locks on hot paths. Exposes no keys, plaintext or peer data. 2 unit tests.
 - [x] **Desktop: TLS (`wss://`) support.** `tokio-tungstenite` now builds with `rustls-tls-native-roots` — the client can connect to the TLS-terminated relay (nginx/Caddy) using the OS certificate store (pure Rust, no extra OpenSSL dependency). Found during deploy prep: without the feature, `wss://` URLs were rejected with "URL scheme not supported", which would have blocked the two-machine E2EE test. Guarded by a smoke test proving a `wss://` attempt reaches the transport layer.
+- [x] **Relay: peer-ID search without a username (release-blocker fix).** `search_users` no longer requires a registered username — a fresh mobile client with no username is findable by peer-ID prefix from the desktop and vice versa. New store test; enables the two-machine E2EE test.
+- [x] **Mobile: Flutter Android client (phase 8 — MVP).** `mobile/` with `whisper_core` (Rust via flutter_rust_bridge, same `e2ee-core`): E2EE 1:1, profiles, contacts, groups (invites/join links/roles), reactions, quotes, edit/delete, disappearing messages, safety numbers, password-encrypted backups, i18n EN/FI, settings tabs + logs. Android TLS uses bundled Mozilla roots. 5 whisper_core + 5 Flutter tests; CI "Mobile" job; gap list in `docs/MOBILE-GAP.md`. Remaining: push (FCM), group avatars, i18n completeness, more tests.
 
 **⏳ Next up:**
 - [ ] Deploy the relay to Hetzner (systemd unit + nginx/Caddy template ready) → real two-machine E2EE test — blocks public release
