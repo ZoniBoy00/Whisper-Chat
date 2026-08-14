@@ -97,8 +97,20 @@ async fn main() {
     let app = Router::new()
         .route("/healthz", get(health))
         .route("/ws", get(ws_handler))
-        .route("/media/{hash}", get(media))
-        .with_state(app_state);
+        .route("/media/{hash}", get(media));
+
+    // Light observability: /metrics is off by default and must be enabled
+    // explicitly with WHISPER_METRICS=1 so the zero-knowledge surface stays
+    // minimal unless the operator opts in.
+    let metrics_enabled = std::env::var("WHISPER_METRICS")
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        .unwrap_or(false);
+    let app = if metrics_enabled {
+        app.route("/metrics", get(metrics))
+    } else {
+        app
+    };
+    let app = app.with_state(app_state);
 
     let addr: SocketAddr = std::env::var("WHISPER_ADDR")
         .unwrap_or_else(|_| "0.0.0.0:8080".into())
@@ -161,6 +173,20 @@ async fn shutdown_signal() {
 /// Liveness probe — no sensitive info ever exposed here.
 async fn health() -> &'static str {
     "whisper-relay: ok"
+}
+
+/// Operational counters (envelope throughput, rate-limit hits, active
+/// connections) in Prometheus text format. Registered only when
+/// `WHISPER_METRICS=1`; never exposes keys, plaintext or peer data.
+async fn metrics(State(relay): State<Relay>) -> Response {
+    (
+        [(
+            header::CONTENT_TYPE,
+            HeaderValue::from_static("text/plain; version=0.0.4"),
+        )],
+        relay.metrics_snapshot(),
+    )
+        .into_response()
 }
 
 /// Serve a stored avatar blob by its SHA-256 hash.

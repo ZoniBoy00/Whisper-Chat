@@ -50,6 +50,7 @@ pub(crate) mod ratelimit;
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 use axum::extract::ws::{Message as WsMessage, WebSocket};
@@ -569,6 +570,32 @@ pub(crate) struct RelayInner {
     pub(crate) contacts_limiter: RateLimiter,
     /// Directory holding uploaded avatar blobs (`<sha256>.bin`).
     pub(crate) media_dir: PathBuf,
+    /// Lightweight operational counters for the optional `/metrics` endpoint.
+    pub(crate) metrics: Metrics,
+}
+
+/// Operational counters exposed by `/metrics` when `WHISPER_METRICS` is on.
+/// All fields are atomics so hot paths never lock a mutex to count.
+#[derive(Default)]
+pub(crate) struct Metrics {
+    /// Envelopes accepted and routed (live or persisted to the offline queue).
+    pub(crate) envelopes_relayed: AtomicU64,
+    /// WebSocket connections currently past the hello handshake.
+    pub(crate) connections_active: AtomicU64,
+}
+
+impl Metrics {
+    /// Render the counters in Prometheus-compatible text format.
+    fn snapshot(&self, rate_limited: u64) -> String {
+        format!(
+            "whisper_envelopes_relayed_total {}\n\
+             whisper_rate_limited_total {}\n\
+             whisper_connections_active {}\n",
+            self.envelopes_relayed.load(Ordering::Relaxed),
+            rate_limited,
+            self.connections_active.load(Ordering::Relaxed),
+        )
+    }
 }
 
 impl Relay {
@@ -630,8 +657,19 @@ impl Relay {
                 profile_limiter,
                 contacts_limiter,
                 media_dir,
+                metrics: Metrics::default(),
             }),
         }
+    }
+
+    /// Render the `/metrics` payload. `rate_limited` sums every limiter's
+    /// rejections (envelope, profile and contact buckets share the count).
+    pub(crate) fn metrics_snapshot(&self) -> String {
+        let inner = &self.inner;
+        let rate_limited = inner.limiter.rejected_count()
+            + inner.profile_limiter.rejected_count()
+            + inner.contacts_limiter.rejected_count();
+        inner.metrics.snapshot(rate_limited)
     }
 
     /// The media directory used when no database path is known: `data/media`
@@ -662,6 +700,10 @@ impl Relay {
             None => return,
         };
         tracing::info!(peer = %peer_id, ip = %ip, "peer connected");
+        self.inner
+            .metrics
+            .connections_active
+            .fetch_add(1, Ordering::Relaxed);
 
         // 2) Register the peer as online. A second socket claiming the same
         //    peer ID replaces the previous one (last-socket-wins); identity
@@ -904,6 +946,10 @@ impl Relay {
             .iter_mut()
             .for_each(|(_, watchers)| watchers.retain(|w| w.peer_id != peer_id));
         pump_out.abort();
+        self.inner
+            .metrics
+            .connections_active
+            .fetch_sub(1, Ordering::Relaxed);
         tracing::info!(peer = %peer_id, online = online_count, "peer disconnected");
     }
 
@@ -1106,6 +1152,10 @@ impl Relay {
         // Deliver live if possible, otherwise persist the ciphertext blob in
         // SQLite. The per-peer cap and 7-day TTL keep the database bounded.
         self.deliver_one(&envelope).await;
+        self.inner
+            .metrics
+            .envelopes_relayed
+            .fetch_add(1, Ordering::Relaxed);
 
         // Delivery confirmation to the sender: the relay accepted the blob.
         // This is NOT a read receipt — read receipts are end-to-end and
@@ -1311,6 +1361,27 @@ mod tests {
     use super::*;
     use crate::relay::test_utils::{env, make_contacts, online_peer, read_reply};
     use crate::store::{ENVELOPE_TTL_SECS, MAX_OFFLINE_BLOBS};
+
+    #[test]
+    fn metrics_snapshot_reports_counters() {
+        let store = Store::open_in_memory().unwrap();
+        let relay = Relay::with_limiter(store, 1.0, 0.0);
+        let snap = relay.metrics_snapshot();
+        assert!(snap.contains("whisper_envelopes_relayed_total 0"));
+        assert!(snap.contains("whisper_rate_limited_total 0"));
+        assert!(snap.contains("whisper_connections_active 0"));
+    }
+
+    #[test]
+    fn metrics_count_rate_limit_hits() {
+        let store = Store::open_in_memory().unwrap();
+        let relay = Relay::with_limiter(store, 1.0, 0.0);
+        assert!(relay.inner.limiter.try_take("ip"));
+        assert!(!relay.inner.limiter.try_take("ip"), "bucket exhausted");
+        assert!(relay
+            .metrics_snapshot()
+            .contains("whisper_rate_limited_total 1"));
+    }
 
     #[tokio::test]
     async fn peer_online_fans_group_member_online_to_other_members() {

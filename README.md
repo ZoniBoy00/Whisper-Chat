@@ -198,6 +198,7 @@ Copy `server/.env.example` and adjust (or export directly):
 | `WHISPER_RATE_BURST`| `60`             | Max envelope burst per IP            |
 | `WHISPER_RATE_REFILL`| `1`             | Tokens refilled per second (~60/min) |
 | `WHISPER_TRUSTED_PROXIES` | *(empty)* | Comma/space-separated trusted proxy IPs; forwarded headers are only honored from these, so per-IP rate limiting sees the real client behind nginx/Caddy/Cloudflare (empty = direct connections only) |
+| `WHISPER_METRICS`   | `0`             | Set to `1` to enable the `/metrics` endpoint (envelope throughput, rate-limit hits, active connections; Prometheus format) |
 | `RUST_LOG`          | `info`           | Log level                            |
 
 ### 3. Deploy with systemd + a reverse proxy
@@ -270,8 +271,8 @@ cargo fmt --check
 
 ## Testing & TDD
 
-- **350 unit tests** across the workspace (e2ee-core 88, whisper-desktop 112,
-  whisper-relay 150)
+- **356 unit tests** across the workspace (e2ee-core 88, whisper-desktop 112,
+  whisper-relay 156)
 - **92 smoke tests** covering live routing, offline delivery, SQLite
   persistence, `fetch_since` sync, rate limiting and signed-hello spoofing
   protection
