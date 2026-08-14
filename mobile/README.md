@@ -1,17 +1,35 @@
-# mobile
+# Whisper Mobile 📱
 
-A new Flutter project.
+Privacy-first, end-to-end-encrypted messaging — the mobile client, sharing
+the same audited `e2ee-core` Rust crypto stack as the desktop app.
 
-## Getting Started
+## Stack
 
-This project is a starting point for a Flutter application.
+- **Flutter** (Material 3, dark theme ported from the desktop `--wp-*` palette)
+- **`whisper_core`** (Rust, `flutter_rust_bridge`) — identity, X3DH + Double
+  Ratchet sessions, Megolm groups, full relay wire protocol
+- **Shared relay** — zero-knowledge, `wss://whisper-test.homelab.cfd/ws`
 
-A few resources to get you started if this is your first Flutter project:
+## Features
 
-- [Learn Flutter](https://docs.flutter.dev/get-started/learn-flutter)
-- [Write your first Flutter app](https://docs.flutter.dev/get-started/codelab)
-- [Flutter learning resources](https://docs.flutter.dev/reference/learning-resources)
+- E2EE 1:1 chat (handshake, Double Ratchet, forward/backward secrecy)
+- Profiles: signed usernames, display names, avatars, directory search
+- Contacts: friend requests (accept/decline), online presence / last seen
+- Groups: create, invites, join links, roles (owner/admin), group info
+- Reactions, quoted replies, edit, delete, disappearing messages
+- Safety numbers (60-digit E2EE verification)
+- Password-encrypted backups (Argon2id + AES-256-GCM) — export/import
+- i18n EN/FI
 
-For help getting started with Flutter development, view the
-[online documentation](https://docs.flutter.dev/), which offers tutorials,
-samples, guidance on mobile development, and a full API reference.
+## Development
+
+```sh
+flutter pub get
+flutter_rust_bridge_codegen generate   # after touching rust/src/api/*
+flutter analyze
+flutter test
+flutter run                              # on a device/emulator
+```
+
+The relay URL is hardcoded (mirroring the desktop client) — it can only
+change with a build.

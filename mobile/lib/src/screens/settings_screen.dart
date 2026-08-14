@@ -1,12 +1,15 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:io';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:image_picker/image_picker.dart';
+import 'package:path_provider/path_provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../i18n.dart';
+import '../rust/api/backup.dart' as backup;
 import '../rust/api/whisper.dart' as core;
 import '../theme.dart';
 import 'profile_screen.dart';
@@ -170,6 +173,126 @@ class _SettingsScreenState extends State<SettingsScreen> {
     );
   }
 
+  /// Export a password-encrypted backup (identity + settings) to the device.
+  Future<void> _exportBackup() async {
+    final prefs = await SharedPreferences.getInstance();
+    final identityJson = prefs.getString('identity_json') ?? '';
+    final password = await _askPassword('Export backup');
+    if (password == null) return;
+    try {
+      final body = jsonEncode({
+        'identity': identityJson,
+        'peer_id': widget.peerId,
+        'created_at': DateTime.now().toIso8601String(),
+      });
+      final package = await backup.backupEncrypt(
+          plaintext: body, password: password);
+      // Write to the app documents directory.
+      final dir = await getApplicationDocumentsDirectory();
+      final file = File(
+          '${dir.path}/whisper-backup-${DateTime.now().millisecondsSinceEpoch}.json');
+      await file.writeAsString(package);
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Backup saved to ${file.path}')),
+        );
+      }
+    } catch (err) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Backup failed: $err')),
+        );
+      }
+    }
+  }
+
+  /// Import a backup: paste the package JSON + password, restore identity.
+  Future<void> _importBackup() async {
+    final packageController = TextEditingController();
+    final password = await _askPassword('Import backup');
+    if (password == null) return;
+    final packageJson = await showDialog<String>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: Wp.panel,
+        title: const Text('Import backup',
+            style: TextStyle(color: Wp.text, fontSize: 17)),
+        content: TextField(
+          controller: packageController,
+          maxLines: 6,
+          style: const TextStyle(color: Wp.text, fontSize: 12),
+          decoration: const InputDecoration(
+            hintText: 'Paste the backup JSON here',
+            hintStyle: TextStyle(color: Wp.textFaint),
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('Cancel', style: TextStyle(color: Wp.textDim)),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(ctx, packageController.text.trim()),
+            style: FilledButton.styleFrom(backgroundColor: Wp.accent),
+            child: const Text('Restore', style: TextStyle(color: Wp.accentFg)),
+          ),
+        ],
+      ),
+    );
+    if (packageJson == null || packageJson.isEmpty) return;
+    try {
+      final body = await backup.backupDecrypt(
+          packageJson: packageJson, password: password);
+      final parsed = jsonDecode(body) as Map<String, dynamic>;
+      final identity = parsed['identity'] as String?;
+      if (identity == null) throw Exception('no identity in backup');
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString('identity_json', identity);
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Backup restored — restart the app')),
+        );
+      }
+    } catch (err) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Restore failed: $err')),
+        );
+      }
+    }
+  }
+
+  Future<String?> _askPassword(String title) async {
+    final controller = TextEditingController();
+    return showDialog<String>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: Wp.panel,
+        title: Text(title, style: const TextStyle(color: Wp.text, fontSize: 17)),
+        content: TextField(
+          controller: controller,
+          obscureText: true,
+          style: const TextStyle(color: Wp.text),
+          decoration: const InputDecoration(
+            hintText: 'Password (min 8 chars)',
+            hintStyle: TextStyle(color: Wp.textFaint),
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('Cancel', style: TextStyle(color: Wp.textDim)),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(ctx, controller.text),
+            style: FilledButton.styleFrom(backgroundColor: Wp.accent),
+            child: const Text('OK', style: TextStyle(color: Wp.accentFg)),
+          ),
+        ],
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final t = LanguageScope.of(context).t;
@@ -317,6 +440,27 @@ class _SettingsScreenState extends State<SettingsScreen> {
             title: t('settings.relay_server'),
             subtitle: 'wss://whisper-test.homelab.cfd/ws',
             trailing: const Icon(Icons.lock, size: 16, color: Wp.textFaint),
+          ),
+        ),
+        const SizedBox(height: 20),
+        _SectionLabel('BACKUP'),
+        _Card(
+          child: Column(
+            children: [
+              _ListRow(
+                icon: Icons.file_download_outlined,
+                title: 'Export backup',
+                subtitle: 'Password-encrypted (Argon2id + AES-256-GCM)',
+                onTap: _exportBackup,
+              ),
+              const Divider(color: Wp.line, height: 1),
+              _ListRow(
+                icon: Icons.file_upload_outlined,
+                title: 'Import backup',
+                subtitle: 'Restore identity from a backup',
+                onTap: _importBackup,
+              ),
+            ],
           ),
         ),
         const SizedBox(height: 20),
