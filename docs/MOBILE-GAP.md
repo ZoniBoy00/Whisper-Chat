@@ -1,6 +1,6 @@
 # Whisper Mobile — Gap Analysis & Task List
 
-> Updated: 2026-08-14 (commit 78e4a35)
+> Updated: 2026-08-14 (commit f4ffab7)
 > Status: Task list for OpenCode — what still needs to be done/fixed in the mobile app
 
 ## ✅ Already done (no longer on the list)
@@ -14,25 +14,18 @@
 | Flutter tests (l10n, theme) + CI "Mobile (Flutter)" job | ✅ |
 | mobile/README | ✅ |
 | Groups, reactions, edit/delete, receipts, i18n skeleton, disappearing-messages UI | ✅ |
+| **B1 — peer-ID search (release blocker)** — relay `search_users` no longer requires a username; peer-ID prefix finds every peer (`f4ffab7`) | ✅ + store test |
+| **B2 — Settings scroll resize** — `textScaler: noScaling` locks font scaling (`f4ffab7`) | ✅ |
+| **P1 — change username** — Settings → General → Username (signed `registerProfile`) | ✅ |
+| **U1/U3 — compact sidebar header** — truncated peer ID + copy + online status | ✅ |
+| **T1 — whisper_core dead-code warnings** — clippy `-D warnings` clean | ✅ |
+| Offline drain — `fetch_since(0)` on connect | ✅ |
 
 ---
 
 ## 🔴 CRITICAL BUGS
 
-### B1. Mobile Whisper ID is not found by the desktop search (and vice versa)
-- The mobile peer ID (e.g. `317b8da4...`) cannot be found when searched from the desktop app
-- To verify:
-  - (a) is the profile always registered with the relay (registerProfile) — also when no username has been set
-  - (b) does `search_users` support peer-ID prefix search, not just username prefix
-  - (c) does search work in both directions: mobile→desktop and desktop→mobile
-- **This is release-blocker level** — the two-machine E2EE test requires that both parties can find each other
-
-### B2. Scrolling in Settings resizes everything
-- Scrolling in the Settings screen causes text/elements to change size
-- Likely cause: Flutter layout (MediaQuery.textScaler, unstable ListView/SingleChildScrollView, or rebuild-driven scaling)
-- Fix: lock font sizes, remove dynamic scaling, test on different screen sizes/DPIs
-
----
+### B3. (was B1 — FIXED above)
 
 ## 🔴 MISSING FEATURES (desktop parity)
 
