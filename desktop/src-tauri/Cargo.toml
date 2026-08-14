@@ -33,7 +33,7 @@ sha2 = "0.11"
 # the whole backup package. `rand` supplies the per-backup salt + nonce.
 argon2 = "0.5"
 aes-gcm = "0.10"
-rand = "0.8"
+rand = "0.10"
 # SQLCipher at-rest encryption. The `bundled-sqlcipher-vendored-openssl`
 # feature compiles SQLCipher (and its OpenSSL dependency) from source, so the
 # local history database is encrypted with a key derived from the identity.
