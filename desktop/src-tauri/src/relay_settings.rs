@@ -482,23 +482,11 @@ mod tests {
     }
 
     #[test]
-    fn relay_url_resolution_prefers_settings_then_env_then_default() {
-        let custom = Settings {
-            relay_url: Some("ws://custom".into()),
-            ..Settings::default()
-        };
-        assert_eq!(resolve_relay_url(&custom, Some("ws://env")), "ws://custom");
-
-        let blank = Settings {
-            relay_url: Some(String::new()),
-            ..Settings::default()
-        };
-        assert_eq!(resolve_relay_url(&blank, Some("ws://env")), "ws://env");
-        assert_eq!(resolve_relay_url(&blank, None), DEFAULT_RELAY_URL);
-
-        let defaults = Settings::default();
-        assert_eq!(resolve_relay_url(&defaults, Some("ws://env")), "ws://env");
-        assert_eq!(resolve_relay_url(&defaults, None), DEFAULT_RELAY_URL);
+    fn relay_url_resolution_uses_env_then_hardcoded_default() {
+        // The relay address is hardcoded: a persisted setting must never
+        // override it, only the dev-only WHISPER_RELAY_URL env var can.
+        assert_eq!(resolve_relay_url(Some("ws://env")), "ws://env");
+        assert_eq!(resolve_relay_url(None), DEFAULT_RELAY_URL);
     }
 
     #[test]

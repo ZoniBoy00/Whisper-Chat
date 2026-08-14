@@ -22,7 +22,6 @@ import {
   setAvatar,
   setGroupAvatar,
   setPrivacy,
-  setRelayUrl as persistRelayUrl,
   setTheme as persistTheme,
   updateSettings,
 } from "../lib/relay";
@@ -54,7 +53,10 @@ export function MainView({ peerId, onReset }: MainViewProps) {
   const { t } = useI18n();
   const { toast } = useToast();
   const [theme, setTheme] = useState<Theme>("dark");
-  const [relayUrl, setRelayUrl] = useState("");
+  // The relay endpoint is hardcoded in the client (DEFAULT_RELAY_URL); it is
+  // used for resolving `/media/{hash}` avatar paths and cannot be changed
+  // from the UI.
+  const [relayUrl] = useState(DEFAULT_RELAY_URL);
   // Privacy / notification preferences, hydrated from the settings store on
   // mount and persisted on change.
   const [presenceVisible, setPresenceVisible] = useState(true);
@@ -109,14 +111,6 @@ export function MainView({ peerId, onReset }: MainViewProps) {
     onPresence: chat.updatePresence,
   });
 
-  // Persist a new relay endpoint and switch to it. The backend drops the
-  // current connection on change; the auto-reconnect loop picks up the new
-  // address. An empty value restores the built-in default relay.
-  const handleRelayUrlChange = useCallback(async (url: string) => {
-    await persistRelayUrl(url);
-    setRelayUrl(url.trim() === "" ? DEFAULT_RELAY_URL : url.trim());
-  }, []);
-
   // Keep the DOM attribute in sync with the active theme. The stylesheet
   // defines a light variant under `[data-theme="light"]`; anything else
   // falls back to the default dark palette.
@@ -161,8 +155,9 @@ export function MainView({ peerId, onReset }: MainViewProps) {
     };
   }, []);
 
-  // Load persisted settings (relay URL + theme) once on mount so the UI
-  // reflects the user's saved choices immediately.
+  // Load persisted settings (theme + preferences) once on mount. The relay
+  // URL is hardcoded (DEFAULT_RELAY_URL), so it is deliberately not read from
+  // settings — the endpoint can only change with a client update.
   useEffect(() => {
     let cancelled = false;
     void (async () => {
@@ -171,14 +166,6 @@ export function MainView({ peerId, onReset }: MainViewProps) {
         if (cancelled) return;
         if (settings.theme === "dark" || settings.theme === "light") {
           setTheme(settings.theme);
-        }
-        if (settings.relay_url) {
-          setRelayUrl(settings.relay_url);
-        } else {
-          // The relay URL is hardcoded in the client; keep the state in sync
-          // even before the first connect persists the effective endpoint, so
-          // `/media/{hash}` avatar paths always resolve.
-          setRelayUrl(DEFAULT_RELAY_URL);
         }
         if (settings.presence_visible != null) setPresenceVisible(settings.presence_visible);
         setReadReceipts(settings.read_receipts ?? true);
@@ -201,31 +188,6 @@ export function MainView({ peerId, onReset }: MainViewProps) {
       cancelled = true;
     };
   }, []);
-
-  // Once the relay connects, the Rust side has persisted the *effective*
-  // endpoint (settings → env var → default). Re-reading settings then makes
-  // the relay URL state reflect the URL the client actually talks to, so
-  // `/media/{hash}` avatar paths resolve to the right origin.
-  useEffect(() => {
-    if (!chat.connected) return;
-    let cancelled = false;
-    void (async () => {
-      try {
-        const settings = await getSettings();
-        if (cancelled) return;
-        if (settings.relay_url) {
-          setRelayUrl(settings.relay_url);
-        } else {
-          setRelayUrl(DEFAULT_RELAY_URL);
-        }
-      } catch {
-        // Best-effort: the initial mount already loaded the settings.
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [chat.connected]);
 
   const handleThemeChange = useCallback((next: Theme) => {
     setTheme(next);
@@ -852,7 +814,6 @@ export function MainView({ peerId, onReset }: MainViewProps) {
         theme={theme}
         onThemeChange={handleThemeChange}
         relayUrl={relayUrl}
-        onRelayUrlChange={handleRelayUrlChange}
         onSaveDisplayName={chat.saveDisplayName}
         onRegisterUsername={handleRegisterUsername}
         onSetAvatar={handleSetAvatar}
