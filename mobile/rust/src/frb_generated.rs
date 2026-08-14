@@ -39,7 +39,7 @@ flutter_rust_bridge::frb_generated_boilerplate!(
     default_rust_auto_opaque = RustAutoOpaqueMoi,
 );
 pub(crate) const FLUTTER_RUST_BRIDGE_CODEGEN_VERSION: &str = "2.12.0";
-pub(crate) const FLUTTER_RUST_BRIDGE_CODEGEN_CONTENT_HASH: i32 = -508674196;
+pub(crate) const FLUTTER_RUST_BRIDGE_CODEGEN_CONTENT_HASH: i32 = 1544130141;
 
 // Section: executor
 
@@ -2121,6 +2121,70 @@ fn wire__crate__api__whisper__WhisperClient_send_read_receipt_impl(
         },
     )
 }
+fn wire__crate__api__whisper__WhisperClient_set_avatar_impl(
+    port_: flutter_rust_bridge::for_generated::MessagePort,
+    ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
+    rust_vec_len_: i32,
+    data_len_: i32,
+) {
+    FLUTTER_RUST_BRIDGE_HANDLER.wrap_async::<flutter_rust_bridge::for_generated::SseCodec, _, _, _>(
+        flutter_rust_bridge::for_generated::TaskInfo {
+            debug_name: "WhisperClient_set_avatar",
+            port: Some(port_),
+            mode: flutter_rust_bridge::for_generated::FfiCallMode::Normal,
+        },
+        move || {
+            let message = unsafe {
+                flutter_rust_bridge::for_generated::Dart2RustMessageSse::from_wire(
+                    ptr_,
+                    rust_vec_len_,
+                    data_len_,
+                )
+            };
+            let mut deserializer =
+                flutter_rust_bridge::for_generated::SseDeserializer::new(message);
+            let api_that = <RustOpaqueMoi<
+                flutter_rust_bridge::for_generated::RustAutoOpaqueInner<WhisperClient>,
+            >>::sse_decode(&mut deserializer);
+            let api_username = <String>::sse_decode(&mut deserializer);
+            let api_signature = <String>::sse_decode(&mut deserializer);
+            let api_avatar_b64 = <String>::sse_decode(&mut deserializer);
+            deserializer.end();
+            move |context| async move {
+                transform_result_sse::<_, String>(
+                    (move || async move {
+                        let mut api_that_guard = None;
+                        let decode_indices_ =
+                            flutter_rust_bridge::for_generated::lockable_compute_decode_order(
+                                vec![flutter_rust_bridge::for_generated::LockableOrderInfo::new(
+                                    &api_that, 0, false,
+                                )],
+                            );
+                        for i in decode_indices_ {
+                            match i {
+                                0 => {
+                                    api_that_guard =
+                                        Some(api_that.lockable_decode_async_ref().await)
+                                }
+                                _ => unreachable!(),
+                            }
+                        }
+                        let api_that_guard = api_that_guard.unwrap();
+                        let output_ok = crate::api::whisper::WhisperClient::set_avatar(
+                            &*api_that_guard,
+                            api_username,
+                            api_signature,
+                            api_avatar_b64,
+                        )
+                        .await?;
+                        Ok(output_ok)
+                    })()
+                    .await,
+                )
+            }
+        },
+    )
+}
 fn wire__crate__api__whisper__WhisperClient_set_display_name_impl(
     port_: flutter_rust_bridge::for_generated::MessagePort,
     ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
@@ -2478,6 +2542,80 @@ fn wire__crate__api__whisper__is_valid_peer_id_impl(
                 transform_result_sse::<_, ()>((move || {
                     let output_ok =
                         Result::<_, ()>::Ok(crate::api::whisper::is_valid_peer_id(&api_peer_id))?;
+                    Ok(output_ok)
+                })())
+            }
+        },
+    )
+}
+fn wire__crate__api__whisper__safety_number_impl(
+    port_: flutter_rust_bridge::for_generated::MessagePort,
+    ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
+    rust_vec_len_: i32,
+    data_len_: i32,
+) {
+    FLUTTER_RUST_BRIDGE_HANDLER.wrap_normal::<flutter_rust_bridge::for_generated::SseCodec, _, _>(
+        flutter_rust_bridge::for_generated::TaskInfo {
+            debug_name: "safety_number",
+            port: Some(port_),
+            mode: flutter_rust_bridge::for_generated::FfiCallMode::Normal,
+        },
+        move || {
+            let message = unsafe {
+                flutter_rust_bridge::for_generated::Dart2RustMessageSse::from_wire(
+                    ptr_,
+                    rust_vec_len_,
+                    data_len_,
+                )
+            };
+            let mut deserializer =
+                flutter_rust_bridge::for_generated::SseDeserializer::new(message);
+            let api_identity_json = <String>::sse_decode(&mut deserializer);
+            let api_their_curve25519 = <String>::sse_decode(&mut deserializer);
+            deserializer.end();
+            move |context| {
+                transform_result_sse::<_, String>((move || {
+                    let output_ok = crate::api::whisper::safety_number(
+                        &api_identity_json,
+                        &api_their_curve25519,
+                    )?;
+                    Ok(output_ok)
+                })())
+            }
+        },
+    )
+}
+fn wire__crate__api__whisper__short_safety_number_impl(
+    port_: flutter_rust_bridge::for_generated::MessagePort,
+    ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
+    rust_vec_len_: i32,
+    data_len_: i32,
+) {
+    FLUTTER_RUST_BRIDGE_HANDLER.wrap_normal::<flutter_rust_bridge::for_generated::SseCodec, _, _>(
+        flutter_rust_bridge::for_generated::TaskInfo {
+            debug_name: "short_safety_number",
+            port: Some(port_),
+            mode: flutter_rust_bridge::for_generated::FfiCallMode::Normal,
+        },
+        move || {
+            let message = unsafe {
+                flutter_rust_bridge::for_generated::Dart2RustMessageSse::from_wire(
+                    ptr_,
+                    rust_vec_len_,
+                    data_len_,
+                )
+            };
+            let mut deserializer =
+                flutter_rust_bridge::for_generated::SseDeserializer::new(message);
+            let api_identity_json = <String>::sse_decode(&mut deserializer);
+            let api_their_curve25519 = <String>::sse_decode(&mut deserializer);
+            deserializer.end();
+            move |context| {
+                transform_result_sse::<_, String>((move || {
+                    let output_ok = crate::api::whisper::short_safety_number(
+                        &api_identity_json,
+                        &api_their_curve25519,
+                    )?;
                     Ok(output_ok)
                 })())
             }
@@ -2877,35 +3015,45 @@ fn pde_ffi_dispatcher_primary_impl(
             rust_vec_len,
             data_len,
         ),
-        36 => wire__crate__api__whisper__WhisperClient_set_display_name_impl(
+        36 => wire__crate__api__whisper__WhisperClient_set_avatar_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        37 => wire__crate__api__whisper__WhisperClient_set_privacy_impl(
+        37 => wire__crate__api__whisper__WhisperClient_set_display_name_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        38 => wire__crate__api__whisper__WhisperClient_take_events_impl(
+        38 => wire__crate__api__whisper__WhisperClient_set_privacy_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        39 => wire__crate__api__whisper__WhisperClient_watch_presence_impl(
+        39 => wire__crate__api__whisper__WhisperClient_take_events_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        40 => wire__crate__api__whisper__identity_create_impl(port, ptr, rust_vec_len, data_len),
-        41 => wire__crate__api__whisper__identity_from_json_impl(port, ptr, rust_vec_len, data_len),
-        42 => wire__crate__api__whisper__invite_link_impl(port, ptr, rust_vec_len, data_len),
-        43 => wire__crate__api__whisper__is_valid_peer_id_impl(port, ptr, rust_vec_len, data_len),
-        44 => wire__crate__api__whisper__sign_username_impl(port, ptr, rust_vec_len, data_len),
+        40 => wire__crate__api__whisper__WhisperClient_watch_presence_impl(
+            port,
+            ptr,
+            rust_vec_len,
+            data_len,
+        ),
+        41 => wire__crate__api__whisper__identity_create_impl(port, ptr, rust_vec_len, data_len),
+        42 => wire__crate__api__whisper__identity_from_json_impl(port, ptr, rust_vec_len, data_len),
+        43 => wire__crate__api__whisper__invite_link_impl(port, ptr, rust_vec_len, data_len),
+        44 => wire__crate__api__whisper__is_valid_peer_id_impl(port, ptr, rust_vec_len, data_len),
+        45 => wire__crate__api__whisper__safety_number_impl(port, ptr, rust_vec_len, data_len),
+        46 => {
+            wire__crate__api__whisper__short_safety_number_impl(port, ptr, rust_vec_len, data_len)
+        }
+        47 => wire__crate__api__whisper__sign_username_impl(port, ptr, rust_vec_len, data_len),
         _ => unreachable!(),
     }
 }

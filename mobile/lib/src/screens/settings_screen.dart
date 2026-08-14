@@ -1,12 +1,18 @@
+import 'dart:async';
+import 'dart:convert';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:image_picker/image_picker.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 import '../i18n.dart';
 import '../rust/api/whisper.dart' as core;
 import '../theme.dart';
+import 'profile_screen.dart';
 
 /// Settings with tabs — mirrors the desktop SettingsDialog (General, Privacy,
-/// Notifications, About).
+/// Notifications, Logs, About).
 class SettingsScreen extends StatefulWidget {
   final core.WhisperClient client;
   final String peerId;
@@ -26,17 +32,40 @@ class _SettingsScreenState extends State<SettingsScreen> {
   bool _presenceVisible = true;
   bool _readReceipts = true;
   bool _typing = true;
+  String _username = '';
+  final _log = <String>[];
+  Timer? _logPoller;
 
   @override
   void initState() {
     super.initState();
-    // Privacy toggles are local-only for now (the relay supports set_privacy;
-    // receipts/typing need e2ee-core payloads on send).
+    _loadUsername();
     _syncPrivacy();
+    _logPoller = Timer.periodic(const Duration(milliseconds: 500), (_) async {
+      final events = await widget.client.takeEvents();
+      for (final e in events) {
+        _log.add(
+            '${DateTime.now().toIso8601String().substring(11, 19)} '
+            '[${e.kind}] ${e.peerId} ${e.text ?? ''} ${e.error ?? ''}');
+      }
+      if (_log.length > 200) _log.removeRange(0, _log.length - 200);
+      if (mounted) setState(() {});
+    });
+  }
+
+  @override
+  void dispose() {
+    _logPoller?.cancel();
+    super.dispose();
+  }
+
+  Future<void> _loadUsername() async {
+    // No persisted username locally; a signed profile may exist on the relay.
+    // Best-effort: keep it empty — the profile screen shows what the relay
+    // reports.
   }
 
   Future<void> _syncPrivacy() async {
-    // Best-effort push of the presence-visible preference.
     await widget.client.setPrivacy(presenceVisible: _presenceVisible);
   }
 
@@ -53,6 +82,92 @@ class _SettingsScreenState extends State<SettingsScreen> {
     await L10n.save(lang);
     scope?.onLanguageChanged(lang);
     setState(() {});
+  }
+
+  Future<void> _changeDisplayName() async {
+    final controller = TextEditingController();
+    final name = await showDialog<String>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: Wp.panel,
+        title: const Text('Display name',
+            style: TextStyle(color: Wp.text, fontSize: 17)),
+        content: TextField(
+          controller: controller,
+          autofocus: true,
+          style: const TextStyle(color: Wp.text),
+          decoration: const InputDecoration(
+            hintText: 'What friends will see',
+            hintStyle: TextStyle(color: Wp.textFaint),
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('Cancel', style: TextStyle(color: Wp.textDim)),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(ctx, controller.text.trim()),
+            style: FilledButton.styleFrom(backgroundColor: Wp.accent),
+            child: const Text('Save', style: TextStyle(color: Wp.accentFg)),
+          ),
+        ],
+      ),
+    );
+    if (name != null && name.isNotEmpty) {
+      await widget.client.setDisplayName(displayName: name);
+    }
+  }
+
+  Future<void> _changeAvatar() async {
+    final picker = ImagePicker();
+    final image = await picker.pickImage(
+        source: ImageSource.gallery, maxWidth: 512, maxHeight: 512);
+    if (image == null) return;
+    final bytes = await image.readAsBytes();
+    if (bytes.length > 2 * 1024 * 1024) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Avatar must be under 2 MiB')),
+        );
+      }
+      return;
+    }
+    // Avatar upload reuses RegisterProfile with the avatar field — it needs
+    // a username binding; if none is registered yet, show a hint.
+    if (_username.isEmpty) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+              content: Text('Register a username first to upload an avatar')),
+        );
+      }
+      return;
+    }
+    final prefs = await SharedPreferences.getInstance();
+    final identityJson = prefs.getString('identity_json') ?? '';
+    final sig = await core.signUsername(
+        json: identityJson, username: _username);
+    await widget.client.setAvatar(
+        username: _username, signature: sig, avatarB64: base64Encode(bytes));
+  }
+
+  Future<void> _openMyProfile() async {
+    final prefs = await SharedPreferences.getInstance();
+    final identityJson = prefs.getString('identity_json') ?? '';
+    if (!mounted) return;
+    await Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (_) => ProfileScreen(
+          client: widget.client,
+          identityJson: identityJson,
+          myPeerId: widget.peerId,
+          peerId: widget.peerId,
+          isSelf: true,
+        ),
+      ),
+    );
   }
 
   @override
@@ -87,9 +202,14 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   onTap: () => setState(() => _tab = 2),
                 ),
                 _SettingsTab(
-                  label: t('settings.about'),
+                  label: 'Logs',
                   active: _tab == 3,
                   onTap: () => setState(() => _tab = 3),
+                ),
+                _SettingsTab(
+                  label: t('settings.about'),
+                  active: _tab == 4,
+                  onTap: () => setState(() => _tab = 4),
                 ),
               ],
             ),
@@ -99,6 +219,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
               0 => _buildGeneral(t),
               1 => _buildPrivacy(t),
               2 => _buildNotifications(t),
+              3 => _buildLogs(),
               _ => _buildAbout(t),
             },
           ),
@@ -116,49 +237,74 @@ class _SettingsScreenState extends State<SettingsScreen> {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Row(
-                children: [
-                  ClipRRect(
-                    borderRadius: BorderRadius.circular(10),
-                    child: Image.asset('assets/whisper-logo.png',
-                        width: 40, height: 40),
-                  ),
-                  const SizedBox(width: 12),
-                  Expanded(
-                    child: Text(
-                      'Whisper ID',
-                      style: const TextStyle(
-                        color: Wp.text,
-                        fontSize: 15,
-                        fontWeight: FontWeight.w600,
+              // My profile (opens the full profile screen).
+              InkWell(
+                onTap: _openMyProfile,
+                child: Padding(
+                  padding: const EdgeInsets.all(14),
+                  child: Row(
+                    children: [
+                      ClipRRect(
+                        borderRadius: BorderRadius.circular(10),
+                        child: Image.asset('assets/whisper-logo.png',
+                            width: 40, height: 40),
                       ),
-                    ),
+                      const SizedBox(width: 12),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              'My profile',
+                              style: const TextStyle(
+                                color: Wp.text,
+                                fontSize: 15,
+                                fontWeight: FontWeight.w600,
+                              ),
+                            ),
+                            Text(
+                              widget.peerId,
+                              style: const TextStyle(
+                                color: Wp.textFaint,
+                                fontSize: 11,
+                                fontFamily: 'monospace',
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                      IconButton(
+                        onPressed: _copy,
+                        icon: Icon(
+                          _copied ? Icons.check : Icons.copy,
+                          size: 18,
+                          color: _copied ? Wp.online : Wp.textDim,
+                        ),
+                      ),
+                    ],
                   ),
-                  IconButton(
-                    onPressed: _copy,
-                    icon: Icon(
-                      _copied ? Icons.check : Icons.copy,
-                      size: 18,
-                      color: _copied ? Wp.online : Wp.textDim,
-                    ),
-                  ),
-                ],
-              ),
-              const SizedBox(height: 8),
-              SelectableText(
-                widget.peerId,
-                style: const TextStyle(
-                  color: Wp.accent,
-                  fontSize: 13,
-                  fontFamily: 'monospace',
-                  letterSpacing: 0.8,
                 ),
               ),
-              const SizedBox(height: 8),
-              Text(
-                t('settings.identity_sub'),
-                style:
-                    TextStyle(color: Wp.textFaint, fontSize: 11, height: 1.4),
+              const Divider(color: Wp.line, height: 1),
+              _ListRow(
+                icon: Icons.badge_outlined,
+                title: t('display_name'),
+                subtitle: 'Change what friends see',
+                onTap: _changeDisplayName,
+              ),
+              const Divider(color: Wp.line, height: 1),
+              _ListRow(
+                icon: Icons.photo_camera_outlined,
+                title: 'Avatar',
+                subtitle: 'Upload a profile picture',
+                onTap: _changeAvatar,
+              ),
+              const Divider(color: Wp.line, height: 1),
+              _ListRow(
+                icon: Icons.shield_outlined,
+                title: 'Safety number',
+                subtitle: 'View your E2EE identity',
+                onTap: _openMyProfile,
               ),
             ],
           ),
@@ -262,6 +408,33 @@ class _SettingsScreenState extends State<SettingsScreen> {
           ),
         ),
       ],
+    );
+  }
+
+  /// Live event log — mirrors the desktop Logs tab (debugging aid).
+  Widget _buildLogs() {
+    if (_log.isEmpty) {
+      return Center(
+        child: Text(
+          'No log entries yet',
+          style: TextStyle(color: Wp.textFaint, fontSize: 13),
+        ),
+      );
+    }
+    return ListView.builder(
+      padding: const EdgeInsets.all(12),
+      itemCount: _log.length,
+      itemBuilder: (context, i) => Padding(
+        padding: const EdgeInsets.symmetric(vertical: 2),
+        child: Text(
+          _log[i],
+          style: const TextStyle(
+            color: Wp.textDim,
+            fontSize: 11,
+            fontFamily: 'monospace',
+          ),
+        ),
+      ),
     );
   }
 
@@ -377,43 +550,48 @@ class _ListRow extends StatelessWidget {
   final String title;
   final String subtitle;
   final Widget? trailing;
+  final VoidCallback? onTap;
   const _ListRow({
     required this.icon,
     required this.title,
     required this.subtitle,
     this.trailing,
+    this.onTap,
   });
 
   @override
   Widget build(BuildContext context) {
-    return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
-      child: Row(
-        children: [
-          Icon(icon, size: 20, color: Wp.accent),
-          const SizedBox(width: 12),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  title,
-                  style: const TextStyle(
-                    color: Wp.text,
-                    fontSize: 13,
-                    fontWeight: FontWeight.w600,
+    return InkWell(
+      onTap: onTap,
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+        child: Row(
+          children: [
+            Icon(icon, size: 20, color: Wp.accent),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    title,
+                    style: const TextStyle(
+                      color: Wp.text,
+                      fontSize: 13,
+                      fontWeight: FontWeight.w600,
+                    ),
                   ),
-                ),
-                const SizedBox(height: 1),
-                Text(
-                  subtitle,
-                  style: TextStyle(color: Wp.textFaint, fontSize: 11),
-                ),
-              ],
+                  const SizedBox(height: 1),
+                  Text(
+                    subtitle,
+                    style: TextStyle(color: Wp.textFaint, fontSize: 11),
+                  ),
+                ],
+              ),
             ),
-          ),
-          ?trailing,
-        ],
+            ?trailing,
+          ],
+        ),
       ),
     );
   }
