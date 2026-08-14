@@ -30,7 +30,7 @@ use argon2::Algorithm::Argon2id;
 use argon2::{Argon2, Params, Version};
 use base64::engine::general_purpose::STANDARD as B64;
 use base64::Engine;
-use rand::RngCore;
+use rand::TryRng;
 
 /// KDF and AEAD parameters for version-2 backups.
 const KDF_ALGO: &str = "argon2id";
@@ -86,9 +86,13 @@ fn authenticated_metadata(
 /// generated for every call, so identical bodies never produce equal outputs.
 pub fn encrypt_package(plaintext: &str, password: &str) -> Result<serde_json::Value, BackupError> {
     let mut salt = [0u8; SALT_LEN];
-    rand::rngs::OsRng.fill_bytes(&mut salt);
+    rand::rngs::SysRng
+        .try_fill_bytes(&mut salt)
+        .map_err(|e| BackupError::Crypto(e.to_string()))?;
     let mut nonce_bytes = [0u8; NONCE_LEN];
-    rand::rngs::OsRng.fill_bytes(&mut nonce_bytes);
+    rand::rngs::SysRng
+        .try_fill_bytes(&mut nonce_bytes)
+        .map_err(|e| BackupError::Crypto(e.to_string()))?;
 
     let kdf = serde_json::json!({
         "algo": KDF_ALGO,
@@ -103,10 +107,11 @@ pub fn encrypt_package(plaintext: &str, password: &str) -> Result<serde_json::Va
 
     let key = derive_key(password, &salt)?;
     let cipher = Aes256Gcm::new_from_slice(&key).map_err(|e| BackupError::Crypto(e.to_string()))?;
-    let nonce = Nonce::from_slice(&nonce_bytes);
+    let nonce = Nonce::try_from(nonce_bytes.as_slice())
+        .map_err(|_| BackupError::Crypto("invalid nonce length".into()))?;
     let ciphertext = cipher
         .encrypt(
-            nonce,
+            &nonce,
             Payload {
                 msg: plaintext.as_bytes(),
                 aad: &aad,
@@ -203,10 +208,11 @@ pub fn decrypt_package(
     // Argon2 parameter validation enforces m_cost >= 8 * p_cost.
     let key = derive_key_with_costs(password, &salt, m_cost, t_cost, p_cost)?;
     let cipher = Aes256Gcm::new_from_slice(&key).map_err(|e| BackupError::Crypto(e.to_string()))?;
-    let nonce = Nonce::from_slice(&nonce_bytes);
+    let nonce = Nonce::try_from(nonce_bytes.as_slice())
+        .map_err(|_| BackupError::Crypto("invalid nonce length".into()))?;
     let plaintext = cipher
         .decrypt(
-            nonce,
+            &nonce,
             Payload {
                 msg: ciphertext.as_ref(),
                 aad: &aad,

@@ -32,8 +32,8 @@ sha2 = "0.11"
 # Password-encrypted full backups: Argon2id (KDF) + AES-256-GCM (AEAD) over
 # the whole backup package. `rand` supplies the per-backup salt + nonce.
 argon2 = "0.5"
-aes-gcm = "0.10"
-rand = "0.8"
+aes-gcm = "0.11"
+rand = "0.10"
 # SQLCipher at-rest encryption. The `bundled-sqlcipher-vendored-openssl`
 # feature compiles SQLCipher (and its OpenSSL dependency) from source, so the
 # local history database is encrypted with a key derived from the identity.
