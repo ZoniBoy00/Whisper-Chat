@@ -52,6 +52,9 @@ abstract class WhisperClient implements RustOpaqueInterface {
 
   /// Drain all pending events (polled by the UI, e.g. once per second).
   Future<List<ChatEvent>> takeEvents();
+
+  /// Subscribe to online/offline pushes for `peer_id`.
+  Future<void> watchPresence({required String peerId});
 }
 
 /// One event emitted by the relay loop, drained by the UI via `take_events`.
