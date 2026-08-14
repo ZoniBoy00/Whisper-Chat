@@ -59,7 +59,7 @@ class _GroupInfoScreenState extends State<GroupInfoScreen> {
                   .where((l) => l.isNotEmpty)
                   .map((l) {
                     final p = l.split(':');
-                    return (p.length > 0 ? p[0] : '', p.length > 1 ? p[1] : 'member');
+                    return (p.isNotEmpty ? p[0] : '' , p.length > 1 ? p[1] : 'member');
                   }));
           }
           gotInfo = true;

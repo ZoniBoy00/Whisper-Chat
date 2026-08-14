@@ -122,6 +122,63 @@ class _SettingsScreenState extends State<SettingsScreen> {
     }
   }
 
+  /// Change (or register) our username — signed binding, like registration.
+  Future<void> _changeUsername() async {
+    if (!mounted) return;
+    final prefs = await SharedPreferences.getInstance();
+    final identityJson = prefs.getString('identity_json') ?? '';
+    final controller = TextEditingController(text: _username);
+    final username = await showDialog<String>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: Wp.panel,
+        title: const Text('Username',
+            style: TextStyle(color: Wp.text, fontSize: 17)),
+        content: TextField(
+          controller: controller,
+          autofocus: true,
+          style: const TextStyle(color: Wp.text),
+          decoration: const InputDecoration(
+            hintText: 'lowercase_letters_123',
+            hintStyle: TextStyle(color: Wp.textFaint),
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('Cancel', style: TextStyle(color: Wp.textDim)),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(ctx, controller.text.trim()),
+            style: FilledButton.styleFrom(backgroundColor: Wp.accent),
+            child: const Text('Save', style: TextStyle(color: Wp.accentFg)),
+          ),
+        ],
+      ),
+    );
+    if (username == null || username.isEmpty) return;
+    try {
+      final sig = await core.signUsername(
+          json: identityJson, username: username.toLowerCase());
+      await widget.client.registerProfile(
+          username: username.toLowerCase(),
+          signature: sig,
+          displayName: null);
+      setState(() => _username = username.toLowerCase());
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Username set to ${username.toLowerCase()}')),
+        );
+      }
+    } catch (err) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Failed: $err')),
+        );
+      }
+    }
+  }
+
   Future<void> _changeAvatar() async {
     final picker = ImagePicker();
     final image = await picker.pickImage(
@@ -414,6 +471,15 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 title: t('display_name'),
                 subtitle: 'Change what friends see',
                 onTap: _changeDisplayName,
+              ),
+              const Divider(color: Wp.line, height: 1),
+              _ListRow(
+                icon: Icons.alternate_email,
+                title: 'Username',
+                subtitle: _username.isEmpty
+                    ? 'Set your unique @username'
+                    : '@$_username',
+                onTap: _changeUsername,
               ),
               const Divider(color: Wp.line, height: 1),
               _ListRow(
