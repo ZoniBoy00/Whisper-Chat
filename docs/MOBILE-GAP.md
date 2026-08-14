@@ -1,97 +1,97 @@
 # Whisper Mobile — Gap Analysis & Task List
 
-> Päivitetty: 2026-08-14 (commit 78e4a35)
-> Status: Dokumentti OpenCodelle — mitä vielä pitää tehdä/korjata mobiilissa
+> Updated: 2026-08-14 (commit 78e4a35)
+> Status: Task list for OpenCode — what still needs to be done/fixed in the mobile app
 
-## ✅ Jo tehty (ei enää listalla)
+## ✅ Already done (no longer on the list)
 
-| Ominaisuus | Tila |
+| Feature | Status |
 |---|---|
-| Backup/restore (Argon2id 19MiB + AES-256-GCM, v2-formaatti, tamper-proof) | ✅ 5 unit-testiä |
+| Backup/restore (Argon2id 19MiB + AES-256-GCM, v2 format, tamper-proof) | ✅ 5 unit tests |
 | Safety numbers (`safetyNumber`, `shortSafetyNumber`) | ✅ |
-| Avatar + username-rekisteröinti (`registerProfile`, `setAvatar`) | ✅ |
-| Logs-tab | ✅ |
-| Flutter-testit (l10n, teema) + CI "Mobile (Flutter)" -jobi | ✅ |
+| Avatar + username registration (`registerProfile`, `setAvatar`) | ✅ |
+| Logs tab | ✅ |
+| Flutter tests (l10n, theme) + CI "Mobile (Flutter)" job | ✅ |
 | mobile/README | ✅ |
-| Ryhmät, reaktiot, edit/delete, receipts, i18n-runko, katoavien viestien UI | ✅ |
+| Groups, reactions, edit/delete, receipts, i18n skeleton, disappearing-messages UI | ✅ |
 
 ---
 
-## 🔴 KRITTISET BUGIT
+## 🔴 CRITICAL BUGS
 
-### B1. Mobiilin Whisper ID ei löydy desktopin hausta (ja päinvastoin)
-- Mobiilin peer ID (esim. `317b8da4...`) ei löydy, kun sitä hakee desktop-versiossa
-- Tarkistettava:
-  - (a) rekisteröityykö profiili relaylle aina (registerProfile) — myös silloin kun usernamea ei ole asetettu
-  - (b) tukeeko `search_users` peer-ID-prefix-hakua, ei vaan username-prefixiä
-  - (c) toimiiko haku molempiin suuntiin: mobiili→desktop ja desktop→mobiili
-- **Tämä on release-blocker-tason juttu** — kahden koneen E2EE-testi vaatii että osapuolet löytää toisensa
+### B1. Mobile Whisper ID is not found by the desktop search (and vice versa)
+- The mobile peer ID (e.g. `317b8da4...`) cannot be found when searched from the desktop app
+- To verify:
+  - (a) is the profile always registered with the relay (registerProfile) — also when no username has been set
+  - (b) does `search_users` support peer-ID prefix search, not just username prefix
+  - (c) does search work in both directions: mobile→desktop and desktop→mobile
+- **This is release-blocker level** — the two-machine E2EE test requires that both parties can find each other
 
-### B2. Asetuksissa scrollatessa kaikki vaihtaa kokoa
-- Settings-näkymässä scrollaus aiheuttaa tekstien/elementtien koon vaihtelua
-- Todennäköinen syy: Flutter-layout (MediaQuery.textScaler, epävakaa ListView/SingleChildScrollView, tai rebuild-skaalaus)
-- Korjaus: lukitse fonttikoot, poista dynaaminen skaalaus, testaa eri näyttökoilla/DPI:llä
-
----
-
-## 🔴 PUUTTUVAT OMINAISUUDET (desktop-pariteetti)
-
-### P1. Oman nimen (username) vaihto
-- `signUsername` on vaan rekisteröintiin. Desktopin "Change username" (update_profile-viesti) puuttuu mobiilista
-- Kun nimi on kerran asetettu, sitä ei voi vaihtaa
-
-### P2. Push-ilmoitukset (FCM/APNs)
-- "Notification options are coming to mobile soon" -placeholder
-- **Vaatii Firebase-projektin luonnin (Jonin toimi)** — OpenCode ei voi luoda Firebase-tiliä
-- Vain "sinulla on viesti" -push (roadmap §8)
-
-### P3. Katoavien viestien protokollakytkentä
-- UI-dialogi on olemassa (main_screen), mutta **varmista että valinta (Off/5s/30s/1h...) oikeasti menee lähetettävään viestiin** (disappear-kenttä), ei ole vaan UI-koriste
-
-### P4. Profiilinäkymä toisesta käyttäjästä
-- `getProfile` on kutsuttavissa, mutta ei ole kunnon profiiliruutua (desktop: ProfileDialog — avatar, username, peer ID, safety numbers -linkki)
-
-### P5. Ryhmän avatar
-- Serveri tukee (`group_avatar_set`), mobiilissa ei UI:ta
+### B2. Scrolling in Settings resizes everything
+- Scrolling in the Settings screen causes text/elements to change size
+- Likely cause: Flutter layout (MediaQuery.textScaler, unstable ListView/SingleChildScrollView, or rebuild-driven scaling)
+- Fix: lock font sizes, remove dynamic scaling, test on different screen sizes/DPIs
 
 ---
 
-## 🟡 UI/UX-PARANNUKSET
+## 🔴 MISSING FEATURES (desktop parity)
 
-### U1. "Your Whisper ID" -header
-- Vie tilaa päässä → siirrä asetuksiin (desktopin PeerIdCard-malli)
+### P1. Changing your own username
+- `signUsername` is only for registration. The desktop "Change username" (update_profile message) is missing from mobile
+- Once a name is set, it cannot be changed
 
-### U2. "Select a conversation" -oikea paneeli
-- Desktop-jäänne → poista mobiilista (turha, vie tilaa)
+### P2. Push notifications (FCM/APNs)
+- "Notification options are coming to mobile soon" placeholder
+- **Requires creating a Firebase project (Joni's action)** — OpenCode cannot create a Firebase account
+- Only "you have a message" push (roadmap §8)
 
-### U3. Whisper ID -näyttö
-- Näytä lyhennettynä + kopiointi-nappi (ei täyspitkää merkkijonoa joka vie tilaa)
+### P3. Disappearing messages — protocol wiring
+- The UI dialog exists (main_screen), but **verify that the choice (Off/5s/30s/1h...) is actually attached to the outgoing message** (disappear field), not just UI decoration
 
-### U4. Desktop-paletin tarkka match
-- Vertaa theme.dart desktopin CSS:ään (värit, fontit, spacing, kuplat, avatarit)
+### P4. Profile view of another user
+- `getProfile` is callable, but there is no proper profile screen (desktop: ProfileDialog — avatar, username, peer ID, safety numbers link)
 
-### U5. i18n-täydellisyys
-- Kieli vaihtuu, mutta käy läpi että KAIKKI tekstit on käännetty (desktopissa 1036 riviä käännöksiä vs mobiilin i18n.dart)
-
----
-
-## 🔧 TEKNISET / LAATU
-
-### T1. whisper_core dead-code-varoitukset
-- 7 kpl (esim. `FriendRequestIncoming`-Debug) — siisti pois, clippy puhdas
-
-### T2. Flutter-testien laajennus
-- Vain 2 pientä testiä (l10n, theme). Lisää widget-testejä: onboarding, settings, chat-view, backup-encrypt/decrypt-roundtrip
+### P5. Group avatar
+- The server supports it (`group_avatar_set`), but there is no mobile UI for it
 
 ---
 
-## 💡 Suositusjärjestys
+## 🟡 UI/UX IMPROVEMENTS
 
-1. **B1 (peer-haku)** — release-blocker, tekee E2EE-testin mahdottomaksi
-2. **B2 (scroll-skaalaus)** — näkyvä bugi jokaisessa käytössä
-3. **P1 (username-vaihto)** — käyttäjän raportoima puute
-4. **P3 (disappear-kytkentä)** — protokolla valmis, altista vaan
-5. **P4 (profiilinäkymä)** + U1-U3 (UI-siivous)
-6. **T1-T2** (laatuportti)
-7. **P2 (push)** — isoin feature-jäännös, vaatii Firebase-projektin (Jonin toimi)
-8. **P5 (ryhmän avatar)** + U4-U5 (viimeistely)
+### U1. "Your Whisper ID" header
+- Takes up space in the main view → move it to Settings (desktop PeerIdCard pattern)
+
+### U2. "Select a conversation" right panel
+- Leftover from desktop → remove on mobile (useless, wastes space)
+
+### U3. Whisper ID display
+- Show truncated + copy button (not the full-length string taking up space)
+
+### U4. Exact desktop palette match
+- Compare theme.dart against the desktop CSS (colors, fonts, spacing, bubbles, avatars)
+
+### U5. i18n completeness
+- Language switching works, but review that ALL strings are translated (desktop has 1036 lines of translations vs mobile's i18n.dart)
+
+---
+
+## 🔧 TECHNICAL / QUALITY
+
+### T1. whisper_core dead-code warnings
+- 7 total (e.g. `FriendRequestIncoming`-Debug) — clean up, keep clippy clean
+
+### T2. Expand Flutter tests
+- Only 2 small tests (l10n, theme). Add widget tests: onboarding, settings, chat view, backup encrypt/decrypt roundtrip
+
+---
+
+## 💡 Recommended order
+
+1. **B1 (peer search)** — release blocker, makes the E2EE test impossible
+2. **B2 (scroll resizing)** — visible bug in every use
+3. **P1 (username change)** — user-reported missing feature
+4. **P3 (disappear wiring)** — protocol is ready, just expose it
+5. **P4 (profile view)** + U1-U3 (UI cleanup)
+6. **T1-T2** (quality gate)
+7. **P2 (push)** — biggest remaining feature, requires a Firebase project (Joni's action)
+8. **P5 (group avatar)** + U4-U5 (polish)
