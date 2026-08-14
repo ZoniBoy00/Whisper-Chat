@@ -1375,23 +1375,7 @@ impl RelayClient {
             .ok_or(RelayError::NoIdentity)?
             .signed_hello();
 
-        let url = {
-            let settings = read_guard(&self.inner.settings)?;
-            resolve_relay_url(
-                &settings,
-                std::env::var("WHISPER_RELAY_URL").ok().as_deref(),
-            )
-        };
-        // Persist the *effective* endpoint (settings -> env var -> default) so
-        // the UI can resolve `/media/{hash}` avatar URLs against the relay the
-        // client actually connected to, even when the user never set one.
-        {
-            let mut settings = read_guard(&self.inner.settings)?.clone();
-            if settings.relay_url.as_deref() != Some(url.as_str()) {
-                settings.relay_url = Some(url.clone());
-                self.save_settings(&settings)?;
-            }
-        }
+        let url = resolve_relay_url(std::env::var("WHISPER_RELAY_URL").ok().as_deref());
         let (ws_stream, _) = match tokio_tungstenite::connect_async(&url).await {
             Ok(stream) => stream,
             Err(err) => {
@@ -3268,14 +3252,11 @@ fn setting_str(value: bool) -> &'static str {
     }
 }
 
-/// Resolve the relay endpoint: settings first, then the `WHISPER_RELAY_URL`
-/// env var, then the built-in default.
-fn resolve_relay_url(settings: &Settings, env_url: Option<&str>) -> String {
-    if let Some(url) = settings.relay_url.as_deref() {
-        if !url.is_empty() {
-            return url.to_string();
-        }
-    }
+/// Resolve the relay endpoint: the `WHISPER_RELAY_URL` env var (dev tooling
+/// only), then the built-in default. The relay address is intentionally
+/// hardcoded in [`DEFAULT_RELAY_URL`] — it cannot be changed from the UI or
+/// a persisted setting, only by shipping a new client build.
+fn resolve_relay_url(env_url: Option<&str>) -> String {
     env_url.unwrap_or(DEFAULT_RELAY_URL).to_string()
 }
 
