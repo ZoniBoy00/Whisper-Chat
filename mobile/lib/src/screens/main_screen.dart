@@ -4,9 +4,11 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+import '../i18n.dart';
 import '../rust/api/whisper.dart' as core;
 import '../theme.dart';
 import '../widgets/avatar.dart';
+import 'group_info_screen.dart';
 import 'settings_screen.dart';
 
 /// One chat line in a conversation (1:1 or group).
@@ -238,6 +240,37 @@ class _MainScreenState extends State<MainScreen> {
     setState(() => _activePeer = peer);
     await widget.client.watchPresence(peerId: peer);
     await widget.client.getProfile(peerId: peer);
+    // Send a read receipt for any unread incoming message with an id.
+    final msgs = _messages[peer];
+    if (msgs != null && msgs.isNotEmpty) {
+      final last = msgs.lastWhere(
+        (m) => !m.outgoing && m.messageId != null,
+        orElse: () => msgs.last,
+      );
+      if (!last.outgoing && last.messageId != null && !peer.startsWith('group:')) {
+        await widget.client.sendReadReceipt(
+            peerId: peer, messageId: last.messageId!);
+      }
+    }
+  }
+
+  Future<void> _openGroupInfo(String groupId) async {
+    await widget.client.getGroupInfo(groupId: groupId);
+    if (!mounted) return;
+    await Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (_) => GroupInfoScreen(
+          client: widget.client,
+          groupId: groupId,
+          name: _groups
+              .where((g) => g.id == groupId)
+              .map((g) => g.name)
+              .firstOrNull ??
+              groupId,
+        ),
+      ),
+    );
   }
 
   Future<void> _acceptRequest(String peer) async {
@@ -532,13 +565,14 @@ class _MainScreenState extends State<MainScreen> {
   }
 
   Widget _buildViewTabs() {
+    final t = LanguageScope.of(context).t;
     return Padding(
       padding: const EdgeInsets.fromLTRB(16, 0, 16, 10),
       child: Row(
         children: [
           Expanded(
             child: _TabBtn(
-              label: 'Chats',
+              label: t('tab.chats'),
               active: _view == _View.chats,
               onTap: () => setState(() => _view = _View.chats),
             ),
@@ -546,7 +580,7 @@ class _MainScreenState extends State<MainScreen> {
           const SizedBox(width: 4),
           Expanded(
             child: _TabBtn(
-              label: 'Contacts',
+              label: t('tab.contacts'),
               active: _view == _View.contacts,
               onTap: () => setState(() => _view = _View.contacts),
             ),
@@ -554,7 +588,7 @@ class _MainScreenState extends State<MainScreen> {
           const SizedBox(width: 4),
           Expanded(
             child: _TabBtn(
-              label: 'Groups',
+              label: t('tab.groups'),
               active: _view == _View.groups,
               onTap: () => setState(() => _view = _View.groups),
             ),
@@ -784,6 +818,7 @@ class _MainScreenState extends State<MainScreen> {
             active: _activePeer == 'group:${g.id}',
             online: false,
             onTap: () => _openChat('group:${g.id}'),
+            onLongPress: () => _openGroupInfo(g.id),
           );
         },
       );
@@ -1123,6 +1158,12 @@ class _MainScreenState extends State<MainScreen> {
               ],
             ),
           ),
+          if (isGroup)
+            _IconBtn(
+              icon: Icons.info_outline,
+              tooltip: 'Group info',
+              onTap: () => _openGroupInfo(peer.substring(6)),
+            ),
         ],
       ),
     );
@@ -1242,6 +1283,7 @@ class _ConversationRow extends StatelessWidget {
   final bool active;
   final bool online;
   final VoidCallback onTap;
+  final VoidCallback? onLongPress;
   const _ConversationRow({
     required this.peerId,
     required this.name,
@@ -1251,12 +1293,14 @@ class _ConversationRow extends StatelessWidget {
     required this.active,
     required this.online,
     required this.onTap,
+    this.onLongPress,
   });
 
   @override
   Widget build(BuildContext context) {
     return InkWell(
       onTap: onTap,
+      onLongPress: onLongPress,
       child: Container(
         color: active ? Wp.panel3 : Colors.transparent,
         padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
@@ -1397,6 +1441,15 @@ class _Bubble extends StatelessWidget {
                         fontSize: 10,
                       ),
                     ),
+                  if (msg.expiresIn != null)
+                    Padding(
+                      padding: const EdgeInsets.only(right: 4),
+                      child: Icon(
+                        Icons.timer_outlined,
+                        size: 11,
+                        color: Wp.text.withValues(alpha: 0.5),
+                      ),
+                    ),
                   Text(
                     time,
                     style: TextStyle(
@@ -1407,7 +1460,7 @@ class _Bubble extends StatelessWidget {
                   if (msg.outgoing) ...[
                     const SizedBox(width: 4),
                     Icon(
-                      Icons.check,
+                      Icons.done_all,
                       size: 12,
                       color: Wp.text.withValues(alpha: 0.6),
                     ),

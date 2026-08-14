@@ -67,7 +67,7 @@ class RustLib extends BaseEntrypoint<RustLibApi, RustLibApiImpl, RustLibWire> {
   String get codegenVersion => '2.12.0';
 
   @override
-  int get rustContentHash => 25553631;
+  int get rustContentHash => -508674196;
 
   static const kDefaultExternalLibraryLoaderConfig =
       ExternalLibraryLoaderConfig(
@@ -260,9 +260,20 @@ abstract class RustLibApi extends BaseApi {
     required String emoji,
   });
 
+  Future<void> crateApiWhisperWhisperClientSendReadReceipt({
+    required WhisperClient that,
+    required String peerId,
+    required String messageId,
+  });
+
   Future<void> crateApiWhisperWhisperClientSetDisplayName({
     required WhisperClient that,
     required String displayName,
+  });
+
+  Future<void> crateApiWhisperWhisperClientSetPrivacy({
+    required WhisperClient that,
+    required bool presenceVisible,
   });
 
   Future<List<ChatEvent>> crateApiWhisperWhisperClientTakeEvents({
@@ -1621,6 +1632,46 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       );
 
   @override
+  Future<void> crateApiWhisperWhisperClientSendReadReceipt({
+    required WhisperClient that,
+    required String peerId,
+    required String messageId,
+  }) {
+    return handler.executeNormal(
+      NormalTask(
+        callFfi: (port_) {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerWhisperClient(
+            that,
+            serializer,
+          );
+          sse_encode_String(peerId, serializer);
+          sse_encode_String(messageId, serializer);
+          pdeCallFfi(
+            generalizedFrbRustBinding,
+            serializer,
+            funcId: 35,
+            port: port_,
+          );
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_unit,
+          decodeErrorData: sse_decode_String,
+        ),
+        constMeta: kCrateApiWhisperWhisperClientSendReadReceiptConstMeta,
+        argValues: [that, peerId, messageId],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateApiWhisperWhisperClientSendReadReceiptConstMeta =>
+      const TaskConstMeta(
+        debugName: "WhisperClient_send_read_receipt",
+        argNames: ["that", "peerId", "messageId"],
+      );
+
+  @override
   Future<void> crateApiWhisperWhisperClientSetDisplayName({
     required WhisperClient that,
     required String displayName,
@@ -1637,7 +1688,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 35,
+            funcId: 36,
             port: port_,
           );
         },
@@ -1659,6 +1710,44 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       );
 
   @override
+  Future<void> crateApiWhisperWhisperClientSetPrivacy({
+    required WhisperClient that,
+    required bool presenceVisible,
+  }) {
+    return handler.executeNormal(
+      NormalTask(
+        callFfi: (port_) {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerWhisperClient(
+            that,
+            serializer,
+          );
+          sse_encode_bool(presenceVisible, serializer);
+          pdeCallFfi(
+            generalizedFrbRustBinding,
+            serializer,
+            funcId: 37,
+            port: port_,
+          );
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_unit,
+          decodeErrorData: sse_decode_String,
+        ),
+        constMeta: kCrateApiWhisperWhisperClientSetPrivacyConstMeta,
+        argValues: [that, presenceVisible],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateApiWhisperWhisperClientSetPrivacyConstMeta =>
+      const TaskConstMeta(
+        debugName: "WhisperClient_set_privacy",
+        argNames: ["that", "presenceVisible"],
+      );
+
+  @override
   Future<List<ChatEvent>> crateApiWhisperWhisperClientTakeEvents({
     required WhisperClient that,
   }) {
@@ -1673,7 +1762,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 36,
+            funcId: 38,
             port: port_,
           );
         },
@@ -1711,7 +1800,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 37,
+            funcId: 39,
             port: port_,
           );
         },
@@ -1741,7 +1830,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 38,
+            funcId: 40,
             port: port_,
           );
         },
@@ -1769,7 +1858,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 39,
+            funcId: 41,
             port: port_,
           );
         },
@@ -1797,7 +1886,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 40,
+            funcId: 42,
             port: port_,
           );
         },
@@ -1825,7 +1914,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 41,
+            funcId: 43,
             port: port_,
           );
         },
@@ -1857,7 +1946,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 42,
+            funcId: 44,
             port: port_,
           );
         },
@@ -2532,11 +2621,28 @@ class WhisperClientImpl extends RustOpaque implements WhisperClient {
     emoji: emoji,
   );
 
+  /// Send a read receipt for `message_id` (encrypted inside the session).
+  Future<void> sendReadReceipt({
+    required String peerId,
+    required String messageId,
+  }) => RustLib.instance.api.crateApiWhisperWhisperClientSendReadReceipt(
+    that: this,
+    peerId: peerId,
+    messageId: messageId,
+  );
+
   /// Set our public display name.
   Future<void> setDisplayName({required String displayName}) =>
       RustLib.instance.api.crateApiWhisperWhisperClientSetDisplayName(
         that: this,
         displayName: displayName,
+      );
+
+  /// Toggle whether our online status is visible to others.
+  Future<void> setPrivacy({required bool presenceVisible}) =>
+      RustLib.instance.api.crateApiWhisperWhisperClientSetPrivacy(
+        that: this,
+        presenceVisible: presenceVisible,
       );
 
   Future<List<ChatEvent>> takeEvents() =>

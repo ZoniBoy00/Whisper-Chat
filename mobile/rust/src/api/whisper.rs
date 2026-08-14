@@ -577,6 +577,21 @@ impl WhisperClient {
         self.send(&ClientMessage::GetPresence { peer_id }).await
     }
 
+    /// Toggle whether our online status is visible to others.
+    pub async fn set_privacy(&self, presence_visible: bool) -> Result<(), String> {
+        self.send(&ClientMessage::SetPrivacy { presence_visible })
+            .await
+    }
+
+    /// Send a read receipt for `message_id` (encrypted inside the session).
+    pub async fn send_read_receipt(&self, peer_id: String, message_id: String) -> Result<(), String> {
+        self.send_payload(
+            &peer_id,
+            ChatPayload::Read(e2ee_core::ReadPayload::new(message_id)),
+        )
+        .await
+    }
+
     // ---- Groups ---------------------------------------------------------
 
     pub async fn create_group(&self, name: String) -> Result<(), String> {
