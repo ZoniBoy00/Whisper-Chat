@@ -13,21 +13,46 @@ void main() {
   runApp(const WhisperApp());
 }
 
-class WhisperApp extends StatelessWidget {
+/// The language scope wraps the WHOLE MaterialApp (and thus the Navigator),
+/// so pushed routes (settings, group info) see language changes too.
+class WhisperApp extends StatefulWidget {
   const WhisperApp({super.key});
 
   @override
+  State<WhisperApp> createState() => _WhisperAppState();
+}
+
+class _WhisperAppState extends State<WhisperApp> {
+  String _lang = 'en';
+
+  @override
+  void initState() {
+    super.initState();
+    L10n.load().then((lang) {
+      if (mounted) setState(() => _lang = lang);
+    });
+  }
+
+  void _onLanguageChanged(String lang) {
+    setState(() => _lang = lang);
+  }
+
+  @override
   Widget build(BuildContext context) {
-    return MaterialApp(
-      title: 'Whisper',
-      debugShowCheckedModeBanner: false,
-      theme: whisperTheme(),
-      home: const RootScreen(),
+    return LanguageScope(
+      l10n: L10n(_lang),
+      onLanguageChanged: _onLanguageChanged,
+      child: MaterialApp(
+        title: 'Whisper',
+        debugShowCheckedModeBanner: false,
+        theme: whisperTheme(),
+        home: const RootScreen(),
+      ),
     );
   }
 }
 
-/// Boot flow: splash -> (onboarding | main), with language scope on top.
+/// Boot flow: splash -> (onboarding | main).
 class RootScreen extends StatefulWidget {
   const RootScreen({super.key});
 
@@ -42,7 +67,6 @@ class _RootScreenState extends State<RootScreen> {
   String _peerId = '';
   String _identityJson = '';
   core.WhisperClient? _client;
-  String _lang = 'en';
 
   @override
   void initState() {
@@ -52,7 +76,6 @@ class _RootScreenState extends State<RootScreen> {
 
   Future<void> _boot() async {
     await RustLib.init();
-    _lang = await L10n.load();
     final prefs = await SharedPreferences.getInstance();
     final stored = prefs.getString('identity_json');
     String peerId;
@@ -73,25 +96,12 @@ class _RootScreenState extends State<RootScreen> {
     setState(() => _ready = true);
   }
 
-  void _onLanguageChanged(String lang) {
-    setState(() => _lang = lang);
-  }
-
   void _onSplashDone() {
     setState(() => _showSplash = false);
   }
 
   @override
   Widget build(BuildContext context) {
-    final child = _buildBody();
-    return LanguageScope(
-      l10n: L10n(_lang),
-      onLanguageChanged: _onLanguageChanged,
-      child: child,
-    );
-  }
-
-  Widget _buildBody() {
     if (_showSplash) {
       return SplashScreen(onDone: _onSplashDone);
     }
