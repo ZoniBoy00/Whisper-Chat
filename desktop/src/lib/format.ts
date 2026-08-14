@@ -1,4 +1,5 @@
 import type { TFunction } from "../i18n/types";
+import { DEFAULT_RELAY_URL } from "./relay";
 
 /** Compose a class string from a set of possibly-empty fragments. */
 export function cx(...parts: Array<string | false | null | undefined>): string {
@@ -31,7 +32,7 @@ export function mediaUrl(relayUrl: string, avatarPath: string): string | null {
   // relayUrl state is still empty; fall back to the built-in default relay so
   // avatars can load during that window instead of silently falling back to
   // the letter avatar.
-  const base = relayUrl.trim() !== "" ? relayUrl : "ws://127.0.0.1:8080/ws";
+  const base = relayUrl.trim() !== "" ? relayUrl : DEFAULT_RELAY_URL;
   try {
     const parsed = new URL(base.replace(/^ws/i, "http"));
     const path = avatarPath.startsWith("/") ? avatarPath : `/${avatarPath}`;

@@ -70,7 +70,11 @@ use vodozemac::olm::OlmMessage;
 use crate::store::{derive_db_key, ChatStore, ContactRow, StoreError};
 
 /// Default relay endpoint; override with the `WHISPER_RELAY_URL` env var.
-const DEFAULT_RELAY_URL: &str = "ws://127.0.0.1:8080/ws";
+///
+/// Currently points at the test relay (whisper-test.homelab.cfd) while the
+/// Hetzner two-machine E2EE test is running; replace with the production
+/// relay before public release.
+const DEFAULT_RELAY_URL: &str = "wss://whisper-test.homelab.cfd/ws";
 
 /// How long to wait for a pre-key bundle after requesting one.
 const PREKEY_FETCH_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
