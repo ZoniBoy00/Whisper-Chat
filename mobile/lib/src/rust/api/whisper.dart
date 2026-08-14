@@ -140,8 +140,17 @@ abstract class WhisperClient implements RustOpaqueInterface {
     required String emoji,
   });
 
+  /// Send a read receipt for `message_id` (encrypted inside the session).
+  Future<void> sendReadReceipt({
+    required String peerId,
+    required String messageId,
+  });
+
   /// Set our public display name.
   Future<void> setDisplayName({required String displayName});
+
+  /// Toggle whether our online status is visible to others.
+  Future<void> setPrivacy({required bool presenceVisible});
 
   Future<List<ChatEvent>> takeEvents();
 
