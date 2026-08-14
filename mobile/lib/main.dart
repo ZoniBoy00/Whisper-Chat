@@ -5,6 +5,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import 'src/rust/api/whisper.dart' as core;
 import 'src/rust/frb_generated.dart';
+import 'src/theme.dart';
 
 void main() {
   runApp(const WhisperApp());
@@ -17,7 +18,8 @@ class WhisperApp extends StatelessWidget {
   Widget build(BuildContext context) {
     return MaterialApp(
       title: 'Whisper',
-      theme: ThemeData.dark(useMaterial3: true),
+      debugShowCheckedModeBanner: false,
+      theme: whisperTheme(),
       home: const HomeScreen(),
     );
   }
@@ -40,9 +42,9 @@ class HomeScreen extends StatefulWidget {
 
 class _HomeScreenState extends State<HomeScreen> {
   final _messages = <ChatLine>[];
-  final _log = <String>[];
   final _peerInput = TextEditingController();
   final _textInput = TextEditingController();
+  final _scroll = ScrollController();
   Timer? _poller;
 
   core.WhisperClient? _client;
@@ -63,12 +65,12 @@ class _HomeScreenState extends State<HomeScreen> {
     _poller?.cancel();
     _peerInput.dispose();
     _textInput.dispose();
+    _scroll.dispose();
     super.dispose();
   }
 
   Future<void> _init() async {
     await RustLib.init();
-    // Load or create the identity.
     final prefs = await SharedPreferences.getInstance();
     final stored = prefs.getString('identity_json');
     if (stored != null) {
@@ -81,7 +83,6 @@ class _HomeScreenState extends State<HomeScreen> {
     }
     _client = await core.WhisperClient.newInstance();
     setState(() => _status = 'Ready — press Connect');
-    // Poll the event queue.
     _poller = Timer.periodic(const Duration(milliseconds: 500), (_) => _poll());
   }
 
@@ -105,34 +106,43 @@ class _HomeScreenState extends State<HomeScreen> {
           _status = 'Disconnected';
         case 'message':
           _messages.add(ChatLine(e.peerId, e.text ?? '', outgoing: false));
+          _scrollToBottom();
         case 'message_sent':
           _messages.add(ChatLine(e.peerId, e.text ?? '', outgoing: true));
+          _scrollToBottom();
         case 'error':
-          _status = 'Error: ${e.error ?? ''}';
-          _log.add('ERR: ${e.error}');
+          _status = e.error ?? 'Error';
         case 'contacts':
-          _contacts = (e.text ?? '').split('\n').where((p) => p.isNotEmpty).toList();
+          _contacts =
+              (e.text ?? '').split('\n').where((p) => p.isNotEmpty).toList();
         case 'friend_requests':
           _pendingRequests =
               (e.text ?? '').split('\n').where((p) => p.isNotEmpty).toList();
-        case 'session_established':
-          _log.add('Session established with ${e.peerId}');
         default:
-          _log.add('${e.kind} ${e.peerId}');
+          break;
+      }
+    });
+  }
+
+  void _scrollToBottom() {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (_scroll.hasClients) {
+        _scroll.jumpTo(_scroll.position.maxScrollExtent);
       }
     });
   }
 
   Future<void> _connect() async {
     final client = _client;
-    final json = (await SharedPreferences.getInstance()).getString('identity_json');
+    final json =
+        (await SharedPreferences.getInstance()).getString('identity_json');
     if (client == null || json == null) return;
     setState(() => _status = 'Connecting…');
     try {
       await client.connect(relayUrl: null, identityJson: json);
-      setState(() => _status = 'Connected (hello + prekeys sent)');
+      setState(() => _status = 'Connected');
     } catch (err) {
-      setState(() => _status = 'Connect failed: $err');
+      setState(() => _status = '$err');
     }
   }
 
@@ -141,10 +151,10 @@ class _HomeScreenState extends State<HomeScreen> {
     if (peer.isEmpty) return;
     try {
       await _client?.sendFriendRequest(target: peer);
-      setState(() => _status = 'Friend request sent to $peer');
+      setState(() => _status = 'Friend request sent');
       _peerInput.clear();
     } catch (err) {
-      setState(() => _status = 'Friend request failed: $err');
+      setState(() => _status = '$err');
     }
   }
 
@@ -167,7 +177,7 @@ class _HomeScreenState extends State<HomeScreen> {
       await _client?.sendMessage(peerId: peer, text: text);
       _textInput.clear();
     } catch (err) {
-      setState(() => _status = 'Send failed: $err');
+      setState(() => _status = '$err');
     }
   }
 
@@ -175,154 +185,326 @@ class _HomeScreenState extends State<HomeScreen> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Whisper'),
+        title: Row(
+          children: [
+            ClipRRect(
+              borderRadius: BorderRadius.circular(8),
+              child: Image.asset(
+                'assets/whisper-logo.png',
+                width: 26,
+                height: 26,
+              ),
+            ),
+            const SizedBox(width: 10),
+            const Text(
+              'Whisper',
+              style: TextStyle(
+                fontSize: 20,
+                fontWeight: FontWeight.w600,
+                letterSpacing: -0.3,
+              ),
+            ),
+          ],
+        ),
         actions: [
+          _statusDot(),
           IconButton(
-            icon: const Icon(Icons.refresh),
+            icon: const Icon(Icons.refresh, size: 20),
             tooltip: 'Refresh contacts',
             onPressed: _refresh,
           ),
+          const SizedBox(width: 4),
         ],
       ),
       body: Column(
         children: [
-          // Status + identity.
-          Container(
-            padding: const EdgeInsets.all(12),
-            color: Theme.of(context).colorScheme.surfaceContainerHighest,
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text('Status: $_status',
-                    style: const TextStyle(fontWeight: FontWeight.bold)),
-                const SizedBox(height: 4),
-                Text('My peer ID: ${_peerId ?? "—"}',
-                    style: const TextStyle(fontSize: 12)),
-                const SizedBox(height: 8),
-                Wrap(
-                  spacing: 8,
-                  children: [
-                    FilledButton.icon(
-                      onPressed: _connect,
-                      icon: const Icon(Icons.wifi),
-                      label: Text(_connected ? 'Reconnect' : 'Connect'),
-                    ),
-                    OutlinedButton(
-                      onPressed: _addFriend,
-                      child: const Text('Send friend request'),
-                    ),
-                  ],
-                ),
-                Padding(
-                  padding: const EdgeInsets.only(top: 8),
-                  child: TextField(
-                    controller: _peerInput,
-                    decoration: const InputDecoration(
-                      labelText: 'Peer ID (24 hex chars)',
-                      border: OutlineInputBorder(),
-                      isDense: true,
-                    ),
-                    style: const TextStyle(fontSize: 12),
+          _buildIdentityCard(),
+          if (_pendingRequests.isNotEmpty) _buildRequestsCard(),
+          if (_contacts.isNotEmpty) _buildContactsCard(),
+          Expanded(child: _buildMessageList()),
+          _buildComposer(),
+        ],
+      ),
+    );
+  }
+
+  Widget _statusDot() {
+    return Padding(
+      padding: const EdgeInsets.only(right: 6),
+      child: Container(
+        width: 9,
+        height: 9,
+        decoration: BoxDecoration(
+          shape: BoxShape.circle,
+          color: _connected ? Wp.online : Wp.textFaint,
+          boxShadow: _connected
+              ? [
+                  BoxShadow(
+                    color: Wp.online.withValues(alpha: 0.5),
+                    blurRadius: 6,
+                  ),
+                ]
+              : null,
+        ),
+      ),
+    );
+  }
+
+  Widget _buildIdentityCard() {
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.fromLTRB(16, 12, 16, 12),
+      decoration: const BoxDecoration(
+        color: Wp.panel,
+        border: Border(bottom: BorderSide(color: Wp.line)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Expanded(
+                child: Text(
+                  _status,
+                  style: TextStyle(
+                    color: _connected ? Wp.online : Wp.textDim,
+                    fontSize: 13,
+                    fontWeight: FontWeight.w600,
                   ),
                 ),
-              ],
+              ),
+              FilledButton(
+                onPressed: _connect,
+                style: FilledButton.styleFrom(
+                  backgroundColor: Wp.accent,
+                  foregroundColor: Wp.accentFg,
+                  padding: const EdgeInsets.symmetric(
+                      horizontal: 16, vertical: 8),
+                  textStyle: const TextStyle(
+                      fontSize: 12, fontWeight: FontWeight.w600),
+                ),
+                child: Text(_connected ? 'Reconnect' : 'Connect'),
+              ),
+            ],
+          ),
+          const SizedBox(height: 10),
+          Text(
+            'My peer ID',
+            style: TextStyle(
+              color: Wp.textFaint,
+              fontSize: 10,
+              letterSpacing: 1.1,
+              fontWeight: FontWeight.w600,
             ),
           ),
-          // Friend requests.
-          if (_pendingRequests.isNotEmpty)
-            Container(
-              width: double.infinity,
-              padding: const EdgeInsets.all(8),
-              color: Colors.amber.withValues(alpha: 0.08),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  const Text('Pending friend requests:',
-                      style: TextStyle(fontWeight: FontWeight.bold)),
-                  for (final p in _pendingRequests)
-                    Row(
-                      children: [
-                        Expanded(
-                            child: Text(p,
-                                style: const TextStyle(fontSize: 12))),
-                        TextButton(
-                          onPressed: () => _accept(p),
-                          child: const Text('Accept'),
-                        ),
-                      ],
-                    ),
-                ],
-              ),
-            ),
-          // Contacts.
-          if (_contacts.isNotEmpty)
-            Container(
-              width: double.infinity,
-              padding: const EdgeInsets.all(8),
-              color: Colors.green.withValues(alpha: 0.06),
-              child: Wrap(
-                spacing: 8,
-                children: [
-                  const Text('Contacts:', style: TextStyle(fontWeight: FontWeight.bold)),
-                  for (final c in _contacts)
-                    ActionChip(
-                      label: Text(c, style: const TextStyle(fontSize: 11)),
-                      visualDensity: VisualDensity.compact,
-                      onPressed: () => _peerInput.text = c,
-                    ),
-                ],
-              ),
-            ),
-          // Messages.
-          Expanded(
-            child: ListView.builder(
-              padding: const EdgeInsets.all(12),
-              itemCount: _messages.length,
-              itemBuilder: (context, i) {
-                final m = _messages[i];
-                return Align(
-                  alignment:
-                      m.outgoing ? Alignment.centerRight : Alignment.centerLeft,
-                  child: Container(
-                    margin: const EdgeInsets.symmetric(vertical: 3),
-                    padding: const EdgeInsets.symmetric(
-                        horizontal: 12, vertical: 8),
-                    decoration: BoxDecoration(
-                      color: m.outgoing
-                          ? Theme.of(context).colorScheme.primary
-                          : Theme.of(context).colorScheme.surfaceContainerHighest,
-                      borderRadius: BorderRadius.circular(14),
-                    ),
-                    child: Text(m.text,
-                        style: const TextStyle(fontSize: 14)),
+          const SizedBox(height: 2),
+          SelectableText(
+            _peerId ?? '—',
+            style: const TextStyle(color: Wp.textDim, fontSize: 12),
+          ),
+          const SizedBox(height: 10),
+          Row(
+            children: [
+              Expanded(
+                child: TextField(
+                  controller: _peerInput,
+                  style: const TextStyle(fontSize: 12, color: Wp.text),
+                  decoration: const InputDecoration(
+                    hintText: 'Peer ID (24 hex)',
+                    isDense: true,
                   ),
-                );
-              },
+                ),
+              ),
+              const SizedBox(width: 8),
+              OutlinedButton.icon(
+                onPressed: _addFriend,
+                style: OutlinedButton.styleFrom(
+                  foregroundColor: Wp.textDim,
+                  side: const BorderSide(color: Wp.line),
+                  padding: const EdgeInsets.symmetric(
+                      horizontal: 14, vertical: 10),
+                  textStyle: const TextStyle(
+                      fontSize: 12, fontWeight: FontWeight.w600),
+                ),
+                icon: const Icon(Icons.person_add_alt, size: 16),
+                label: const Text('Add'),
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildRequestsCard() {
+    return Container(
+      width: double.infinity,
+      color: const Color(0x1437C03A),
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Text(
+            'Friend requests',
+            style: TextStyle(
+              fontSize: 11,
+              fontWeight: FontWeight.w700,
+              color: Wp.online,
+              letterSpacing: 0.5,
             ),
           ),
-          // Composer.
-          Padding(
-            padding: const EdgeInsets.all(8),
-            child: Row(
+          for (final p in _pendingRequests)
+            Row(
               children: [
                 Expanded(
-                  child: TextField(
-                    controller: _textInput,
-                    decoration: const InputDecoration(
-                      hintText: 'Message…',
-                      border: OutlineInputBorder(),
-                      isDense: true,
-                    ),
-                    onSubmitted: (_) => _send(),
+                  child: Text(
+                    p,
+                    style: const TextStyle(fontSize: 11, color: Wp.textDim),
                   ),
                 ),
-                const SizedBox(width: 8),
-                IconButton.filled(
-                  onPressed: _send,
-                  icon: const Icon(Icons.send),
+                TextButton(
+                  onPressed: () => _accept(p),
+                  style: TextButton.styleFrom(
+                    foregroundColor: Wp.accent,
+                    textStyle: const TextStyle(
+                        fontSize: 12, fontWeight: FontWeight.w600),
+                  ),
+                  child: const Text('Accept'),
                 ),
               ],
             ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildContactsCard() {
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+      decoration: const BoxDecoration(
+        color: Wp.panel,
+        border: Border(bottom: BorderSide(color: Wp.line)),
+      ),
+      child: Wrap(
+        spacing: 8,
+        runSpacing: 6,
+        crossAxisAlignment: WrapCrossAlignment.center,
+        children: [
+          const Text(
+            'CONTACTS',
+            style: TextStyle(
+              fontSize: 10,
+              fontWeight: FontWeight.w700,
+              color: Wp.textFaint,
+              letterSpacing: 1.1,
+            ),
+          ),
+          for (final c in _contacts)
+            ActionChip(
+              label: Text(
+                c.length > 18 ? '${c.substring(0, 18)}…' : c,
+                style: const TextStyle(fontSize: 10, color: Wp.textDim),
+              ),
+              backgroundColor: Wp.panel3,
+              side: const BorderSide(color: Wp.line),
+              visualDensity: VisualDensity.compact,
+              onPressed: () => _peerInput.text = c,
+            ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildMessageList() {
+    if (_messages.isEmpty) {
+      return Center(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Image.asset('assets/whisper-logo.png', width: 64, height: 64),
+            const SizedBox(height: 14),
+            Text(
+              'No messages yet',
+              style: TextStyle(color: Wp.textFaint, fontSize: 13),
+            ),
+            const SizedBox(height: 4),
+            Text(
+              'Add a contact and whisper something',
+              style: TextStyle(color: Wp.textFaint, fontSize: 11),
+            ),
+          ],
+        ),
+      );
+    }
+    return ListView.builder(
+      controller: _scroll,
+      padding: const EdgeInsets.all(14),
+      itemCount: _messages.length,
+      itemBuilder: (context, i) => _buildBubble(_messages[i]),
+    );
+  }
+
+  Widget _buildBubble(ChatLine m) {
+    return Align(
+      alignment: m.outgoing ? Alignment.centerRight : Alignment.centerLeft,
+      child: Container(
+        margin: const EdgeInsets.symmetric(vertical: 3),
+        padding: const EdgeInsets.symmetric(horizontal: 13, vertical: 9),
+        constraints: BoxConstraints(
+          maxWidth: MediaQuery.of(context).size.width * 0.75,
+        ),
+        decoration: BoxDecoration(
+          gradient: m.outgoing
+              ? const LinearGradient(
+                  colors: [Wp.bubbleOut, Wp.bubbleOut2],
+                )
+              : null,
+          color: m.outgoing ? null : Wp.bubbleIn,
+          borderRadius: BorderRadius.only(
+            topLeft: const Radius.circular(14),
+            topRight: const Radius.circular(14),
+            bottomLeft: Radius.circular(m.outgoing ? 14 : 4),
+            bottomRight: Radius.circular(m.outgoing ? 4 : 14),
+          ),
+        ),
+        child: Text(
+          m.text,
+          style: const TextStyle(color: Wp.text, fontSize: 14, height: 1.35),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildComposer() {
+    return Container(
+      padding: const EdgeInsets.fromLTRB(12, 8, 12, 10),
+      decoration: const BoxDecoration(
+        color: Wp.panel,
+        border: Border(top: BorderSide(color: Wp.line)),
+      ),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.end,
+        children: [
+          Expanded(
+            child: TextField(
+              controller: _textInput,
+              maxLines: 1,
+              style: const TextStyle(fontSize: 14, color: Wp.text),
+              decoration: const InputDecoration(
+                hintText: 'Message…',
+              ),
+              onSubmitted: (_) => _send(),
+            ),
+          ),
+          const SizedBox(width: 8),
+          IconButton.filled(
+            onPressed: _send,
+            style: IconButton.styleFrom(
+              backgroundColor: Wp.accent,
+              foregroundColor: Wp.accentFg,
+            ),
+            icon: const Icon(Icons.send, size: 18),
           ),
         ],
       ),
