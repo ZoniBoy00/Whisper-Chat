@@ -67,7 +67,7 @@ class RustLib extends BaseEntrypoint<RustLibApi, RustLibApiImpl, RustLibWire> {
   String get codegenVersion => '2.12.0';
 
   @override
-  int get rustContentHash => -389049000;
+  int get rustContentHash => 445404312;
 
   static const kDefaultExternalLibraryLoaderConfig =
       ExternalLibraryLoaderConfig(
@@ -115,6 +115,11 @@ abstract class RustLibApi extends BaseApi {
 
   Future<List<ChatEvent>> crateApiWhisperWhisperClientTakeEvents({
     required WhisperClient that,
+  });
+
+  Future<void> crateApiWhisperWhisperClientWatchPresence({
+    required WhisperClient that,
+    required String peerId,
   });
 
   Future<IdentityInfo> crateApiWhisperIdentityCreate();
@@ -463,6 +468,44 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       );
 
   @override
+  Future<void> crateApiWhisperWhisperClientWatchPresence({
+    required WhisperClient that,
+    required String peerId,
+  }) {
+    return handler.executeNormal(
+      NormalTask(
+        callFfi: (port_) {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerWhisperClient(
+            that,
+            serializer,
+          );
+          sse_encode_String(peerId, serializer);
+          pdeCallFfi(
+            generalizedFrbRustBinding,
+            serializer,
+            funcId: 10,
+            port: port_,
+          );
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_unit,
+          decodeErrorData: sse_decode_String,
+        ),
+        constMeta: kCrateApiWhisperWhisperClientWatchPresenceConstMeta,
+        argValues: [that, peerId],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateApiWhisperWhisperClientWatchPresenceConstMeta =>
+      const TaskConstMeta(
+        debugName: "WhisperClient_watch_presence",
+        argNames: ["that", "peerId"],
+      );
+
+  @override
   Future<IdentityInfo> crateApiWhisperIdentityCreate() {
     return handler.executeNormal(
       NormalTask(
@@ -471,7 +514,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 10,
+            funcId: 11,
             port: port_,
           );
         },
@@ -499,7 +542,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 11,
+            funcId: 12,
             port: port_,
           );
         },
@@ -527,7 +570,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 12,
+            funcId: 13,
             port: port_,
           );
         },
@@ -963,4 +1006,8 @@ class WhisperClientImpl extends RustOpaque implements WhisperClient {
   /// Drain all pending events (polled by the UI, e.g. once per second).
   Future<List<ChatEvent>> takeEvents() =>
       RustLib.instance.api.crateApiWhisperWhisperClientTakeEvents(that: this);
+
+  /// Subscribe to online/offline pushes for `peer_id`.
+  Future<void> watchPresence({required String peerId}) => RustLib.instance.api
+      .crateApiWhisperWhisperClientWatchPresence(that: this, peerId: peerId);
 }

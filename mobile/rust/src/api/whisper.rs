@@ -59,6 +59,9 @@ enum ClientMessage {
     },
     GetFriendRequests,
     ListContacts,
+    WatchPresence {
+        peer_id: String,
+    },
 }
 
 /// The routing envelope the relay understands (payload = base64 JSON).
@@ -297,6 +300,11 @@ impl WhisperClient {
     /// Ask the relay for pending friend requests.
     pub async fn refresh_friend_requests(&self) -> Result<(), String> {
         self.send(&ClientMessage::GetFriendRequests).await
+    }
+
+    /// Subscribe to online/offline pushes for `peer_id`.
+    pub async fn watch_presence(&self, peer_id: String) -> Result<(), String> {
+        self.send(&ClientMessage::WatchPresence { peer_id }).await
     }
 
     /// Send a text message to `peer_id`, establishing a Double Ratchet
