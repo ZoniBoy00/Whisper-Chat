@@ -26,7 +26,10 @@ base64 = "0.23"
 futures-util = "0.3"
 thiserror = "2"
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "net", "time", "sync"] }
-tokio-tungstenite = "0.30"
+# WebSocket client with TLS: `rustls-tls-native-roots` enables `wss://`
+# connections (the deployed relay terminates TLS behind nginx/Caddy) using
+# the OS certificate store — pure Rust, no extra OpenSSL dependency.
+tokio-tungstenite = { version = "0.30", features = ["rustls-tls-native-roots"] }
 vodozemac = "0.10"
 sha2 = "0.11"
 # Password-encrypted full backups: Argon2id (KDF) + AES-256-GCM (AEAD) over

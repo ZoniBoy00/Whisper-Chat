@@ -3312,6 +3312,22 @@ fn write_guard<T>(lock: &RwLock<T>) -> Result<RwLockWriteGuard<'_, T>, RelayErro
 mod tests {
     use super::*;
 
+    #[tokio::test]
+    async fn wss_urls_attempt_tls_instead_of_failing_on_scheme() {
+        // Guards the `rustls-tls-native-roots` feature: without it,
+        // `connect_async` rejects `wss://` URLs outright with "URL scheme not
+        // supported". Here no relay runs, so we only assert the failure is a
+        // transport error (nothing is listening on the port), proving the TLS
+        // stack actually attempted the connection.
+        let err = tokio_tungstenite::connect_async("wss://127.0.0.1:1/ws")
+            .await
+            .expect_err("connecting to a closed port must fail");
+        assert!(
+            !err.to_string().contains("scheme"),
+            "wss:// rejected before TLS attempt (feature missing?): {err}"
+        );
+    }
+
     #[test]
     fn hello_serializes_to_relay_wire_format() {
         let identity = Identity::new();
