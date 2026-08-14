@@ -31,6 +31,26 @@ Future<String> inviteLink({required String json}) =>
 Future<bool> isValidPeerId({required String peerId}) =>
     RustLib.instance.api.crateApiWhisperIsValidPeerId(peerId: peerId);
 
+/// Compute the 60-digit safety number for our identity vs `their_curve25519`
+/// (base64 X25519 public key from a profile). Returns an error for an
+/// invalid key.
+Future<String> safetyNumber({
+  required String identityJson,
+  required String theirCurve25519,
+}) => RustLib.instance.api.crateApiWhisperSafetyNumber(
+  identityJson: identityJson,
+  theirCurve25519: theirCurve25519,
+);
+
+/// Short 12-digit safety number fragment for compact surfaces.
+Future<String> shortSafetyNumber({
+  required String identityJson,
+  required String theirCurve25519,
+}) => RustLib.instance.api.crateApiWhisperShortSafetyNumber(
+  identityJson: identityJson,
+  theirCurve25519: theirCurve25519,
+);
+
 // Rust type: RustOpaqueMoi<flutter_rust_bridge::for_generated::RustAutoOpaqueInner<WhisperClient>>
 abstract class WhisperClient implements RustOpaqueInterface {
   Future<void> acceptFriendRequest({required String peer});
@@ -144,6 +164,14 @@ abstract class WhisperClient implements RustOpaqueInterface {
   Future<void> sendReadReceipt({
     required String peerId,
     required String messageId,
+  });
+
+  /// Upload (or replace) our avatar: base64 image blob (= 2 MiB), reuses
+  /// the signed profile registration so the username binding stays valid.
+  Future<void> setAvatar({
+    required String username,
+    required String signature,
+    required String avatarB64,
   });
 
   /// Set our public display name.

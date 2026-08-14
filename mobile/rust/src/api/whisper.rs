@@ -368,6 +368,42 @@ pub fn is_valid_peer_id(peer_id: &str) -> bool {
     peer_id.len() == 24 && peer_id.bytes().all(|b| b.is_ascii_hexdigit())
 }
 
+/// Compute the 60-digit safety number for our identity vs `their_curve25519`
+/// (base64 X25519 public key from a profile). Returns an error for an
+/// invalid key.
+pub fn safety_number(identity_json: &str, their_curve25519: &str) -> Result<String, String> {
+    use base64::Engine as _;
+    let identity = Identity::from_json(identity_json).map_err(|e| e.to_string())?;
+    let their_bytes = B64
+        .decode(their_curve25519)
+        .map_err(|_| "invalid curve25519 key".to_string())?;
+    let their_key = vodozemac::Curve25519PublicKey::from_bytes(
+        their_bytes
+            .as_slice()
+            .try_into()
+            .map_err(|_| "curve25519 key must be 32 bytes".to_string())?,
+    );
+    Ok(e2ee_core::safety_number(&identity.curve25519_key(), &their_key))
+}
+
+/// Short 12-digit safety number fragment for compact surfaces.
+pub fn short_safety_number(identity_json: &str, their_curve25519: &str) -> Result<String, String> {
+    let identity = Identity::from_json(identity_json).map_err(|e| e.to_string())?;
+    let their_bytes = B64
+        .decode(their_curve25519)
+        .map_err(|_| "invalid curve25519 key".to_string())?;
+    let their_key = vodozemac::Curve25519PublicKey::from_bytes(
+        their_bytes
+            .as_slice()
+            .try_into()
+            .map_err(|_| "curve25519 key must be 32 bytes".to_string())?,
+    );
+    Ok(e2ee_core::short_safety_number(
+        &identity.curve25519_key(),
+        &their_key,
+    ))
+}
+
 // ---------------------------------------------------------------------------
 // The relay client
 // ---------------------------------------------------------------------------
@@ -521,6 +557,23 @@ impl WhisperClient {
     /// Set our public display name.
     pub async fn set_display_name(&self, display_name: String) -> Result<(), String> {
         self.send(&ClientMessage::UpdateProfile { display_name }).await
+    }
+
+    /// Upload (or replace) our avatar: base64 image blob (= 2 MiB), reuses
+    /// the signed profile registration so the username binding stays valid.
+    pub async fn set_avatar(
+        &self,
+        username: String,
+        signature: String,
+        avatar_b64: String,
+    ) -> Result<(), String> {
+        self.send(&ClientMessage::RegisterProfile {
+            username,
+            signature,
+            display_name: None,
+            avatar: Some(avatar_b64),
+        })
+        .await
     }
 
     /// Search the public directory by username / peer ID.
@@ -1017,13 +1070,14 @@ impl WhisperClient {
                 peer_id,
                 display_name,
                 avatar_url,
-                ..
+                curve25519_key,
             } => {
                 let line = format!(
-                    "{}|{}|{}",
+                    "{}|{}|{}|{}",
                     username.unwrap_or_default(),
                     display_name.unwrap_or_default(),
-                    avatar_url.unwrap_or_default()
+                    avatar_url.unwrap_or_default(),
+                    curve25519_key.unwrap_or_default()
                 );
                 self.push_event("profile", &peer_id, Some(line), None);
             }

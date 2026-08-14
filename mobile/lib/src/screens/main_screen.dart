@@ -9,6 +9,7 @@ import '../rust/api/whisper.dart' as core;
 import '../theme.dart';
 import '../widgets/avatar.dart';
 import 'group_info_screen.dart';
+import 'profile_screen.dart';
 import 'settings_screen.dart';
 
 /// One chat line in a conversation (1:1 or group).
@@ -69,6 +70,8 @@ class _MainScreenState extends State<MainScreen> {
   final _presence = <String, String>{};
   final _groups = <WhisperGroup>[];
   final _groupInvites = <String>[]; // "groupId|name|inviter"
+  final _chatExpiry = <String, int>{}; // peer -> seconds (0 = off)
+  final _peerCurveKeys = <String, String>{}; // peer -> curve25519 b64
   String? _activePeer;
   bool _connected = false;
   String _status = 'Not connected';
@@ -207,6 +210,12 @@ class _MainScreenState extends State<MainScreen> {
           final existing = _groups.indexWhere((g) => g.id == e.peerId);
           if (existing >= 0) {
             _groups[existing] = WhisperGroup(e.peerId, e.text ?? '');
+          }
+        case 'profile':
+          final parts = (e.text ?? '').split('|');
+          // username | display_name | avatar_url | curve25519
+          if (parts.length > 3 && parts[3].isNotEmpty) {
+            _peerCurveKeys[e.peerId] = parts[3];
           }
         case 'error':
           _status = e.error ?? 'Error';
@@ -366,7 +375,14 @@ class _MainScreenState extends State<MainScreen> {
       await widget.client.sendGroupMessage(
           groupId: peer.substring(6), text: text.trim());
     } else {
-      await widget.client.sendMessage(peerId: peer, text: text.trim());
+      final expiry = _chatExpiry[peer];
+      await widget.client.sendMessageFull(
+        peerId: peer,
+        text: text.trim(),
+        quote: null,
+        messageId: null,
+        expiresInSeconds: (expiry != null && expiry > 0) ? BigInt.from(expiry) : null,
+      );
     }
   }
 
@@ -444,13 +460,16 @@ class _MainScreenState extends State<MainScreen> {
     return Scaffold(
       backgroundColor: Wp.bg,
       body: SafeArea(
-        child: Row(
-          children: [
-            _buildSidebar(),
-            VerticalDivider(width: 1, color: Wp.line),
-            Expanded(child: _buildChatPane()),
-          ],
-        ),
+        child: _activePeer == null
+            // No chat selected: the sidebar fills the whole screen.
+            ? _buildSidebar()
+            : Row(
+                children: [
+                  _buildSidebar(),
+                  VerticalDivider(width: 1, color: Wp.line),
+                  Expanded(child: _buildChatPane()),
+                ],
+              ),
       ),
     );
   }
@@ -934,33 +953,9 @@ class _MainScreenState extends State<MainScreen> {
   Widget _buildChatPane() {
     final peer = _activePeer;
     if (peer == null) {
-      return Center(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Container(
-              width: 80,
-              height: 80,
-              decoration: BoxDecoration(
-                color: Wp.panel,
-                borderRadius: BorderRadius.circular(24),
-              ),
-              child: Icon(Icons.chat_bubble_outline,
-                  size: 32, color: Wp.textFaint),
-            ),
-            const SizedBox(height: 16),
-            Text(
-              'Select a conversation',
-              style: TextStyle(color: Wp.textFaint, fontSize: 14),
-            ),
-            const SizedBox(height: 4),
-            Text(
-              'Your messages are end-to-end encrypted',
-              style: TextStyle(color: Wp.textFaint, fontSize: 12),
-            ),
-          ],
-        ),
-      );
+      // Mobile: no empty "select a conversation" pane — the sidebar fills
+      // the whole screen until a chat is chosen.
+      return const SizedBox.shrink();
     }
     final msgs = _messages[peer] ?? [];
     return Column(
@@ -1119,6 +1114,7 @@ class _MainScreenState extends State<MainScreen> {
         ? (_groups.where((g) => 'group:${g.id}' == peer).map((g) => g.name).firstOrNull ??
             'Group')
         : _short(peer, 32);
+    final expiry = _chatExpiry[peer] ?? 0;
     return Container(
       width: double.infinity,
       padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
@@ -1128,7 +1124,12 @@ class _MainScreenState extends State<MainScreen> {
       ),
       child: Row(
         children: [
-          WpAvatar(name: displayName, size: 36, group: isGroup),
+          GestureDetector(
+            onTap: isGroup
+                ? () => _openGroupInfo(peer.substring(6))
+                : () => _openProfile(peer),
+            child: WpAvatar(name: displayName, size: 36, group: isGroup),
+          ),
           const SizedBox(width: 12),
           Expanded(
             child: Column(
@@ -1158,6 +1159,13 @@ class _MainScreenState extends State<MainScreen> {
               ],
             ),
           ),
+          if (!isGroup)
+            _IconBtn(
+              icon: Icons.timer_outlined,
+              tooltip: 'Disappearing messages',
+              onTap: () => _pickExpiry(peer),
+              hoverColor: expiry > 0 ? Wp.accent : Wp.text,
+            ),
           if (isGroup)
             _IconBtn(
               icon: Icons.info_outline,
@@ -1165,6 +1173,88 @@ class _MainScreenState extends State<MainScreen> {
               onTap: () => _openGroupInfo(peer.substring(6)),
             ),
         ],
+      ),
+    );
+  }
+
+  Future<void> _pickExpiry(String peer) async {
+    const options = [
+      (0, 'Off'),
+      (5, '5 seconds'),
+      (30, '30 seconds'),
+      (60, '1 minute'),
+      (3600, '1 hour'),
+      (86400, '1 day'),
+    ];
+    final current = _chatExpiry[peer] ?? 0;
+    final choice = await showDialog<int>(
+      context: context,
+      builder: (ctx) => SimpleDialog(
+        backgroundColor: Wp.panel,
+        title: const Text('Disappearing messages',
+            style: TextStyle(color: Wp.text, fontSize: 16)),
+        children: [
+          for (final (secs, label) in options)
+            SimpleDialogOption(
+              onPressed: () => Navigator.pop(ctx, secs),
+              child: Row(
+                children: [
+                  Icon(
+                    current == secs ? Icons.check_circle : Icons.circle_outlined,
+                    size: 16,
+                    color: current == secs ? Wp.accent : Wp.textFaint,
+                  ),
+                  const SizedBox(width: 10),
+                  Text(label,
+                      style: TextStyle(
+                        color: Wp.text,
+                        fontSize: 13,
+                        fontWeight:
+                            current == secs ? FontWeight.w600 : FontWeight.w400,
+                      )),
+                ],
+              ),
+            ),
+        ],
+      ),
+    );
+    if (choice != null) {
+      setState(() => _chatExpiry[peer] = choice);
+    }
+  }
+
+  Future<void> _openProfile(String peer) async {
+    final prefs = await SharedPreferences.getInstance();
+    final identityJson = prefs.getString('identity_json') ?? '';
+    // Fetch a fresh profile to get the curve25519 key for the safety number.
+    await widget.client.getProfile(peerId: peer);
+    // Poll briefly for the profile reply carrying the key.
+    for (var i = 0; i < 10; i++) {
+      await Future.delayed(const Duration(milliseconds: 200));
+      final events = await widget.client.takeEvents();
+      for (final e in events) {
+        if (e.kind == 'profile' && e.peerId == peer) {
+          final parts = (e.text ?? '').split('|');
+          if (parts.length > 3 && parts[3].isNotEmpty) {
+            _peerCurveKeys[peer] = parts[3];
+          }
+        }
+      }
+      if (_peerCurveKeys[peer] != null) break;
+    }
+    if (!mounted) return;
+    await Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (_) => ProfileScreen(
+          client: widget.client,
+          identityJson: identityJson,
+          myPeerId: widget.peerId,
+          peerId: peer,
+          isSelf: false,
+          displayName: _short(peer, 24),
+          curve25519Key: _peerCurveKeys[peer],
+        ),
       ),
     );
   }
