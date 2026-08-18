@@ -9,11 +9,12 @@ sender and the recipient can read them.
 
 [![CI](https://img.shields.io/badge/CI-passing-brightgreen)](.github/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](#license)
-![Rust](https://img.shields.io/badge/Rust-1.75%2B-orange)
+![Rust](https://img.shields.io/badge/Rust-stable-orange)
 ![crypto: vodozemac](https://img.shields.io/badge/crypto-vodozemac-blue)
 
-> **Status:** The repository is currently **private**. It will be open-sourced
-> at the public beta. Everything below is fully working today.
+> **Status:** The repository is currently **private** and in pre-beta testing.
+> The local MVP is feature-complete; public release is blocked by the real
+> two-machine E2EE test on the deployed relay.
 
 ---
 
@@ -241,15 +242,16 @@ rate limiting reads the real client IP from the forwarded headers.
 ```sh
 cd desktop
 npm install
-npm run build        # frontend: tsc + vite build
+npm run build        # frontend: TypeScript 7 + vite build
 cargo check          # Tauri shell compiles against the shared core
 ```
 
-### 5. Smoke test (relay must be running)
+### 5. Smoke test
 
 ```sh
-cd server
-node tests/smoke.mjs   # expects the relay on ws://127.0.0.1:8080/ws
+bash scripts/run-smoke.sh  # picks a free localhost port automatically
+# Optional fixed port:
+WHISPER_SMOKE_PORT=18080 bash scripts/run-smoke.sh
 ```
 
 ### 6. Workspace tests
@@ -264,6 +266,11 @@ cargo test -p e2ee-core -p whisper-relay
 # Lint & format
 cargo clippy --workspace -- -D warnings
 cargo fmt --check
+
+# Desktop frontend (TypeScript 7)
+cd desktop
+npm ci
+npm run build
 ```
 
 > **Windows note:** `cargo test --workspace` requires MSVC Build Tools +
