@@ -14,14 +14,13 @@
 //! of kind `Message`), never through the zero-knowledge relay. The server only
 //! routes opaque envelopes and group metadata.
 //!
-//! # Known limitations (MVP)
+//! # Core API limitations
 //!
-//! - Ratchet rotation is not implemented yet: a single `session_key` is shared
-//!   at join time and never rotated. Members who join later cannot decrypt
-//!   earlier messages (their inbound session starts at the current ratchet
-//!   index). Rotation via fresh `session_key` shares is a follow-up.
-//! - For a group with several senders each sender needs its own outbound
-//!   session and key; the current API models a single creator/sender.
+//! This low-level crate models one outbound/inbound Megolm session pair. The
+//! desktop relay layer owns multi-sender orchestration and rotates outbound
+//! group keys every 200 messages by distributing fresh keys over 1:1 E2EE.
+//! Members who join later cannot decrypt earlier messages; they receive the
+//! current session state through the normal group key-sharing flow.
 
 use std::fmt;
 
