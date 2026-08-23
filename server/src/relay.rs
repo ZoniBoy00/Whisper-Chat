@@ -58,6 +58,7 @@ use e2ee_core::prekey::PreKeyBundle;
 use e2ee_core::{Identity, SignedHello};
 use futures_util::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use tokio::sync::{mpsc, RwLock};
 
 use ratelimit::RateLimiter;
@@ -80,6 +81,10 @@ pub(crate) const MAX_GROUP_NAME_CHARS: usize = 64;
 /// Subdirectory (next to the SQLite database) where avatar blobs are stored
 /// as `<sha256>.bin`.
 const MEDIA_SUBDIR: &str = "media";
+
+/// Hard upper bound for one encrypted media upload. Operators can choose a
+/// lower limit with `WHISPER_MEDIA_MAX_BYTES`.
+pub(crate) const MAX_MEDIA_BYTES: usize = 100 * 1024 * 1024;
 
 // ---------------------------------------------------------------------------
 // Wire format
@@ -554,6 +559,14 @@ pub struct Relay {
     pub(crate) inner: Arc<RelayInner>,
 }
 
+/// Failure returned by the opaque media blob store.
+#[derive(Debug)]
+pub(crate) enum MediaStoreError {
+    Empty,
+    RateLimited,
+    Io(std::io::Error),
+}
+
 /// Shared relay state, reachable through the [`Relay`] handle.
 pub(crate) struct RelayInner {
     /// Online peers: peer_id -> outbound channel.
@@ -570,6 +583,8 @@ pub(crate) struct RelayInner {
     pub(crate) contacts_limiter: RateLimiter,
     /// Directory holding uploaded avatar blobs (`<sha256>.bin`).
     pub(crate) media_dir: PathBuf,
+    /// Per-IP guard for encrypted media uploads.
+    pub(crate) media_limiter: RateLimiter,
     /// Lightweight operational counters for the optional `/metrics` endpoint.
     pub(crate) metrics: Metrics,
 }
@@ -611,6 +626,7 @@ impl Relay {
             RateLimiter::from_env(),
             RateLimiter::from_profile_env(),
             RateLimiter::from_contacts_env(),
+            RateLimiter::from_media_env(),
         )
     }
 
@@ -623,6 +639,7 @@ impl Relay {
             RateLimiter::from_env(),
             RateLimiter::from_profile_env(),
             RateLimiter::from_contacts_env(),
+            RateLimiter::from_media_env(),
         )
     }
 
@@ -633,6 +650,7 @@ impl Relay {
         Self::with_parts(
             store,
             Self::default_media_dir(),
+            RateLimiter::new(burst, refill),
             RateLimiter::new(burst, refill),
             RateLimiter::new(burst, refill),
             RateLimiter::new(burst, refill),
@@ -647,6 +665,7 @@ impl Relay {
         limiter: RateLimiter,
         profile_limiter: RateLimiter,
         contacts_limiter: RateLimiter,
+        media_limiter: RateLimiter,
     ) -> Self {
         Self {
             inner: Arc::new(RelayInner {
@@ -657,6 +676,7 @@ impl Relay {
                 profile_limiter,
                 contacts_limiter,
                 media_dir,
+                media_limiter,
                 metrics: Metrics::default(),
             }),
         }
@@ -668,8 +688,58 @@ impl Relay {
         let inner = &self.inner;
         let rate_limited = inner.limiter.rejected_count()
             + inner.profile_limiter.rejected_count()
-            + inner.contacts_limiter.rejected_count();
+            + inner.contacts_limiter.rejected_count()
+            + inner.media_limiter.rejected_count();
         inner.metrics.snapshot(rate_limited)
+    }
+
+    /// Store an encrypted media blob content-addressed by its SHA-256 hash.
+    /// The relay never knows the original MIME type, filename or encryption
+    /// key; it only stores opaque bytes.
+    pub(crate) async fn store_media(
+        &self,
+        ip: &str,
+        bytes: &[u8],
+    ) -> Result<String, MediaStoreError> {
+        if !self.inner.media_limiter.try_take(&format!("media:{ip}")) {
+            return Err(MediaStoreError::RateLimited);
+        }
+        if bytes.is_empty() {
+            return Err(MediaStoreError::Empty);
+        }
+        let hash = Sha256::digest(bytes)
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>();
+        tokio::fs::create_dir_all(&self.inner.media_dir)
+            .await
+            .map_err(MediaStoreError::Io)?;
+        let path = self.media_path(&hash);
+        if tokio::fs::try_exists(&path)
+            .await
+            .map_err(MediaStoreError::Io)?
+        {
+            return Ok(hash);
+        }
+
+        let temp = self
+            .inner
+            .media_dir
+            .join(format!(".{hash}.{}.tmp", uuid::Uuid::new_v4()));
+        tokio::fs::write(&temp, bytes)
+            .await
+            .map_err(MediaStoreError::Io)?;
+        match tokio::fs::rename(&temp, &path).await {
+            Ok(()) => Ok(hash),
+            Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => {
+                let _ = tokio::fs::remove_file(&temp).await;
+                Ok(hash)
+            }
+            Err(err) => {
+                let _ = tokio::fs::remove_file(&temp).await;
+                Err(MediaStoreError::Io(err))
+            }
+        }
     }
 
     /// The media directory used when no database path is known: `data/media`
@@ -1381,6 +1451,30 @@ mod tests {
         assert!(relay
             .metrics_snapshot()
             .contains("whisper_rate_limited_total 1"));
+    }
+
+    #[tokio::test]
+    async fn media_upload_is_content_addressed_and_deduplicated() {
+        let store = Store::open_in_memory().unwrap();
+        let media_dir =
+            std::env::temp_dir().join(format!("whisper-media-test-{}", uuid::Uuid::new_v4()));
+        let relay = Relay::with_parts(
+            store,
+            media_dir.clone(),
+            RateLimiter::new(100.0, 0.0),
+            RateLimiter::new(100.0, 0.0),
+            RateLimiter::new(100.0, 0.0),
+            RateLimiter::new(100.0, 0.0),
+        );
+        let blob = b"WHM1 encrypted bytes";
+        let first = relay.store_media("127.0.0.1", blob).await.unwrap();
+        let second = relay.store_media("127.0.0.1", blob).await.unwrap();
+        assert_eq!(first, second);
+        assert_eq!(
+            tokio::fs::read(relay.media_path(&first)).await.unwrap(),
+            blob
+        );
+        let _ = tokio::fs::remove_dir_all(media_dir).await;
     }
 
     #[tokio::test]

@@ -888,6 +888,10 @@ impl RelayClient {
                     text.expires_in_seconds,
                 )?))
             }
+            // Media metadata is intentionally not rendered as plaintext. The
+            // Rust media-cache integration will fetch and decrypt it before it
+            // is exposed to the UI.
+            e2ee_core::ParsedPayload::Media(_) => Ok(None),
         }
     }
 

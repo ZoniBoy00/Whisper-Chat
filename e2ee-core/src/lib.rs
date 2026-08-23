@@ -26,6 +26,7 @@
 
 pub mod group;
 pub mod identity;
+pub mod media;
 pub mod payload;
 pub mod prekey;
 pub mod profile;
@@ -34,7 +35,7 @@ pub mod session;
 pub mod wire;
 
 pub use payload::{
-    parse_plaintext, ChatPayload, DeletePayload, EditPayload, ParsedPayload, Quote,
+    parse_plaintext, ChatPayload, DeletePayload, EditPayload, MediaPayload, ParsedPayload, Quote,
     ReactionPayload, ReadPayload, TextPayload, TypingPayload,
 };
 pub use safety::{

@@ -217,6 +217,8 @@ Copy `server/.env.example` and adjust (or export directly):
 | `WHISPER_DB_PATH`   | `data/relay.db`  | SQLite database location             |
 | `WHISPER_RATE_BURST`| `60`             | Max envelope burst per IP            |
 | `WHISPER_RATE_REFILL`| `1`             | Tokens refilled per second (~60/min) |
+| `WHISPER_MEDIA_MAX_BYTES` | `104857600` | Maximum encrypted media upload size (100 MiB) |
+| `WHISPER_MEDIA_RATE_BURST` / `WHISPER_MEDIA_RATE_REFILL` | `10` / `0.1667` | Per-IP encrypted media upload bucket |
 | `WHISPER_TRUSTED_PROXIES` | *(empty)* | Comma/space-separated trusted proxy IPs; forwarded headers are only honored from these, so per-IP rate limiting sees the real client behind nginx/Caddy/Cloudflare (empty = direct connections only) |
 | `WHISPER_METRICS`   | `0`             | Set to `1` to enable the `/metrics` endpoint (envelope throughput, rate-limit hits, active connections; Prometheus format) |
 | `RUST_LOG`          | `info`           | Log level                            |

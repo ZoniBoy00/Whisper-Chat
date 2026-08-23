@@ -23,6 +23,7 @@
 //! cipher like any other plaintext. The relay therefore only ever sees the
 //! ciphertext of a [`crate::wire::EnvelopeContent::Message`].
 
+use base64::{engine::general_purpose, Engine as _};
 use serde::{Deserialize, Serialize};
 
 /// The decrypted plaintext of an inbound chat message.
@@ -43,6 +44,8 @@ pub enum ParsedPayload {
     Edit(EditPayload),
     /// A request to delete an earlier message on every recipient's device.
     Delete(DeletePayload),
+    /// Encrypted media metadata and the key needed to fetch and decrypt it.
+    Media(MediaPayload),
 }
 
 /// The tagged wire form of a modern payload. The `kind` field selects the
@@ -63,6 +66,120 @@ pub enum ChatPayload {
     Edit(EditPayload),
     /// Delete an earlier message on every recipient's device.
     Delete(DeletePayload),
+    /// Metadata for an encrypted media blob stored by its hash.
+    Media(MediaPayload),
+}
+
+/// Metadata carried inside the E2EE message for one encrypted media blob.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct MediaPayload {
+    pub message_id: String,
+    pub hash: String,
+    pub key: String,
+    pub mime: String,
+    pub size: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub duration_ms: Option<u64>,
+}
+
+#[derive(Deserialize)]
+struct RawMediaPayload {
+    message_id: String,
+    hash: String,
+    key: String,
+    mime: String,
+    size: u64,
+    #[serde(default)]
+    name: Option<String>,
+    #[serde(default)]
+    duration_ms: Option<u64>,
+}
+
+impl<'de> Deserialize<'de> for MediaPayload {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let raw = RawMediaPayload::deserialize(deserializer)?;
+        Self::new(
+            raw.message_id,
+            raw.hash,
+            raw.key,
+            raw.mime,
+            raw.size,
+            raw.name,
+            raw.duration_ms,
+        )
+        .map_err(serde::de::Error::custom)
+    }
+}
+
+impl MediaPayload {
+    /// Construct metadata after checking all fields that are security-relevant
+    /// or would otherwise make the wire representation ambiguous.
+    pub fn new(
+        message_id: impl Into<String>,
+        hash: impl Into<String>,
+        key: impl Into<String>,
+        mime: impl Into<String>,
+        size: u64,
+        name: Option<String>,
+        duration_ms: Option<u64>,
+    ) -> Result<Self, String> {
+        let payload = Self {
+            message_id: message_id.into(),
+            hash: hash.into(),
+            key: key.into(),
+            mime: mime.into(),
+            size,
+            name,
+            duration_ms,
+        };
+        payload.validate()?;
+        Ok(payload)
+    }
+
+    /// Validate metadata received from an untrusted peer.
+    pub fn validate(&self) -> Result<(), String> {
+        if self.message_id.is_empty() || self.message_id.len() > 256 {
+            return Err("invalid media message_id".into());
+        }
+        if self.hash.len() != 64 || !self.hash.bytes().all(|b| b.is_ascii_hexdigit()) {
+            return Err("invalid media hash".into());
+        }
+        if decode_key(&self.key).is_none() {
+            return Err("invalid media key".into());
+        }
+        if self.mime.is_empty()
+            || self.mime.len() > 255
+            || self.mime.bytes().any(|b| b.is_ascii_control())
+        {
+            return Err("invalid media mime".into());
+        }
+        if self.name.as_ref().is_some_and(|name| {
+            name.is_empty() || name.len() > 255 || name.bytes().any(|b| b.is_ascii_control())
+        }) {
+            return Err("invalid media name".into());
+        }
+        Ok(())
+    }
+
+    /// Decode the per-file AES-256 key.
+    pub fn key_bytes(&self) -> Option<[u8; 32]> {
+        decode_key(&self.key).and_then(|bytes| bytes.try_into().ok())
+    }
+}
+
+fn decode_key(value: &str) -> Option<Vec<u8>> {
+    general_purpose::STANDARD
+        .decode(value)
+        .or_else(|_| general_purpose::STANDARD_NO_PAD.decode(value))
+        .or_else(|_| general_purpose::URL_SAFE.decode(value))
+        .or_else(|_| general_purpose::URL_SAFE_NO_PAD.decode(value))
+        .ok()
+        .filter(|bytes| bytes.len() == 32)
 }
 
 /// An ordinary text message with an optional quoted reply context.
@@ -296,6 +413,12 @@ pub fn parse_plaintext(bytes: &[u8]) -> ParsedPayload {
             ChatPayload::Read(read) => ParsedPayload::Read(read),
             ChatPayload::Edit(edit) => ParsedPayload::Edit(edit),
             ChatPayload::Delete(delete) => ParsedPayload::Delete(delete),
+            ChatPayload::Media(media) if media.validate().is_ok() => ParsedPayload::Media(media),
+            ChatPayload::Media(_) => {
+                return ParsedPayload::Text(TextPayload::new(
+                    String::from_utf8_lossy(bytes).to_string(),
+                ))
+            }
         };
     }
     let text = String::from_utf8_lossy(bytes).to_string();
@@ -322,7 +445,8 @@ mod tests {
             | ChatPayload::Typing(_)
             | ChatPayload::Read(_)
             | ChatPayload::Edit(_)
-            | ChatPayload::Delete(_) => {
+            | ChatPayload::Delete(_)
+            | ChatPayload::Media(_) => {
                 panic!("expected text payload")
             }
         }
@@ -427,7 +551,8 @@ mod tests {
             | ParsedPayload::Typing(_)
             | ParsedPayload::Read(_)
             | ParsedPayload::Edit(_)
-            | ParsedPayload::Delete(_) => {
+            | ParsedPayload::Delete(_)
+            | ParsedPayload::Media(_) => {
                 panic!("expected text")
             }
         }
@@ -447,7 +572,8 @@ mod tests {
             | ParsedPayload::Typing(_)
             | ParsedPayload::Read(_)
             | ParsedPayload::Edit(_)
-            | ParsedPayload::Delete(_) => {
+            | ParsedPayload::Delete(_)
+            | ParsedPayload::Media(_) => {
                 panic!("expected text")
             }
         }
@@ -465,7 +591,8 @@ mod tests {
             | ParsedPayload::Typing(_)
             | ParsedPayload::Read(_)
             | ParsedPayload::Edit(_)
-            | ParsedPayload::Delete(_) => {
+            | ParsedPayload::Delete(_)
+            | ParsedPayload::Media(_) => {
                 panic!("expected text")
             }
         }
@@ -485,7 +612,8 @@ mod tests {
             | ChatPayload::Typing(_)
             | ChatPayload::Read(_)
             | ChatPayload::Edit(_)
-            | ChatPayload::Delete(_) => {
+            | ChatPayload::Delete(_)
+            | ChatPayload::Media(_) => {
                 panic!("expected text")
             }
         }
@@ -510,7 +638,8 @@ mod tests {
             | ChatPayload::Typing(_)
             | ChatPayload::Read(_)
             | ChatPayload::Edit(_)
-            | ChatPayload::Delete(_) => {
+            | ChatPayload::Delete(_)
+            | ChatPayload::Media(_) => {
                 panic!("expected text")
             }
         }
@@ -537,7 +666,8 @@ mod tests {
             | ParsedPayload::Typing(_)
             | ParsedPayload::Read(_)
             | ParsedPayload::Edit(_)
-            | ParsedPayload::Delete(_) => {
+            | ParsedPayload::Delete(_)
+            | ParsedPayload::Media(_) => {
                 panic!("expected text")
             }
         }
@@ -554,7 +684,8 @@ mod tests {
             | ParsedPayload::Typing(_)
             | ParsedPayload::Read(_)
             | ParsedPayload::Edit(_)
-            | ParsedPayload::Delete(_) => {
+            | ParsedPayload::Delete(_)
+            | ParsedPayload::Media(_) => {
                 panic!("expected text")
             }
         }
@@ -568,7 +699,8 @@ mod tests {
             | ParsedPayload::Typing(_)
             | ParsedPayload::Read(_)
             | ParsedPayload::Edit(_)
-            | ParsedPayload::Delete(_) => {
+            | ParsedPayload::Delete(_)
+            | ParsedPayload::Media(_) => {
                 panic!("expected text")
             }
         }
@@ -626,7 +758,8 @@ mod tests {
             | ChatPayload::Typing(_)
             | ChatPayload::Edit(_)
             | ChatPayload::Delete(_)
-            | ChatPayload::Text(_) => panic!("expected read"),
+            | ChatPayload::Text(_)
+            | ChatPayload::Media(_) => panic!("expected read"),
         }
 
         let bytes = "{\"kind\":\"read\",\"message_id\":\"out-7\"}".as_bytes();
@@ -636,7 +769,8 @@ mod tests {
             | ParsedPayload::Typing(_)
             | ParsedPayload::Edit(_)
             | ParsedPayload::Delete(_)
-            | ParsedPayload::Text(_) => panic!("expected read payload"),
+            | ParsedPayload::Text(_)
+            | ParsedPayload::Media(_) => panic!("expected read payload"),
         }
     }
 
@@ -693,7 +827,8 @@ mod tests {
             | ParsedPayload::Typing(_)
             | ParsedPayload::Read(_)
             | ParsedPayload::Edit(_)
-            | ParsedPayload::Delete(_) => {
+            | ParsedPayload::Delete(_)
+            | ParsedPayload::Media(_) => {
                 panic!("expected text")
             }
         }
@@ -711,7 +846,8 @@ mod tests {
             | ParsedPayload::Typing(_)
             | ParsedPayload::Read(_)
             | ParsedPayload::Edit(_)
-            | ParsedPayload::Delete(_) => {
+            | ParsedPayload::Delete(_)
+            | ParsedPayload::Media(_) => {
                 panic!("expected text")
             }
         }
@@ -728,7 +864,8 @@ mod tests {
             | ParsedPayload::Typing(_)
             | ParsedPayload::Read(_)
             | ParsedPayload::Edit(_)
-            | ParsedPayload::Delete(_) => {
+            | ParsedPayload::Delete(_)
+            | ParsedPayload::Media(_) => {
                 panic!("expected text")
             }
         }
@@ -746,7 +883,8 @@ mod tests {
             | ParsedPayload::Typing(_)
             | ParsedPayload::Read(_)
             | ParsedPayload::Edit(_)
-            | ParsedPayload::Delete(_) => {
+            | ParsedPayload::Delete(_)
+            | ParsedPayload::Media(_) => {
                 panic!("expected text")
             }
         }
@@ -762,9 +900,38 @@ mod tests {
             | ParsedPayload::Typing(_)
             | ParsedPayload::Read(_)
             | ParsedPayload::Edit(_)
-            | ParsedPayload::Delete(_) => {
+            | ParsedPayload::Delete(_)
+            | ParsedPayload::Media(_) => {
                 panic!("expected text")
             }
+        }
+    }
+
+    #[test]
+    fn media_payload_roundtrips_and_parses() {
+        let key = [9u8; 32];
+        let key_b64 = general_purpose::STANDARD.encode(key);
+        let payload = MediaPayload::new(
+            "msg-1",
+            "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+            key_b64,
+            "image/jpeg",
+            123,
+            Some("photo.jpg".into()),
+            Some(2500),
+        )
+        .expect("valid media metadata");
+        let wire = serde_json::to_vec(&ChatPayload::Media(payload.clone())).unwrap();
+        assert_eq!(parse_plaintext(&wire), ParsedPayload::Media(payload));
+    }
+
+    #[test]
+    fn invalid_media_metadata_uses_legacy_fallback() {
+        let wire = br#"{"kind":"media","message_id":"m","hash":"bad","key":"bad","mime":"image/jpeg","size":1}"#;
+        match parse_plaintext(wire) {
+            ParsedPayload::Text(text) => assert_eq!(text.text, String::from_utf8_lossy(wire)),
+            ParsedPayload::Media(_) => panic!("invalid media must not be accepted"),
+            _ => panic!("expected legacy fallback"),
         }
     }
 }
