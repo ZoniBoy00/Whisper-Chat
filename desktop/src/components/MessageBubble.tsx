@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState, type MouseEvent, type ReactNode } from "react";
 import { Check, CheckCheck, SmilePlus, Timer } from "lucide-react";
 import type { Message } from "../types";
+import { openMedia } from "../lib/relay";
+import { convertFileSrc } from "@tauri-apps/api/core";
 import { cx, findMatches, formatTime, shortPeerId } from "../lib/format";
 import { useI18n } from "../i18n/I18nContext";
 import { ReactionPicker } from "./ReactionPicker";
@@ -204,13 +206,12 @@ export function MessageBubble({
             </p>
           </div>
         ) : null}
-        <p className="wp-msg whitespace-pre-wrap break-words leading-relaxed text-wp-text">
-          <HighlightedText
-            text={message.text}
-            query={searchQuery}
-            activeRange={searchActiveRange}
-          />
-        </p>
+          {message.media ? (
+           message.media.local_path && message.media.mime.startsWith("image/") ?
+            <button type="button" className="mb-2 block" onClick={() => void openMedia(message.media!.local_path!)} title="Open media"><img className="max-h-72 max-w-full rounded-xl object-contain" src={convertFileSrc(message.media.local_path)} alt={message.media.name ?? "Encrypted media"} /></button> :
+            <button type="button" className="mb-2 w-full rounded-xl bg-black/15 px-3 py-2 text-left text-sm text-wp-text hover:bg-black/25" onClick={() => message.media?.local_path && void openMedia(message.media.local_path)}>{message.media.name ?? "Encrypted media"} <span className="ml-2 text-xs text-wp-faint">{message.media.size > 0 ? `${Math.ceil(message.media.size / 1024)} KiB` : ""}</span></button>
+        ) : null}
+        {message.text ? <p className="wp-msg whitespace-pre-wrap break-words leading-relaxed text-wp-text"><HighlightedText text={message.text} query={searchQuery} activeRange={searchActiveRange} /></p> : null}
         <div
           className={cx(
             "mt-1 flex items-center justify-end gap-1",

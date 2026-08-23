@@ -67,6 +67,7 @@ interface ChatViewProps {
   /** Our own peer ID; used to mark our own reactions. */
   myPeerId: string | null;
   onSend: (text: string, quote?: QuoteInfo | null) => void;
+  onSendMedia: (path: string) => void;
   onTypingChange: (isTyping: boolean) => void;
   /** Whether Enter sends a message in the composer (off: Enter = new line). */
   enterToSend: boolean;
@@ -116,6 +117,7 @@ export function ChatView({
   relayUrl,
   myPeerId,
   onSend,
+  onSendMedia,
   onTypingChange,
   enterToSend,
   draft,
@@ -797,6 +799,7 @@ export function ChatView({
             onSend(text);
           }
         }}
+        onSendMedia={onSendMedia}
         replyTo={replyTo}
         replyToName={
           replyTo

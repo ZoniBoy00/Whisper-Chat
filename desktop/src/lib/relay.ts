@@ -83,6 +83,18 @@ export function sendMessage(
   return invoke("send_message", { peerId, text, clientId, quote });
 }
 
+export function sendMedia(peerId: string, path: string, clientId: string): Promise<void> {
+  return invoke("send_media", { peerId, path, clientId });
+}
+
+export function pickMedia(): Promise<string | null> {
+  return invoke("pick_media");
+}
+
+export function openMedia(path: string): Promise<void> {
+  return invoke("open_media", { path });
+}
+
 /**
  * React to a message with an emoji. `active` is the sender's freshly computed
  * absolute state (true = react, false = unreact) and travels inside the

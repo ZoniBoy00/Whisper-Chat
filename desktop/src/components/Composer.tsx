@@ -1,5 +1,6 @@
-import { useEffect, useRef } from "react";
-import { PenLine, Send, X } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
+import { Paperclip, PenLine, Send, X } from "lucide-react";
+import { pickMedia } from "../lib/relay";
 import type { Message } from "../types";
 import { useI18n } from "../i18n/I18nContext";
 
@@ -30,6 +31,7 @@ interface ComposerProps {
   /** Key of the active conversation; a change resets the typing timers so a
    *  stale stop never fires against the wrong peer. */
   conversationId: string | null;
+  onSendMedia?: (path: string) => void;
 }
 
 /** How often the "typing" indicator is (re)sent while the user types. */
@@ -49,11 +51,13 @@ export function Composer({
   onTypingChange,
   enterToSend,
   conversationId,
+  onSendMedia,
 }: ComposerProps) {
   const { t } = useI18n();
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const stopTimerRef = useRef<number | null>(null);
   const lastTypingSentRef = useRef(0);
+  const [selectedMedia, setSelectedMedia] = useState<string | null>(null);
 
   useEffect(() => {
     return () => {
@@ -158,6 +162,7 @@ export function Composer({
         </div>
       ) : null}
       <div className="mx-auto flex max-w-3xl items-end gap-3">
+        <button type="button" title="Attach media" aria-label="Attach media" onClick={() => void pickMedia().then(setSelectedMedia)} className="inline-flex h-11 w-11 shrink-0 items-center justify-center rounded-full bg-wp-panel-2 text-wp-dim hover:text-wp-text"><Paperclip className="h-4 w-4" /></button>
         <textarea
           ref={inputRef}
           rows={1}
@@ -183,8 +188,8 @@ export function Composer({
         />
         <button
           type="button"
-          onClick={submit}
-          disabled={!value.trim()}
+          onClick={() => { if (selectedMedia) { onSendMedia?.(selectedMedia); setSelectedMedia(null); } else submit(); }}
+          disabled={!value.trim() && !selectedMedia}
           title={t("common.send_message")}
           aria-label={t("common.send_message")}
           className="inline-flex h-11 w-11 shrink-0 items-center justify-center rounded-full bg-wp-accent text-wp-accent-fg shadow-lg shadow-wp-accent/25 transition hover:bg-wp-accent-strong active:scale-95 disabled:cursor-not-allowed disabled:opacity-40"
@@ -192,6 +197,7 @@ export function Composer({
           <Send className="h-4 w-4" strokeWidth={2.2} />
         </button>
       </div>
+      {selectedMedia ? <p className="mx-auto mt-2 max-w-3xl truncate text-xs text-wp-accent">{selectedMedia.split(/[\\/]/).pop()}</p> : null}
       {!enterToSend ? (
         <p
           id="composer-enter-hint"

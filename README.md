@@ -98,6 +98,11 @@ sender and the recipient can read them.
   covers everything** — set it once (manual export or Settings) and both
   manual and automatic backups reuse it without asking again; restoring asks
   for the password (a wrong one changes nothing on disk).
+- **Encrypted media transfer (desktop)** — files are encrypted locally with
+  chunked AES-256-GCM, uploaded as opaque content-addressed blobs, and the key
+  travels only inside the E2EE message. Images render from a Rust-owned local
+  cache; other supported files open from the cache. Voice/video calls are not
+  implemented yet.
 - **Cross-platform future** — Tauri desktop today, Flutter mobile coming (one
   shared Rust crypto core).
 
@@ -300,8 +305,8 @@ npm run build
 
 ## Testing & TDD
 
-- **358 unit tests** across the workspace (e2ee-core 88, whisper-desktop 113,
-  whisper-relay 157) plus **5 unit tests** in the mobile `whisper_core`
+- **366 unit tests** across the workspace (e2ee-core 93, whisper-desktop 115,
+  whisper-relay 158) plus **5 unit tests** in the mobile `whisper_core`
   (backup crypto)
 - **92 smoke tests** covering live routing, offline delivery, SQLite
   persistence, `fetch_since` sync, rate limiting and signed-hello spoofing
@@ -331,8 +336,9 @@ reactions, quoted replies, safety numbers + QR, invite/join deep links, i18n
 automatic backups.
 
 **Next up:** relay deployment to a real VPS (two-machine E2EE test —
-the last remaining release blocker), chat export, media/calls, mobile
-(Flutter), external audit + post-quantum (X25519Kyber768).
+the last remaining release blocker), media thumbnails/streaming, voice/video
+calls, chat export, mobile (Flutter), external audit + post-quantum
+(X25519Kyber768).
 
 See [docs/ROADMAP.md](docs/ROADMAP.md) for the full technical roadmap.
 
