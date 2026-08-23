@@ -103,12 +103,14 @@ sender and the recipient can read them.
 
 ## Mobile client (Android)
 
-The Flutter client in `mobile/` shares the same `e2ee-core` crypto stack via
+The Flutter client in `mobile/` shares the `e2ee-core` crypto stack via
 `flutter_rust_bridge` (`whisper_core`): E2EE 1:1 chat, profiles (signed
-usernames, avatars, directory search), contacts, groups (invites, join links,
+usernames, avatars, directory search), contacts, group UI (invites, join links,
 roles), reactions, quoted replies, edit/delete, disappearing messages, safety
-numbers and password-encrypted backups. The relay URL is hardcoded (mirroring
-the desktop) and can only change with a build.
+numbers and password-encrypted backups. **Mobile group messages are not yet
+production-ready E2EE**; Megolm key sharing is tracked as the critical C1 item
+in [docs/MOBILE-GAP.md](docs/MOBILE-GAP.md). The relay URL is hardcoded
+(mirroring the desktop) and can only change with a build.
 
 ```sh
 cd mobile
@@ -242,7 +244,7 @@ rate limiting reads the real client IP from the forwarded headers.
 ```sh
 cd desktop
 npm install
-npm run build        # frontend: TypeScript 7 + vite build
+npm run build        # frontend: TypeScript 5.6 + vite build
 cargo check          # Tauri shell compiles against the shared core
 ```
 
@@ -267,7 +269,7 @@ cargo test -p e2ee-core -p whisper-relay
 cargo clippy --workspace -- -D warnings
 cargo fmt --check
 
-# Desktop frontend (TypeScript 7)
+# Desktop frontend (TypeScript 5.6)
 cd desktop
 npm ci
 npm run build

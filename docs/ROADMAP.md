@@ -5,8 +5,8 @@
 > general-purpose chat — a WhatsApp/Signal/Telegram replacement without
 > backdoors or scanning mechanisms.
 >
-> **Date:** 2026-08-09 (updated: **E2EE backup encryption DONE** — password-sealed backups with Argon2id → AES-256-GCM, passwordless autobackup blocked; **one release blocker left:** real two-machine E2EE test on Hetzner)
-> **Status:** Phases 0–6.10 done — full local MVP. **One release blocker left:** real two-machine E2EE test on Hetzner (E2EE backup encryption — the previous 🔴 blocker — fixed 2026-08-09)
+> **Date:** 2026-08-23 (reviewed against `main` commit `1d83b8f`; **E2EE backup encryption DONE** — password-sealed backups with Argon2id → AES-256-GCM; **desktop release blocker left:** real two-machine E2EE test on Hetzner)
+> **Status:** Desktop/relay local MVP is implemented and passes the local Rust/frontend checks. Mobile is an Android MVP, but it is **not release-ready**: mobile group messages still require real Megolm key sharing (critical C1), and the remaining gap list must be completed before distribution. GitHub CI re-runs are pending the repository billing limit reset.
 > **Origin:** App specification + Gemini cross-check + Byte evaluation
 > **Working title (before branding):** Operation Ghost
 
@@ -337,9 +337,9 @@ impact and effort. Pull items into the phase table when they get scheduled.
 - [x] Relay ops: structured logging (`RUST_LOG`-controllable, peer-ID level only) + graceful shutdown on Ctrl+C/SIGTERM
 - [x] Robustness fixes: FIFO→keyed request resolution (get_group_info), error-code→queue routing (stale groups evicted), legacy avatar sync, contact-only group cleanup
 
-**Test counts (2026-08-14):** 358 unit tests — e2ee-core 88, whisper-relay 157
+**Test counts (2026-08-23):** 358 unit tests — e2ee-core 88, whisper-relay 157
 (peer-ID search +1), whisper-desktop 113; mobile `whisper_core` adds 5 backup
-tests. Smoke suite all green. The E2EE backup fix adds 11
+tests. The E2EE backup fix adds 11
 `backup.rs` crypto tests (roundtrip, wrong-password rejection, ciphertext /
 KDF-cost / metadata tamper detection — the KDF params, version and nonce are
 bound into the GCM **AAD** so weakening Argon2id costs in the file fails
