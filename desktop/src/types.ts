@@ -27,6 +27,16 @@ export interface Message {
   /** Whether the message text was edited after sending; the UI renders a
    *  small "edited" marker next to the timestamp. */
   edited?: boolean;
+  media?: MediaInfo;
+}
+
+export interface MediaInfo {
+  hash: string;
+  mime: string;
+  size: number;
+  name?: string | null;
+  duration_ms?: number | null;
+  local_path?: string | null;
 }
 
 /** The quoted message a reply refers to (snapshot sent inside the encrypted

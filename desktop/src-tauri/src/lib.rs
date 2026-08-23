@@ -11,6 +11,7 @@ use tokio::sync::Notify;
 
 mod backup;
 mod log_buffer;
+mod media;
 mod relay;
 mod store;
 mod tray;
@@ -267,6 +268,38 @@ async fn send_message(
     state
         .send_message(&peer_id, &text, &client_id, quote)
         .await
+        .map_err(|e| e.to_string())
+}
+
+/// Encrypt and send one local media file without exposing its bytes or key to JS.
+#[tauri::command]
+async fn send_media(
+    state: State<'_, RelayClient>,
+    peer_id: String,
+    path: String,
+    client_id: String,
+) -> Result<(), String> {
+    state
+        .send_media(&peer_id, &path, &client_id)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// Open a decrypted media file from the Rust-owned cache.
+#[tauri::command]
+fn open_media(app: tauri::AppHandle, path: String) -> Result<(), String> {
+    media::open_cached_file(&app, std::path::Path::new(&path)).map_err(|e| e.to_string())
+}
+
+/// Pick one media file. Only its path crosses the Tauri boundary.
+#[tauri::command]
+fn pick_media(app: tauri::AppHandle) -> Result<Option<String>, String> {
+    use tauri_plugin_dialog::DialogExt;
+    app.dialog()
+        .file()
+        .blocking_pick_file()
+        .map(|file| file.into_path().map(|path| path.display().to_string()))
+        .transpose()
         .map_err(|e| e.to_string())
 }
 
@@ -1369,6 +1402,9 @@ pub fn run() {
             publish_prekeys,
             start_chat,
             send_message,
+            send_media,
+            pick_media,
+            open_media,
             set_chat_expiration,
             send_reaction,
             edit_message,

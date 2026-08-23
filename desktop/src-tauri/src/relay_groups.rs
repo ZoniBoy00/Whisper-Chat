@@ -891,7 +891,10 @@ impl RelayClient {
             // Media metadata is intentionally not rendered as plaintext. The
             // Rust media-cache integration will fetch and decrypt it before it
             // is exposed to the UI.
-            e2ee_core::ParsedPayload::Media(_) => Ok(None),
+            e2ee_core::ParsedPayload::Media(media) => {
+                self.schedule_media(group_id.to_string(), media);
+                Ok(None)
+            }
         }
     }
 
@@ -1381,6 +1384,7 @@ impl RelayClient {
             read_by: Vec::new(),
             expires_at: None,
             edited: false,
+            media: None,
         };
         write_guard(&self.inner.messages)?
             .entry(group_id.to_string())

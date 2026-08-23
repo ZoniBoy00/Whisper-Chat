@@ -170,7 +170,8 @@ impl ChatStore {
                 quote_json TEXT,
                 system_json TEXT,
                 expires_at INTEGER,
-                edited INTEGER NOT NULL DEFAULT 0
+                 edited INTEGER NOT NULL DEFAULT 0,
+                 media_json TEXT
             );
             CREATE INDEX IF NOT EXISTS idx_messages_peer_timestamp
                 ON messages (peer_id, timestamp);
@@ -276,6 +277,9 @@ impl ChatStore {
             conn.execute_batch(
                 "ALTER TABLE messages ADD COLUMN edited INTEGER NOT NULL DEFAULT 0;",
             )?;
+        }
+        if !message_columns.iter().any(|c| c.as_str() == "media_json") {
+            conn.execute_batch("ALTER TABLE messages ADD COLUMN media_json TEXT;")?;
         }
 
         // Migration: `contacts` gained `curve25519_key` (for safety numbers)
@@ -432,11 +436,16 @@ impl ChatStore {
             Some(system) => Some(serde_json::to_string(system)?),
             None => None,
         };
+        let media_json = message
+            .media
+            .as_ref()
+            .map(serde_json::to_string)
+            .transpose()?;
         let conn = self.conn()?;
         conn.execute(
             "INSERT INTO messages
-                 (id, peer_id, text, outgoing, timestamp, status, client_id, quote_json, system_json, expires_at, edited)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
+                 (id, peer_id, text, outgoing, timestamp, status, client_id, quote_json, system_json, expires_at, edited, media_json)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
              ON CONFLICT(id) DO UPDATE SET
                  peer_id   = excluded.peer_id,
                  text      = excluded.text,
@@ -447,7 +456,8 @@ impl ChatStore {
                  quote_json = excluded.quote_json,
                  system_json = excluded.system_json,
                  expires_at = excluded.expires_at,
-                 edited     = excluded.edited",
+                  edited     = excluded.edited,
+                  media_json = excluded.media_json",
             params![
                 message.id,
                 peer_id,
@@ -459,7 +469,8 @@ impl ChatStore {
                 quote_json,
                 system_json,
                 message.expires_at.map(|millis| millis as i64),
-                message.edited as i64
+                 message.edited as i64,
+                 media_json
             ],
         )?;
         Ok(())
@@ -625,7 +636,7 @@ impl ChatStore {
         let reactions = self.reactions_for(peer_id)?;
         let conn = self.conn()?;
         let mut stmt = conn.prepare(
-            "SELECT id, text, outgoing, timestamp, status, quote_json, system_json, expires_at, edited
+            "SELECT id, text, outgoing, timestamp, status, quote_json, system_json, expires_at, edited, media_json
              FROM messages WHERE peer_id = ?1
              ORDER BY timestamp, id",
         )?;
@@ -652,6 +663,9 @@ impl ChatStore {
                 read_by: Vec::new(), // not persisted; re-derived from receipts
                 expires_at: row.get::<_, Option<i64>>(7)?.map(|millis| millis as u64),
                 edited: row.get::<_, bool>(8)?,
+                media: row
+                    .get::<_, Option<String>>(9)?
+                    .and_then(|json| serde_json::from_str(&json).ok()),
             })
         })?;
         let mut messages = Vec::new();
@@ -871,6 +885,7 @@ mod tests {
             read_by: Vec::new(),
             expires_at: None,
             edited: false,
+            media: None,
         }
     }
 

@@ -57,6 +57,7 @@ import {
   sendFriendRequest as relaySendFriendRequest,
   sendGroupInvite as relaySendGroupInvite,
   sendMessage as relaySendMessage,
+  sendMedia as relaySendMedia,
   sendReaction as relaySendReaction,
   sendReadReceipt as relaySendReadReceipt,
   sendTyping as relaySendTyping,
@@ -169,6 +170,7 @@ export interface ChatStateApi {
   connect: () => Promise<void>;
   refresh: () => Promise<void>;
   sendMessage: (peerId: string, text: string, quote?: QuoteInfo | null) => Promise<void>;
+  sendMedia: (peerId: string, path: string) => Promise<void>;
   /** React or un-react to a message. `active` is the caller-computed absolute
    *  state (true = react, false = remove my reaction). */
   reactToMessage: (
@@ -369,7 +371,12 @@ export function useChatState({
           );
           setMessages((prev) => {
             const list = prev[peer_id] ?? [];
-            if (list.some((m) => m.id === message.id)) return prev;
+            if (list.some((m) => m.id === message.id)) {
+              return {
+                ...prev,
+                [peer_id]: list.map((item) => item.id === message.id ? { ...item, ...message, media: message.media ?? item.media } : item),
+              };
+            }
             return { ...prev, [peer_id]: [...list, message] };
           });
           setActivePeerId((prev) => prev ?? peer_id);
@@ -828,6 +835,12 @@ export function useChatState({
     [toast, t, chatExpirations]
   );
 
+  const sendMedia = useCallback(async (peerId: string, path: string) => {
+    const clientId = crypto.randomUUID();
+    setMessages((prev) => ({ ...prev, [peerId]: [...(prev[peerId] ?? []), { id: clientId, text: "", outgoing: true, timestamp: Date.now(), status: "sent", media: { hash: "", mime: "application/octet-stream", size: 0, name: path.split(/[\\/]/).pop() } }] }));
+    try { await relaySendMedia(peerId, path, clientId); } catch (err) { setMessages((prev) => ({ ...prev, [peerId]: (prev[peerId] ?? []).filter((message) => message.id !== clientId) })); setConnectionError(String(err)); }
+  }, []);
+
   /** React to a message (or un-react, per the caller-computed `active` state).
    *  The optimistic in-memory update mirrors what the peer applies on their
    *  side; the reaction envelope does not echo back to the sender, so no
@@ -1191,6 +1204,7 @@ export function useChatState({
     connect,
     refresh,
     sendMessage,
+    sendMedia,
     reactToMessage,
     markConversationRead,
     sendTyping,

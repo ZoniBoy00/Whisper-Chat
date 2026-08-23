@@ -5,8 +5,8 @@
 > general-purpose chat — a WhatsApp/Signal/Telegram replacement without
 > backdoors or scanning mechanisms.
 >
-> **Date:** 2026-08-23 (reviewed against `main` commit `1d83b8f`; **E2EE backup encryption DONE** — password-sealed backups with Argon2id → AES-256-GCM; **desktop release blocker left:** real two-machine E2EE test on Hetzner)
-> **Status:** Desktop/relay local MVP is implemented and passes the local Rust/frontend checks. Mobile is an Android MVP, but it is **not release-ready**: mobile group messages still require real Megolm key sharing (critical C1), and the remaining gap list must be completed before distribution. GitHub CI re-runs are pending the repository billing limit reset.
+> **Date:** 2026-08-23 (reviewed against the current local media implementation; **E2EE backup encryption DONE**; encrypted desktop file transfer is implemented; **desktop release blocker left:** real two-machine E2EE test on Hetzner)
+> **Status:** Desktop/relay local MVP is implemented and passes the local Rust/frontend checks. Desktop encrypted file transfer now covers local AES-GCM encryption, opaque relay blobs, E2EE metadata, Rust-owned cache and UI rendering. Mobile is an Android MVP, but it is **not release-ready**: mobile group messages still require real Megolm key sharing (critical C1), and the remaining gap list must be completed before distribution. GitHub CI re-runs are pending the repository billing limit reset.
 > **Origin:** App specification + Gemini cross-check + Byte evaluation
 > **Working title (before branding):** Operation Ghost
 
@@ -337,8 +337,8 @@ impact and effort. Pull items into the phase table when they get scheduled.
 - [x] Relay ops: structured logging (`RUST_LOG`-controllable, peer-ID level only) + graceful shutdown on Ctrl+C/SIGTERM
 - [x] Robustness fixes: FIFO→keyed request resolution (get_group_info), error-code→queue routing (stale groups evicted), legacy avatar sync, contact-only group cleanup
 
-**Test counts (2026-08-23):** 358 unit tests — e2ee-core 88, whisper-relay 157
-(peer-ID search +1), whisper-desktop 113; mobile `whisper_core` adds 5 backup
+**Test counts (2026-08-23):** 366 unit tests — e2ee-core 93, whisper-relay 158
+(media upload +1), whisper-desktop 115; mobile `whisper_core` adds 5 backup
 tests. The E2EE backup fix adds 11
 `backup.rs` crypto tests (roundtrip, wrong-password rejection, ciphertext /
 KDF-cost / metadata tamper detection — the KDF params, version and nonce are
@@ -361,7 +361,9 @@ settings tests (password never serializes to the UI, patch set/clear).
 **⏳ Next up:**
 - [ ] Deploy the relay to Hetzner (systemd unit + nginx/Caddy template ready) → real two-machine E2EE test — blocks public release
 - [ ] Chat export (Signal-style plaintext/JSON) — small, high-trust, GDPR-friendly
-- [ ] Media: images & files (MEDIA-SYSTEM.md ready) → voice messages on the same channel
+- [x] Media: encrypted desktop file transfer (AES-256-GCM, opaque `/media` blobs, E2EE metadata, Rust cache and image/file UI)
+- [ ] Media: thumbnails, streaming/large-file optimization and mobile parity
+- [ ] Voice messages and calls (WebRTC DTLS-SRTP + coturn)
 - [ ] Production hardening: binary integrity check (devtools already disabled in release; no console)
 - [ ] Public repo (open source) once remote testing is solid
 - [ ] E2EE PIN backup (phase 2 — follow-up to the shipped backup encryption): separate identity and data — password-protected vault (DB + sessions) + Signal-style recovery key, or derive the DB key from a password/PIN instead of the identity so a leaked identity alone opens nothing

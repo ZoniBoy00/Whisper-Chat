@@ -211,6 +211,11 @@ export function MainView({ peerId, onReset }: MainViewProps) {
     [chat.activePeerId, chat.sendMessage]
   );
 
+  const handleSendMedia = useCallback((path: string) => {
+    const active = chat.activePeerId;
+    if (active) void chat.sendMedia(active, path);
+  }, [chat.activePeerId, chat.sendMedia]);
+
   const handleTypingChange = useCallback(
     (isTyping: boolean) => {
       const active = chat.activePeerId;
@@ -709,6 +714,7 @@ export function MainView({ peerId, onReset }: MainViewProps) {
         relayUrl={relayUrl}
         myPeerId={peerId}
         onSend={handleSend}
+        onSendMedia={handleSendMedia}
         onTypingChange={handleTypingChange}
         enterToSend={enterToSend}
         onOpenProfile={handleOpenProfile}

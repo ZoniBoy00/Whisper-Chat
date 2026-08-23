@@ -67,6 +67,7 @@ use e2ee_core::{
 };
 use vodozemac::olm::OlmMessage;
 
+use crate::media::{self, MediaInfo};
 use crate::store::{derive_db_key, ChatStore, ContactRow, StoreError};
 
 /// Default relay endpoint; override with the `WHISPER_RELAY_URL` env var.
@@ -221,6 +222,9 @@ pub enum RelayError {
     /// A filesystem failure (identity persistence).
     #[error("io error: {0}")]
     Io(#[from] std::io::Error),
+    /// A media upload, download or cache operation failed.
+    #[error("media error: {0}")]
+    Media(#[from] media::MediaError),
     /// A failure while reading or writing the SQLCipher chat store.
     #[error("store error: {0}")]
     Store(#[from] StoreError),
@@ -688,6 +692,8 @@ pub struct UIMessage {
     /// small "edited" marker next to the timestamp.
     #[serde(default)]
     pub edited: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub media: Option<MediaInfo>,
 }
 
 /// One emoji reaction attached to a message by a peer.
@@ -1811,6 +1817,100 @@ impl RelayClient {
         Ok(())
     }
 
+    /// Encrypt one local file, upload only its ciphertext, and send metadata
+    /// through the existing 1:1 or Megolm path.
+    pub async fn send_media(
+        &self,
+        peer_id: &str,
+        path: &str,
+        client_id: &str,
+    ) -> Result<(), RelayError> {
+        let message_id = self.next_message_id(client_id);
+        let relay = read_guard(&self.inner.settings)?
+            .relay_url
+            .clone()
+            .unwrap_or_else(|| {
+                resolve_relay_url(std::env::var("WHISPER_RELAY_URL").ok().as_deref())
+            });
+        let (payload, info) = media::send_file(
+            &self.inner.app,
+            &relay,
+            std::path::Path::new(path),
+            message_id.clone(),
+        )
+        .await?;
+        let bytes = serde_json::to_vec(&ChatPayload::Media(payload))?;
+        if read_guard(&self.inner.groups)?.contains_key(peer_id) {
+            self.ensure_outbound_session(peer_id).await?;
+            self.send_group_payload(
+                peer_id,
+                &bytes,
+                relay_groups::GroupSend {
+                    record: true,
+                    client_id: client_id.to_string(),
+                    quote: None,
+                    message_id: Some(message_id.clone()),
+                    display_text: Some(info.name.clone().unwrap_or_else(|| "Media".into())),
+                    expires_at: None,
+                },
+            )?;
+            self.attach_media(peer_id, &message_id, info)?;
+            if let Some(message) = read_guard(&self.inner.messages)?
+                .get(peer_id)
+                .and_then(|items| items.iter().find(|item| item.id == message_id))
+                .cloned()
+            {
+                let _ = self.inner.app.emit(
+                    "chat-message",
+                    ChatMessageEvent {
+                        peer_id: peer_id.to_string(),
+                        message,
+                    },
+                );
+            }
+            return Ok(());
+        }
+        let my_peer_id = self.my_peer_id()?;
+        if !mutex_guard(&self.inner.sessions)?.contains_key(peer_id) {
+            self.start_chat(peer_id).await?;
+        }
+        let (olm, session_id) = {
+            let mut sessions = mutex_guard(&self.inner.sessions)?;
+            let session = sessions
+                .get_mut(peer_id)
+                .ok_or_else(|| RelayError::NoSession(peer_id.to_string()))?;
+            let id = session.session_id();
+            let encrypted = session.encrypt(&bytes)?;
+            (encrypted, id)
+        };
+        self.save_sessions()?;
+        let wire = Envelope::new(
+            my_peer_id.clone(),
+            peer_id.to_string(),
+            EnvelopeContent::Message(Message::new(my_peer_id, session_id, olm)),
+        );
+        let seq = self.next_seq();
+        let mut msg = self.record_outgoing_with_id(
+            peer_id,
+            message_id,
+            &info.name.clone().unwrap_or_else(|| "Media".into()),
+            None,
+            None,
+        )?;
+        msg.media = Some(info.clone());
+        self.attach_media(peer_id, &msg.id, info)?;
+        self.record_pending_ack(seq, &msg.id)?;
+        self.send_wire(&wire, seq)?;
+        let _ = self.inner.app.emit(
+            "chat-message",
+            ChatMessageEvent {
+                peer_id: peer_id.to_string(),
+                message: msg,
+            },
+        );
+        Ok(())
+    }
+
     /// Snapshot the state the UI needs: identity, connection, contacts (with
     /// their display names and relationship status), message history, group
     /// metadata and the pending friend-request lists.
@@ -2314,7 +2414,10 @@ impl RelayClient {
                     // Media transport is handled by the media cache layer;
                     // until that layer is available, do not render the
                     // encrypted metadata as plaintext.
-                    ParsedPayload::Media(_) => Ok(None),
+                    ParsedPayload::Media(media) => {
+                        self.schedule_media(sender.clone(), media);
+                        Ok(None)
+                    }
                 }
             }
             EnvelopeContent::Message(message) => {
@@ -2398,7 +2501,10 @@ impl RelayClient {
                     // it defensively.
                     ParsedPayload::Typing(_) => Ok(None),
                     ParsedPayload::Read(_) => Ok(None),
-                    ParsedPayload::Media(_) => Ok(None),
+                    ParsedPayload::Media(media) => {
+                        self.schedule_media(sender.clone(), media);
+                        Ok(None)
+                    }
                 }
             }
             // A bundle is published, never delivered as a chat envelope.
@@ -2731,10 +2837,18 @@ impl RelayClient {
     /// history (and thus nothing else) disappears.
     pub fn clear_chat_history(&self) -> Result<(), RelayError> {
         self.ensure_store_open()?;
+        let cached_paths: Vec<String> = read_guard(&self.inner.messages)?
+            .values()
+            .flat_map(|messages| messages.iter())
+            .filter_map(|message| message.media.as_ref()?.local_path.clone())
+            .collect();
         write_guard(&self.inner.messages)?.clear();
         let store_guard = self.store_guard()?;
         let store = store_guard.as_ref().ok_or(RelayError::StoreNotOpen)?;
         store.clear_messages()?;
+        for path in cached_paths {
+            self.remove_cached_media(&path);
+        }
         Ok(())
     }
 
@@ -2807,6 +2921,7 @@ impl RelayClient {
             read_by: Vec::new(),
             expires_at,
             edited: false,
+            media: None,
         };
         self.ensure_contact(peer_id)?;
         write_guard(&self.inner.messages)?
@@ -2872,6 +2987,7 @@ impl RelayClient {
             read_by: Vec::new(),
             expires_at,
             edited: false,
+            media: None,
         };
         write_guard(&self.inner.messages)?
             .entry(peer_id.to_string())
@@ -2879,6 +2995,82 @@ impl RelayClient {
             .push(message.clone());
         self.persist_message(peer_id, &message, None)?;
         self.persist_next_msg_id()?;
+        Ok(message)
+    }
+
+    fn attach_media(
+        &self,
+        peer_id: &str,
+        message_id: &str,
+        media: MediaInfo,
+    ) -> Result<(), RelayError> {
+        let updated = {
+            let mut messages = write_guard(&self.inner.messages)?;
+            let message = messages
+                .get_mut(peer_id)
+                .and_then(|items| items.iter_mut().find(|item| item.id == message_id))
+                .ok_or_else(|| {
+                    RelayError::MessageNotFound(peer_id.to_string(), message_id.to_string())
+                })?;
+            message.media = Some(media);
+            message.clone()
+        };
+        self.persist_message(peer_id, &updated, None)
+    }
+
+    fn schedule_media(&self, peer_id: String, payload: e2ee_core::MediaPayload) {
+        let app = self.inner.app.clone();
+        let relay = read_guard(&self.inner.settings)
+            .ok()
+            .and_then(|settings| settings.relay_url.clone())
+            .unwrap_or_else(|| {
+                resolve_relay_url(std::env::var("WHISPER_RELAY_URL").ok().as_deref())
+            });
+        let client = self.clone();
+        tauri::async_runtime::spawn(async move {
+            match media::fetch_and_decrypt(&app, &relay, &payload).await {
+                Ok(info) => match client.record_incoming_media(&peer_id, &payload, info) {
+                    Ok(message) => {
+                        let _ = client
+                            .inner
+                            .app
+                            .emit("chat-message", ChatMessageEvent { peer_id, message });
+                    }
+                    Err(error) => {
+                        tracing::warn!(error = %error, "failed to persist incoming media")
+                    }
+                },
+                Err(error) => tracing::warn!(error = %error, "failed to fetch incoming media"),
+            }
+        });
+    }
+
+    fn record_incoming_media(
+        &self,
+        peer_id: &str,
+        payload: &e2ee_core::MediaPayload,
+        info: MediaInfo,
+    ) -> Result<UIMessage, RelayError> {
+        let message = UIMessage {
+            id: payload.message_id.clone(),
+            text: String::new(),
+            outgoing: false,
+            timestamp: now_millis(),
+            status: "delivered".into(),
+            quote: None,
+            reactions: Vec::new(),
+            system: None,
+            read_by: Vec::new(),
+            expires_at: None,
+            edited: false,
+            media: Some(info),
+        };
+        self.ensure_contact(peer_id)?;
+        write_guard(&self.inner.messages)?
+            .entry(peer_id.to_string())
+            .or_default()
+            .push(message.clone());
+        self.persist_message(peer_id, &message, None)?;
         Ok(message)
     }
 
@@ -3154,8 +3346,19 @@ impl RelayClient {
                 None => return Ok(()),
             };
             let before = msgs.len();
+            let cached_path = msgs
+                .iter()
+                .find(|message| message.id == message_id)
+                .and_then(|message| message.media.as_ref()?.local_path.clone());
             msgs.retain(|message| message.id != message_id);
-            before != msgs.len()
+            if before != msgs.len() {
+                if let Some(path) = cached_path {
+                    self.remove_cached_media(&path);
+                }
+                true
+            } else {
+                false
+            }
         };
         if !removed {
             return Ok(());
@@ -3190,6 +3393,15 @@ impl RelayClient {
             let mut messages = write_guard(&self.inner.messages)?;
             for (message_id, peer_id) in &expired {
                 if let Some(msgs) = messages.get_mut(peer_id) {
+                    for message in msgs.iter().filter(|message| &message.id == message_id) {
+                        if let Some(path) = message
+                            .media
+                            .as_ref()
+                            .and_then(|media| media.local_path.as_deref())
+                        {
+                            self.remove_cached_media(path);
+                        }
+                    }
                     msgs.retain(|message| &message.id != message_id);
                 }
             }
@@ -3213,6 +3425,19 @@ impl RelayClient {
             );
         }
         Ok(())
+    }
+
+    fn remove_cached_media(&self, path: &str) {
+        if let Ok(root) = media::cache_dir(&self.inner.app) {
+            if let (Ok(root), Ok(candidate)) = (
+                root.canonicalize(),
+                std::path::Path::new(path).canonicalize(),
+            ) {
+                if candidate.starts_with(root) {
+                    let _ = std::fs::remove_file(candidate);
+                }
+            }
+        }
     }
 }
 
@@ -3566,6 +3791,7 @@ mod tests {
                 read_by: Vec::new(),
                 expires_at: None,
                 edited: false,
+                media: None,
             }],
         );
 
@@ -3592,6 +3818,7 @@ mod tests {
                 read_by: Vec::new(),
                 expires_at: None,
                 edited: false,
+                media: None,
             }],
         );
 
@@ -3619,6 +3846,7 @@ mod tests {
                 read_by: Vec::new(),
                 expires_at: None,
                 edited: false,
+                media: None,
             }],
         );
 
@@ -3643,6 +3871,7 @@ mod tests {
                 read_by: Vec::new(),
                 expires_at: None,
                 edited: false,
+                media: None,
             }],
         );
 
@@ -3746,6 +3975,7 @@ mod tests {
             read_by: Vec::new(),
             expires_at: None,
             edited: false,
+            media: None,
         };
         let json = serde_json::to_value(&message).expect("serialize");
         assert_eq!(json["quote"]["message_id"], "m-0");
@@ -3767,6 +3997,7 @@ mod tests {
             read_by: Vec::new(),
             expires_at: None,
             edited: false,
+            media: None,
         };
         let json = serde_json::to_value(&message).expect("serialize");
         assert!(json.get("quote").is_none(), "absent quote must be skipped");
