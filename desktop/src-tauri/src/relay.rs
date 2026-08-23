@@ -2311,6 +2311,10 @@ impl RelayClient {
                     }
                     ParsedPayload::Typing(_) => Ok(None),
                     ParsedPayload::Read(_) => Ok(None),
+                    // Media transport is handled by the media cache layer;
+                    // until that layer is available, do not render the
+                    // encrypted metadata as plaintext.
+                    ParsedPayload::Media(_) => Ok(None),
                 }
             }
             EnvelopeContent::Message(message) => {
@@ -2394,6 +2398,7 @@ impl RelayClient {
                     // it defensively.
                     ParsedPayload::Typing(_) => Ok(None),
                     ParsedPayload::Read(_) => Ok(None),
+                    ParsedPayload::Media(_) => Ok(None),
                 }
             }
             // A bundle is published, never delivered as a chat envelope.

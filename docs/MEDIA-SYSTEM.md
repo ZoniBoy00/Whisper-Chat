@@ -1,6 +1,7 @@
 # Whisper — Media System (encrypted file transfer) — v1 spec
 
-> **Status:** Design (phase 7, after MVP)
+> **Status:** In progress (phase 7). Media crypto and relay blob upload/download
+> are implemented; desktop send/cache/UI integration is still pending.
 > **Goal:** end-to-end-encrypted images, videos and files inside chats and
 > groups, without ever breaking the zero-knowledge relay model.
 > **Related:** `docs/ROADMAP.md` phase 7.

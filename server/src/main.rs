@@ -13,10 +13,11 @@ use std::net::SocketAddr;
 use std::time::Duration;
 
 use axum::{
-    extract::{ws::WebSocketUpgrade, ConnectInfo, FromRef, Path, State},
+    body::Bytes,
+    extract::{ws::WebSocketUpgrade, ConnectInfo, DefaultBodyLimit, FromRef, Path, State},
     http::{header, HeaderMap, HeaderValue, StatusCode},
     response::{IntoResponse, Response},
-    routing::get,
+    routing::{get, post},
     Router,
 };
 
@@ -97,6 +98,10 @@ async fn main() {
     let app = Router::new()
         .route("/healthz", get(health))
         .route("/ws", get(ws_handler))
+        .route(
+            "/media",
+            post(upload_media).layer(DefaultBodyLimit::max(relay::MAX_MEDIA_BYTES)),
+        )
         .route("/media/{hash}", get(media));
 
     // Light observability: /metrics is off by default and must be enabled
@@ -213,6 +218,10 @@ async fn media(Path(hash): Path<String>, State(relay): State<Relay>) -> Response
             response
                 .headers_mut()
                 .insert(header::CONTENT_TYPE, HeaderValue::from_static(content_type));
+            response.headers_mut().insert(
+                header::CACHE_CONTROL,
+                HeaderValue::from_static("public, max-age=31536000, immutable"),
+            );
             response
         }
         // A missing blob is the expected 404 case (never uploaded or purged),
@@ -230,8 +239,50 @@ async fn media(Path(hash): Path<String>, State(relay): State<Relay>) -> Response
     }
 }
 
+/// Upload an opaque, content-addressed encrypted media blob. The relay never
+/// sees the original file metadata or the E2EE key.
+async fn upload_media(
+    State(relay): State<Relay>,
+    State(proxies): State<TrustedProxies>,
+    headers: HeaderMap,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
+    body: Bytes,
+) -> Response {
+    let max_bytes = std::env::var("WHISPER_MEDIA_MAX_BYTES")
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+        .unwrap_or(relay::MAX_MEDIA_BYTES)
+        .clamp(1, relay::MAX_MEDIA_BYTES);
+    if body.is_empty() {
+        return (StatusCode::BAD_REQUEST, "media body must not be empty").into_response();
+    }
+    if body.len() > max_bytes {
+        return (StatusCode::PAYLOAD_TOO_LARGE, "media body is too large").into_response();
+    }
+
+    let ip = proxies.resolve_client_ip(addr, &headers).ip().to_string();
+    match relay.store_media(&ip, &body).await {
+        Ok(hash) => axum::Json(serde_json::json!({ "hash": hash })).into_response(),
+        Err(relay::MediaStoreError::RateLimited) => (
+            StatusCode::TOO_MANY_REQUESTS,
+            "media upload rate limit exceeded",
+        )
+            .into_response(),
+        Err(relay::MediaStoreError::Empty) => {
+            (StatusCode::BAD_REQUEST, "media body must not be empty").into_response()
+        }
+        Err(relay::MediaStoreError::Io(err)) => {
+            tracing::warn!(error = %err, "media blob write failed");
+            StatusCode::INTERNAL_SERVER_ERROR.into_response()
+        }
+    }
+}
+
 /// Sniff the image content type from the blob's leading magic bytes.
 fn image_content_type(bytes: &[u8]) -> &'static str {
+    if bytes.starts_with(b"WHM1") {
+        return "application/octet-stream";
+    }
     let head = &bytes[..bytes.len().min(12)];
     if head.starts_with(&[0x89, b'P', b'N', b'G']) {
         "image/png"

@@ -165,6 +165,30 @@ impl RateLimiter {
         Self::new(burst, refill)
     }
 
+    /// Build the media-upload limiter. Media uses its own bucket so large
+    /// uploads cannot consume the envelope or profile budgets.
+    pub(crate) fn from_media_env() -> Self {
+        let burst = std::env::var("WHISPER_MEDIA_RATE_BURST")
+            .ok()
+            .and_then(|v| v.parse::<f64>().ok())
+            .or_else(|| {
+                std::env::var("WHISPER_RATE_BURST")
+                    .ok()
+                    .and_then(|v| v.parse::<f64>().ok())
+            })
+            .unwrap_or(10.0);
+        let refill = std::env::var("WHISPER_MEDIA_RATE_REFILL")
+            .ok()
+            .and_then(|v| v.parse::<f64>().ok())
+            .or_else(|| {
+                std::env::var("WHISPER_RATE_REFILL")
+                    .ok()
+                    .and_then(|v| v.parse::<f64>().ok())
+            })
+            .unwrap_or(10.0 / 60.0);
+        Self::new(burst, refill)
+    }
+
     /// Try to consume one token for `key`. Returns `false` when the bucket is
     /// exhausted (rate limit hit).
     pub(crate) fn try_take(&self, key: &str) -> bool {

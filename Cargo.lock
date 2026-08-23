@@ -1260,7 +1260,9 @@ checksum = "d0881ea181b1df73ff77ffaaf9c7544ecc11e82fba9b5f27b262a3c73a332555"
 name = "e2ee-core"
 version = "0.1.0"
 dependencies = [
+ "aes-gcm",
  "base64 0.23.1",
+ "rand 0.10.2",
  "serde",
  "serde_json",
  "sha2 0.11.0",

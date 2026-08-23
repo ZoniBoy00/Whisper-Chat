@@ -2365,6 +2365,7 @@ mod tests {
             RateLimiter::new(100.0, 0.0),
             RateLimiter::new(100.0, 0.0),
             RateLimiter::new(100.0, 0.0),
+            RateLimiter::new(100.0, 0.0),
         );
         let alice = Identity::new();
         let mut alice_rx = online_peer(&relay, &alice).await;
