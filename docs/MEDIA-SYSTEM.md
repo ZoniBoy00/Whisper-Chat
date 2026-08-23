@@ -1,9 +1,9 @@
 # Whisper — Media System (encrypted file transfer) — v1 spec
 
 > **Status:** In progress (phase 7). Desktop encrypted file transfer, relay blob
-> upload/download, Rust-owned cache and basic image/file UI are implemented.
-> Thumbnails, streaming optimization, mobile parity, voice messages and calls
-> are still pending.
+> upload/download, encrypted image thumbnails, streamed relay downloads,
+> Rust-owned cache and image/file UI are implemented. Constant-memory file
+> encryption, mobile parity, voice messages and calls remain pending.
 > **Goal:** end-to-end-encrypted images, videos and files inside chats and
 > groups, without ever breaking the zero-knowledge relay model.
 > **Related:** `docs/ROADMAP.md` phase 7.
@@ -118,7 +118,8 @@ Server rules:
 ## 6. Sending flow (desktop)
 
 1. User picks a file (native dialog, already wired via `tauri-plugin-dialog`).
-2. `e2ee_core::media::encrypt_file()` streams the file → ciphertext + key.
+2. `e2ee_core::media::encrypt()` encrypts the selected file in chunked AES-GCM
+   format → ciphertext + key. Constant-memory file encryption remains a follow-up.
 3. Ciphertext is POSTed to `/media`; the response hash is captured.
 4. `send_message` is called with a `ChatPayload::Media` payload (1:1 or group
    path, same as text/reply — no server changes needed for routing).
@@ -128,9 +129,10 @@ Server rules:
 ## 7. Receiving flow (desktop)
 
 1. The E2EE message arrives; `parse_plaintext` yields `ParsedPayload::Media`.
-2. The bubble renders immediately from `thumb` (tiny preview) + metadata.
-3. The ciphertext is fetched from `/media/<hash>` and decrypted in a
-   background task.
+2. The thumbnail blob is fetched and verified independently; the bubble renders
+   from `thumb` (tiny preview) + metadata.
+3. The full ciphertext is fetched through a guarded byte stream and decrypted in
+   a background task.
 4. Images render inline; videos/files show a card with a play/open action.
 5. Decrypted bytes are cached; metadata is persisted so history re-renders
    offline.

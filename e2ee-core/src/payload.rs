@@ -78,6 +78,9 @@ pub struct MediaPayload {
     pub key: String,
     pub mime: String,
     pub size: u64,
+    /// Optional separately encrypted preview blob.
+    #[serde(default, rename = "thumb", skip_serializing_if = "Option::is_none")]
+    pub thumbnail: Option<MediaThumbnail>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -91,6 +94,8 @@ struct RawMediaPayload {
     key: String,
     mime: String,
     size: u64,
+    #[serde(default, rename = "thumb")]
+    thumbnail: Option<MediaThumbnail>,
     #[serde(default)]
     name: Option<String>,
     #[serde(default)]
@@ -112,7 +117,27 @@ impl<'de> Deserialize<'de> for MediaPayload {
             raw.name,
             raw.duration_ms,
         )
+        .and_then(|mut payload| {
+            payload.thumbnail = raw.thumbnail;
+            payload.validate().map(|()| payload)
+        })
         .map_err(serde::de::Error::custom)
+    }
+}
+
+/// Metadata and key for a separately encrypted thumbnail.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MediaThumbnail {
+    pub hash: String,
+    pub key: String,
+    pub mime: String,
+    pub size: u64,
+}
+
+impl MediaThumbnail {
+    /// Decode the thumbnail's 256-bit key.
+    pub fn key_bytes(&self) -> Option<[u8; 32]> {
+        decode_key(&self.key).and_then(|bytes| bytes.try_into().ok())
     }
 }
 
@@ -134,11 +159,26 @@ impl MediaPayload {
             key: key.into(),
             mime: mime.into(),
             size,
+            thumbnail: None,
             name,
             duration_ms,
         };
         payload.validate()?;
         Ok(payload)
+    }
+
+    /// Attach a separately encrypted thumbnail to this media payload.
+    pub fn with_thumbnail(mut self, thumbnail: MediaThumbnail) -> Result<Self, String> {
+        self.thumbnail = Some(thumbnail);
+        self.validate()?;
+        Ok(self)
+    }
+
+    /// Attach an optional thumbnail without forcing callers to branch.
+    pub fn with_thumbnail_opt(mut self, thumbnail: Option<MediaThumbnail>) -> Result<Self, String> {
+        self.thumbnail = thumbnail;
+        self.validate()?;
+        Ok(self)
     }
 
     /// Validate metadata received from an untrusted peer.
@@ -162,6 +202,18 @@ impl MediaPayload {
             name.is_empty() || name.len() > 255 || name.bytes().any(|b| b.is_ascii_control())
         }) {
             return Err("invalid media name".into());
+        }
+        if let Some(thumbnail) = &self.thumbnail {
+            if thumbnail.hash.len() != 64
+                || !thumbnail.hash.bytes().all(|b| b.is_ascii_hexdigit())
+                || decode_key(&thumbnail.key).is_none()
+                || thumbnail.mime.is_empty()
+                || thumbnail.mime.len() > 255
+                || thumbnail.mime.bytes().any(|b| b.is_ascii_control())
+                || thumbnail.size == 0
+            {
+                return Err("invalid media thumbnail".into());
+            }
         }
         Ok(())
     }
@@ -921,6 +973,32 @@ mod tests {
             Some(2500),
         )
         .expect("valid media metadata");
+        let wire = serde_json::to_vec(&ChatPayload::Media(payload.clone())).unwrap();
+        assert_eq!(parse_plaintext(&wire), ParsedPayload::Media(payload));
+    }
+
+    #[test]
+    fn media_thumbnail_roundtrips_and_validates_its_key() {
+        let key_b64 = general_purpose::STANDARD.encode([9u8; 32]);
+        let thumbnail = MediaThumbnail {
+            hash: "abcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcd".into(),
+            key: key_b64.clone(),
+            mime: "image/jpeg".into(),
+            size: 42,
+        };
+        assert_eq!(thumbnail.key_bytes(), Some([9u8; 32]));
+        let payload = MediaPayload::new(
+            "msg-1",
+            "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+            key_b64,
+            "image/jpeg",
+            123,
+            None,
+            None,
+        )
+        .unwrap()
+        .with_thumbnail(thumbnail.clone())
+        .unwrap();
         let wire = serde_json::to_vec(&ChatPayload::Media(payload.clone())).unwrap();
         assert_eq!(parse_plaintext(&wire), ParsedPayload::Media(payload));
     }

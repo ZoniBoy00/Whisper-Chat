@@ -101,8 +101,9 @@ sender and the recipient can read them.
 - **Encrypted media transfer (desktop)** — files are encrypted locally with
   chunked AES-256-GCM, uploaded as opaque content-addressed blobs, and the key
   travels only inside the E2EE message. Images render from a Rust-owned local
-  cache; other supported files open from the cache. Voice/video calls are not
-  implemented yet.
+  cache with a separately encrypted thumbnail; guarded streamed downloads avoid
+  unbounded response allocation. Constant-memory file encryption and
+  voice/video calls are not implemented yet.
 - **Cross-platform future** — Tauri desktop today, Flutter mobile coming (one
   shared Rust crypto core).
 
@@ -336,8 +337,8 @@ reactions, quoted replies, safety numbers + QR, invite/join deep links, i18n
 automatic backups.
 
 **Next up:** relay deployment to a real VPS (two-machine E2EE test —
-the last remaining release blocker), media thumbnails/streaming, voice/video
-calls, chat export, mobile (Flutter), external audit + post-quantum
+the last remaining release blocker), constant-memory media encryption,
+voice/video calls, chat export, mobile (Flutter), external audit + post-quantum
 (X25519Kyber768).
 
 See [docs/ROADMAP.md](docs/ROADMAP.md) for the full technical roadmap.

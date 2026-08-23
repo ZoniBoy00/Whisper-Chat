@@ -37,6 +37,14 @@ export interface MediaInfo {
   name?: string | null;
   duration_ms?: number | null;
   local_path?: string | null;
+  thumbnail?: MediaThumbnailInfo | null;
+}
+
+export interface MediaThumbnailInfo {
+  hash: string;
+  mime: string;
+  size: number;
+  local_path?: string | null;
 }
 
 /** The quoted message a reply refers to (snapshot sent inside the encrypted

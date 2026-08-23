@@ -206,9 +206,9 @@ export function MessageBubble({
             </p>
           </div>
         ) : null}
-          {message.media ? (
-           message.media.local_path && message.media.mime.startsWith("image/") ?
-            <button type="button" className="mb-2 block" onClick={() => void openMedia(message.media!.local_path!)} title="Open media"><img className="max-h-72 max-w-full rounded-xl object-contain" src={convertFileSrc(message.media.local_path)} alt={message.media.name ?? "Encrypted media"} /></button> :
+           {message.media ? (
+            message.media.local_path && message.media.mime.startsWith("image/") ?
+             <button type="button" className="mb-2 block" onClick={() => void openMedia(message.media!.local_path!)} title="Open media"><img className="max-h-72 max-w-full rounded-xl object-contain" src={convertFileSrc(message.media.thumbnail?.local_path ?? message.media.local_path)} alt={message.media.name ?? "Encrypted media"} /></button> :
             <button type="button" className="mb-2 w-full rounded-xl bg-black/15 px-3 py-2 text-left text-sm text-wp-text hover:bg-black/25" onClick={() => message.media?.local_path && void openMedia(message.media.local_path)}>{message.media.name ?? "Encrypted media"} <span className="ml-2 text-xs text-wp-faint">{message.media.size > 0 ? `${Math.ceil(message.media.size / 1024)} KiB` : ""}</span></button>
         ) : null}
         {message.text ? <p className="wp-msg whitespace-pre-wrap break-words leading-relaxed text-wp-text"><HighlightedText text={message.text} query={searchQuery} activeRange={searchActiveRange} /></p> : null}

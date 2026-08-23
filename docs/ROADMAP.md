@@ -362,7 +362,7 @@ settings tests (password never serializes to the UI, patch set/clear).
 - [ ] Deploy the relay to Hetzner (systemd unit + nginx/Caddy template ready) → real two-machine E2EE test — blocks public release
 - [ ] Chat export (Signal-style plaintext/JSON) — small, high-trust, GDPR-friendly
 - [x] Media: encrypted desktop file transfer (AES-256-GCM, opaque `/media` blobs, E2EE metadata, Rust cache and image/file UI)
-- [ ] Media: thumbnails, streaming/large-file optimization and mobile parity
+- [~] Media: encrypted thumbnails and streamed relay downloads are implemented; full constant-memory file encryption and mobile parity remain
 - [ ] Voice messages and calls (WebRTC DTLS-SRTP + coturn)
 - [ ] Production hardening: binary integrity check (devtools already disabled in release; no console)
 - [ ] Public repo (open source) once remote testing is solid

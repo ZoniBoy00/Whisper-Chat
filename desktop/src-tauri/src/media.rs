@@ -4,6 +4,7 @@ use base64::engine::general_purpose::STANDARD as BASE64;
 use base64::Engine;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
+use std::io::Cursor;
 use std::path::{Path, PathBuf};
 use tauri::{AppHandle, Manager};
 
@@ -16,6 +17,15 @@ pub struct MediaInfo {
     pub size: u64,
     pub name: Option<String>,
     pub duration_ms: Option<u64>,
+    pub local_path: Option<String>,
+    pub thumbnail: Option<MediaThumbnailInfo>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct MediaThumbnailInfo {
+    pub hash: String,
+    pub mime: String,
+    pub size: u64,
     pub local_path: Option<String>,
 }
 
@@ -129,15 +139,35 @@ pub async fn send_file(
     let key = e2ee_core::media::generate_key();
     let blob = e2ee_core::media::encrypt(&plaintext, &key)?;
     let hash = e2ee_core::media::hash(&blob);
-    Client::new()
-        .post(format!(
-            "{}/media",
-            relay_http_url(relay).trim_end_matches('/')
-        ))
-        .body(blob)
-        .send()
-        .await?
-        .error_for_status()?;
+    let client = Client::new();
+    let uploaded_hash = upload_blob(&client, relay, blob).await?;
+    if uploaded_hash != hash {
+        return Err(MediaError::HashMismatch);
+    }
+    let thumbnail = if mime.starts_with("image/") {
+        make_thumbnail(&plaintext).and_then(|thumb| {
+            let key = e2ee_core::media::generate_key();
+            let encrypted = e2ee_core::media::encrypt(&thumb, &key).ok()?;
+            let thumb_hash = e2ee_core::media::hash(&encrypted);
+            Some((encrypted, key, thumb_hash, thumb.len() as u64))
+        })
+    } else {
+        None
+    };
+    let thumbnail_payload = if let Some((encrypted, key, thumb_hash, size)) = thumbnail {
+        let uploaded = upload_blob(&client, relay, encrypted).await?;
+        if uploaded != thumb_hash {
+            return Err(MediaError::HashMismatch);
+        }
+        Some(e2ee_core::MediaThumbnail {
+            hash: thumb_hash,
+            key: BASE64.encode(key),
+            mime: "image/jpeg".into(),
+            size,
+        })
+    } else {
+        None
+    };
     let name = path
         .file_name()
         .and_then(|s| s.to_str())
@@ -151,6 +181,8 @@ pub async fn send_file(
         name.clone(),
         None,
     )
+    .map_err(MediaError::Metadata)?
+    .with_thumbnail_opt(thumbnail_payload)
     .map_err(MediaError::Metadata)?;
     Ok((
         payload,
@@ -161,8 +193,39 @@ pub async fn send_file(
             name,
             duration_ms: None,
             local_path: None,
+            thumbnail: None,
         },
     ))
+}
+
+#[derive(Deserialize)]
+struct MediaUploadResponse {
+    hash: String,
+}
+
+async fn upload_blob(client: &Client, relay: &str, blob: Vec<u8>) -> Result<String, MediaError> {
+    Ok(client
+        .post(format!(
+            "{}/media",
+            relay_http_url(relay).trim_end_matches('/')
+        ))
+        .body(blob)
+        .send()
+        .await?
+        .error_for_status()?
+        .json::<MediaUploadResponse>()
+        .await?
+        .hash)
+}
+
+fn make_thumbnail(bytes: &[u8]) -> Option<Vec<u8>> {
+    let image = image::load_from_memory(bytes).ok()?;
+    let thumbnail = image.thumbnail(480, 480);
+    let mut output = Cursor::new(Vec::new());
+    thumbnail
+        .write_to(&mut output, image::ImageFormat::Jpeg)
+        .ok()?;
+    Some(output.into_inner())
 }
 
 pub async fn fetch_and_decrypt(
@@ -174,18 +237,35 @@ pub async fn fetch_and_decrypt(
     let dir = cache_dir(app)?;
     tokio::fs::create_dir_all(&dir).await?;
     let target = dir.join(safe_name(payload.name.as_deref(), &payload.hash));
+    let thumbnail_info = if let Some(thumbnail) = &payload.thumbnail {
+        let thumbnail_target = dir.join(safe_name(Some("thumbnail.jpg"), &thumbnail.hash));
+        if !thumbnail_target.exists()
+            || tokio::fs::metadata(&thumbnail_target).await?.len() != thumbnail.size
+        {
+            let blob = fetch_blob(&Client::new(), relay, &thumbnail.hash).await?;
+            if e2ee_core::media::hash(&blob) != thumbnail.hash {
+                return Err(MediaError::HashMismatch);
+            }
+            let key = thumbnail
+                .key_bytes()
+                .ok_or_else(|| MediaError::Metadata("invalid thumbnail key".into()))?;
+            let plaintext = e2ee_core::media::decrypt(&blob, &key)?;
+            if plaintext.len() as u64 != thumbnail.size {
+                return Err(MediaError::HashMismatch);
+            }
+            tokio::fs::write(&thumbnail_target, plaintext).await?;
+        }
+        Some(MediaThumbnailInfo {
+            hash: thumbnail.hash.clone(),
+            mime: thumbnail.mime.clone(),
+            size: thumbnail.size,
+            local_path: Some(thumbnail_target.to_string_lossy().into_owned()),
+        })
+    } else {
+        None
+    };
     if !target.exists() || tokio::fs::metadata(&target).await?.len() != payload.size {
-        let blob = Client::new()
-            .get(format!(
-                "{}/media/{}",
-                relay_http_url(relay).trim_end_matches('/'),
-                payload.hash
-            ))
-            .send()
-            .await?
-            .error_for_status()?
-            .bytes()
-            .await?;
+        let blob = fetch_blob(&Client::new(), relay, &payload.hash).await?;
         if e2ee_core::media::hash(&blob) != payload.hash {
             return Err(MediaError::HashMismatch);
         }
@@ -207,7 +287,29 @@ pub async fn fetch_and_decrypt(
         name: payload.name.clone(),
         duration_ms: payload.duration_ms,
         local_path: Some(target.to_string_lossy().into_owned()),
+        thumbnail: thumbnail_info,
     })
+}
+
+async fn fetch_blob(client: &Client, relay: &str, hash: &str) -> Result<Vec<u8>, MediaError> {
+    let response = client
+        .get(format!(
+            "{}/media/{hash}",
+            relay_http_url(relay).trim_end_matches('/')
+        ))
+        .send()
+        .await?
+        .error_for_status()?;
+    let mut stream = response.bytes_stream();
+    let mut bytes = Vec::new();
+    while let Some(chunk) = futures_util::StreamExt::next(&mut stream).await {
+        let chunk = chunk?;
+        bytes.extend_from_slice(&chunk);
+        if bytes.len() as u64 > MAX_MEDIA_BYTES + 1024 * 1024 {
+            return Err(MediaError::TooLarge);
+        }
+    }
+    Ok(bytes)
 }
 
 #[cfg(test)]
