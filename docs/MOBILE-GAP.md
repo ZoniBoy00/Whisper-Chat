@@ -1,6 +1,6 @@
 # Whisper Mobile — Complete Gap List (desktop parity)
 
-> Updated: 2026-08-14 (after commit a7aa542)
+> Updated: 2026-08-23 (after main commit 1d83b8f)
 > Goal: make the Flutter mobile client a **full copy of the desktop version** —
 > same look, same features, same UX. Everything below is missing or partial.
 
