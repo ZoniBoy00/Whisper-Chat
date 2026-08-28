@@ -31,7 +31,7 @@ import type {
 /**
  * Default relay endpoint, used when no custom URL is persisted and
  * `WHISPER_RELAY_URL` is unset. Currently points at the test relay
- * (whisper-test.homelab.cfd) while the Hetzner E2EE test is running;
+ * (whisper-test.homelab.cfd) while the VPS E2EE test is running;
  * replace with the production relay before public release.
  */
 export const DEFAULT_RELAY_URL = "wss://whisper-test.homelab.cfd/ws";

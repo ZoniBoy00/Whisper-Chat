@@ -110,13 +110,14 @@ sender and the recipient can read them.
 ## Mobile client (Android)
 
 The Flutter client in `mobile/` shares the `e2ee-core` crypto stack via
-`flutter_rust_bridge` (`whisper_core`): E2EE 1:1 chat, profiles (signed
-usernames, avatars, directory search), contacts, group UI (invites, join links,
-roles), reactions, quoted replies, edit/delete, disappearing messages, safety
-numbers and password-encrypted backups. **Mobile group messages are not yet
-production-ready E2EE**; Megolm key sharing is tracked as the critical C1 item
-in [docs/MOBILE-GAP.md](docs/MOBILE-GAP.md). The relay URL is hardcoded
-(mirroring the desktop) and can only change with a build.
+`flutter_rust_bridge` (`whisper_core`). **⚠️ The mobile client is heavily WIP**
+— while basic 1:1 E2EE chat, profiles and contacts work, there is significant
+work remaining before it is production-ready. Key gaps include Megolm group key
+sharing (tracked as the critical C1 item in
+[docs/MOBILE-GAP.md](docs/MOBILE-GAP.md)), push notifications (FCM), complete
+i18n coverage and broader test coverage. Contributions to the mobile client are
+especially welcome! The relay URL is currently hardcoded and can only change
+with a rebuild.
 
 ```sh
 cd mobile

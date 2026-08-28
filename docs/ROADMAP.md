@@ -5,7 +5,7 @@
 > general-purpose chat — a WhatsApp/Signal/Telegram replacement without
 > backdoors or scanning mechanisms.
 >
-> **Date:** 2026-08-23 (reviewed against the current local media implementation; **E2EE backup encryption DONE**; encrypted desktop file transfer is implemented; **desktop release blocker left:** real two-machine E2EE test on Hetzner)
+> **Date:** 2026-08-23 (reviewed against the current local media implementation; **E2EE backup encryption DONE**; encrypted desktop file transfer is implemented; **desktop release blocker left:** real two-machine E2EE test on a VPS)
 > **Status:** Desktop/relay local MVP is implemented and passes the local Rust/frontend checks. Desktop encrypted file transfer now covers local AES-GCM encryption, opaque relay blobs, E2EE metadata, Rust-owned cache and UI rendering. Mobile is an Android MVP, but it is **not release-ready**: mobile group messages still require real Megolm key sharing (critical C1), and the remaining gap list must be completed before distribution. GitHub CI re-runs are pending the repository billing limit reset.
 > **Origin:** App specification + Gemini cross-check + Byte evaluation
 > **Working title (before branding):** Operation Ghost
@@ -83,7 +83,7 @@ crypto logic is written **once**, tested **once**, shared everywhere.
 | **Mobile (phase 8)** | **Flutter + flutter_rust_bridge** | One codebase for iOS+Android, same Rust core |
 | **Calls (phase 7)** | WebRTC (DTLS-SRTP) + coturn (STUN/TURN) | P2P, encrypted media |
 | **Transport** | TLS 1.3 + certificate pinning | Protects traffic end to end to the server |
-| **Deploy** | Hetzner VPS + systemd (hardened), GitHub Actions CI | Existing infrastructure |
+| **Deploy** | VPS + systemd (hardened), GitHub Actions CI | Existing infrastructure |
 | **Testing** | `cargo test` (TDD), `clippy -D warnings`, `proptest`, `cargo audit` | Crypto without tests = no merge |
 
 ### Why not X?
@@ -236,7 +236,7 @@ must not be "unwind" in production; secrets never go into the JS/UI layer.
 
 ## 10. Infra & Repo
 
-- **Relay:** Hetzner VPS + systemd (`whisper-relay.service`), Cloudflare
+- **Relay:** VPS + systemd (`whisper-relay.service`), Cloudflare
   Tunnel or direct port.
 - **CI:** GitHub Actions — `cargo test --workspace`, `clippy -D warnings`,
   `fmt` on every push.
@@ -359,7 +359,7 @@ settings tests (password never serializes to the UI, patch set/clear).
 - [x] **Mobile: Flutter Android client (phase 8 — MVP).** `mobile/` with `whisper_core` (Rust via flutter_rust_bridge, same `e2ee-core`): E2EE 1:1, profiles, contacts, groups (invites/join links/roles), reactions, quotes, edit/delete, disappearing messages, safety numbers, password-encrypted backups, i18n EN/FI, settings tabs + logs. Android TLS uses bundled Mozilla roots. 5 whisper_core + 5 Flutter tests; CI "Mobile" job; gap list in `docs/MOBILE-GAP.md`. Remaining: push (FCM), group avatars, i18n completeness, more tests.
 
 **⏳ Next up:**
-- [ ] Deploy the relay to Hetzner (systemd unit + nginx/Caddy template ready) → real two-machine E2EE test — blocks public release
+- [ ] Deploy the relay to a VPS (systemd unit + nginx/Caddy template ready) → real two-machine E2EE test — blocks public release
 - [ ] Chat export (Signal-style plaintext/JSON) — small, high-trust, GDPR-friendly
 - [x] Media: encrypted desktop file transfer (AES-256-GCM, opaque `/media` blobs, E2EE metadata, Rust cache and image/file UI)
 - [~] Media: encrypted thumbnails and streamed relay downloads are implemented; full constant-memory file encryption and mobile parity remain

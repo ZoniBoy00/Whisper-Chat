@@ -1,4 +1,4 @@
-# Whisper relay — systemd unit template for Hetzner VPS deployment.
+# Whisper relay — systemd unit template for VPS deployment.
 #
 # Install:
 #   1. Build the release binary:  cargo build --release --workspace

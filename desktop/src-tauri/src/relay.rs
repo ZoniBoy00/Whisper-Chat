@@ -73,7 +73,7 @@ use crate::store::{derive_db_key, ChatStore, ContactRow, StoreError};
 /// Default relay endpoint; override with the `WHISPER_RELAY_URL` env var.
 ///
 /// Currently points at the test relay (whisper-test.homelab.cfd) while the
-/// Hetzner two-machine E2EE test is running; replace with the production
+/// VPS two-machine E2EE test is running; replace with the production
 /// relay before public release.
 const DEFAULT_RELAY_URL: &str = "wss://whisper-test.homelab.cfd/ws";
 

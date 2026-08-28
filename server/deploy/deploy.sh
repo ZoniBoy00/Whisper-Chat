@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Whisper relay — Hetzner deploy script (Ubuntu 24.04, systemd + nginx).
+# Whisper relay — VPS deploy script (Ubuntu 24.04, systemd + nginx).
 #
 # Idempotent: safe to re-run; every step tolerates an already-provisioned
 # state. Installs nginx + certbot, builds the relay release binary, installs
