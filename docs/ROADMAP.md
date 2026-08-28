@@ -7,8 +7,7 @@
 >
 > **Date:** 2026-08-23 (reviewed against the current local media implementation; **E2EE backup encryption DONE**; encrypted desktop file transfer is implemented; **desktop release blocker left:** real two-machine E2EE test on a VPS)
 > **Status:** Desktop/relay local MVP is implemented and passes the local Rust/frontend checks. Desktop encrypted file transfer now covers local AES-GCM encryption, opaque relay blobs, E2EE metadata, Rust-owned cache and UI rendering. Mobile is an Android MVP, but it is **not release-ready**: mobile group messages still require real Megolm key sharing (critical C1), and the remaining gap list must be completed before distribution. GitHub CI re-runs are pending the repository billing limit reset.
-> **Origin:** App specification + Gemini cross-check + Byte evaluation
-> **Working title (before branding):** Operation Ghost
+
 
 ---
 
