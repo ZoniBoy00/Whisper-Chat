@@ -12,9 +12,9 @@ sender and the recipient can read them.
 ![Rust](https://img.shields.io/badge/Rust-stable-orange)
 ![crypto: vodozemac](https://img.shields.io/badge/crypto-vodozemac-blue)
 
-> **Status:** The repository is currently **private** and in pre-beta testing.
-> The local MVP is feature-complete; public release is blocked by the real
-> two-machine E2EE test on the deployed relay.
+> **Status:** Pre-beta — the local MVP is feature-complete. We're looking for
+> contributors to help with relay deployment testing, mobile development and
+> security auditing. See [CONTRIBUTING.md](CONTRIBUTING.md) to get involved!
 
 ---
 
