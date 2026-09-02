@@ -42,7 +42,7 @@ vodozemac = "0.10"
 sha2 = "0.11"
 # Password-encrypted full backups: Argon2id (KDF) + AES-256-GCM (AEAD) over
 # the whole backup package. `rand` supplies the per-backup salt + nonce.
-argon2 = "0.5"
+argon2 = "0.6"
 aes-gcm = "0.11"
 rand = "0.10"
 # SQLCipher at-rest encryption. The `bundled-sqlcipher-vendored-openssl`
